@@ -105,10 +105,10 @@ def test_vented_box_stages_regions_walls_and_interface_and_prepares_a_coupled_so
     assert prepared.solve_kind == "coupled_bem_fem"
 
 
-def test_closed_shell_chosen_as_air_in_the_source_stages_a_bounded_region(plugin, tmp_path):
+def test_closed_shell_guessed_air_stages_a_bounded_region(plugin, tmp_path):
     catalog, backend = plugin
     step = waveguide(tmp_path / "wg.step", surface_model=True)
-    project = make_project(catalog, step, closed_shells={"Closed shell 1": "air"})
+    project = make_project(catalog, step)  # no choice: guessed air beside the open baffle
 
     project, response = generate(backend, project, tmp_path)
 
@@ -120,9 +120,10 @@ def test_closed_shell_chosen_as_air_in_the_source_stages_a_bounded_region(plugin
 def test_closed_shell_switched_to_exterior_retires_its_region_boundaries_and_interface(plugin, tmp_path):
     catalog, backend = plugin
     step = waveguide(tmp_path / "wg.step", surface_model=True)
-    project, _ = generate(backend, make_project(catalog, step, closed_shells={"Closed shell 1": "air"}), tmp_path)
+    project, _ = generate(backend, make_project(catalog, step), tmp_path)
     document = project.generator_documents[0]
-    project.generator_documents = (replace(document, source=document.source | {"closed_shells": {}}),)
+    changed = document.source | {"closed_shells": {"Closed shell 1": "exterior"}}
+    project.generator_documents = (replace(document, source=changed),)
 
     regenerated, response = generate(backend, project, tmp_path)
 

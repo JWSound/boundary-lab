@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import sys
@@ -12,10 +11,12 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QDockWidget, QHeaderView
+from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
+from PySide6.QtGui import QMouseEvent
+from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QApplication, QDockWidget, QHeaderView
 
-from blab.cad_import import inspect_step, open_step
+from blab.cad_import import inspect_step
 from blab.generators import catalog as catalog_module
 from blab.physical_compiler import PhysicalSystemCompiler
 from blab.ui.settings import load_gui_preferences, save_gui_preferences
@@ -116,13 +117,15 @@ def test_loaded_step_lists_bodies_and_faces_with_size_and_symmetry(cad_editor):
     assert editor.visible_faces() == {face["id"] for face in editor.geometry["faces"]}
 
 
-def test_tree_gives_spare_width_to_names_and_fits_the_size_column(cad_editor):
+def test_tree_gives_spare_width_to_names_and_fits_the_size_and_kind_columns(cad_editor):
     editor, _ = cad_editor
     header = editor.tree.header()
 
+    assert [editor.tree.headerItem().text(c) for c in range(3)] == ["Body / face", "Mesh size", "Kind"]
     assert not header.stretchLastSection()
     assert header.sectionResizeMode(0) == QHeaderView.ResizeMode.Stretch
     assert header.sectionResizeMode(1) == QHeaderView.ResizeMode.ResizeToContents
+    assert header.sectionResizeMode(2) == QHeaderView.ResizeMode.ResizeToContents
 
 
 def test_tree_hides_bodies_and_faces_and_show_all_restores_them(cad_editor, qapp):
@@ -233,57 +236,30 @@ def test_clear_shows_everything_and_clears_the_selection(cad_editor):
     assert host.snapshot().source == source
 
 
-def test_closed_shell_is_asked_once_and_stays_editable(cad_editor, qapp, monkeypatch, tmp_path):
+def test_closed_shell_gets_its_guessed_kind_unasked_and_the_kind_dropdown_changes_it(cad_editor, qapp, tmp_path):
     editor, host = cad_editor
-    asked = []
-    monkeypatch.setattr(editor, "ask_closed_shell", lambda name: asked.append(name) or "air")
 
     editor.set_step_path(str(waveguide(tmp_path / "wg.step", surface_model=True)))
     wait(qapp, lambda: not editor.loading)
 
-    assert asked == ["Closed shell 1"]
-    assert host.snapshot().source["closed_shells"] == {"Closed shell 1": "air"}
+    assert host.snapshot().source["closed_shells"] == {}  # a guess is no choice
     assert list(body_items(editor)) == ["Closed shell 1", "Exterior surface 1"]
-    combo = editor.closed_shell_combos["Closed shell 1"]
+    assert list(editor.kind_combos) == ["Closed shell 1"]  # only closed shells have a kind
+    combo = editor.kind_combos["Closed shell 1"]
+    assert [combo.itemText(i) for i in range(combo.count())] == ["Air body", "Exterior surface"]
     assert combo.currentData() == "air"
 
     combo.setCurrentIndex(combo.findData("exterior"))
     wait(qapp, lambda: not editor.loading)
 
     assert host.snapshot().source["closed_shells"] == {"Closed shell 1": "exterior"}
-    assert "Closed shell 1" not in body_items(editor)
-    assert editor.closed_shell_combos["Closed shell 1"].currentData() == "exterior"
-    assert asked == ["Closed shell 1"]
+    assert {name: item.toolTip(0) for name, item in body_items(editor).items()} == {
+        "Closed shell 1": "Exterior surface body",
+        "Exterior surface 1": "Exterior surface body",
+    }
+    assert editor.kind_combos["Closed shell 1"].currentData() == "exterior"
     editor.set_operation_state(SimpleNamespace(active=True))
-    assert not editor.closed_shell_combos["Closed shell 1"].isEnabled()
-
-
-def test_closed_shell_is_highlighted_and_framed_while_asked(cad_editor, qapp, monkeypatch, tmp_path):
-    editor, _ = cad_editor
-    plotter = editor.viewport.plotter
-    plotter.camera_position = "before"
-    step = waveguide(tmp_path / "wg.step", surface_model=True)
-    (shell,) = open_step(step).closed_shells  # the quick scan the question shows
-    seen = []
-
-    def ask(name):
-        opacities = [kwargs.get("opacity", 1.0) for mesh, kwargs in plotter.meshes if not mesh.n_lines]
-        seen.append((editor.highlighted_faces(), opacities, "reset_camera" in plotter.calls, plotter.colours))
-        plotter.camera_position = "framed"
-        return "exterior"
-
-    monkeypatch.setattr(editor, "ask_closed_shell", ask)
-    editor.set_step_path(str(step))
-    wait(qapp, lambda: not editor.loading)
-
-    ((highlighted, opacities, framed, colours),) = seen
-    assert highlighted == set(shell.face_ids) and highlighted
-    assert min(opacities) < 1 and max(opacities) == 1  # the rest see-through
-    assert "#e0218a" in colours  # the shell in the accent colour
-    assert framed
-    assert editor.highlighted_faces() == set()
-    assert all(kwargs.get("opacity", 1.0) == 1 for _, kwargs in plotter.meshes if "name" not in kwargs)  # no guides
-    assert plotter.camera_position == "before"
+    assert not editor.kind_combos["Closed shell 1"].isEnabled()
 
 
 def test_preview_is_smooth_shaded_with_face_outlines_and_no_triangle_edges(cad_editor):
@@ -329,9 +305,9 @@ def test_picked_faces_become_a_face_group_that_generates_a_rigid_boundary(
     assert {face["surface_type"] for face in group["faces"]} == {"Plane"}
     assert [editor.groups_table.item(r, 0).text() for r in range(editor.groups_table.rowCount())] == [
         "walls",
+        "Interface 1 Port",  # the interface
         "Sides",
         "Driver",  # from the STEP file
-        "Interface 1 Port",  # the interface
     ]
     monkeypatch.setattr(geometry_workflow, "GENERATED_GEOMETRY_ROOT", tmp_path / "runs")
     errors = []
@@ -433,8 +409,13 @@ def test_labelled_axes_and_symmetry_planes_reach_past_the_model_and_one_toggle_h
     # The model spans x, y -60..60 mm and z -210..0 mm; axes and planes reach past it by a fifth of each span.
     assert plane[:, 1].min() == pytest.approx(-0.084) and plane[:, 2].min() == pytest.approx(-0.252)
     assert plane[:, 2].max() == pytest.approx(0.042)  # at least a tenth of the largest size past the origin
+    # The axes reach half the span further, so their labels at the tips sit clear of the model.
     z_axis = shown["axis Z"].points
-    assert z_axis[:, 2].min() == pytest.approx(-0.252) and z_axis[:, 2].max() == pytest.approx(0.042)
+    assert z_axis[:, 2].min() == pytest.approx(-0.315) and z_axis[:, 2].max() == pytest.approx(0.105)
+    assert shown["axis X"].points[:, 0].max() == pytest.approx(0.12)
+    # Both planes in one green, not the Y axis's.
+    colours = {name: kw["color"] for name, kw in kwargs.items()}
+    assert colours["plane X=0"] == colours["plane Y=0"] != colours["axis Y"]
 
     editor.guides_check.setChecked(False)
     assert guides(editor) == {} and face_points(editor) is not None
@@ -443,31 +424,50 @@ def test_labelled_axes_and_symmetry_planes_reach_past_the_model_and_one_toggle_h
 
 
 def record_reads(editor, monkeypatch):
-    """What each STEP read of ``editor`` gives: "scan" or "preview" (the full read), in order."""
+    """The STEP file each read of ``editor`` reads, in order."""
     editor_module = sys.modules[type(editor).__module__]
     run_worker = editor_module.run_worker
     reads = []
 
     def recorded(job, output, *args, **kwargs):
+        reads.append(Path(job["step_path"]).name)
         run_worker(job, output, *args, **kwargs)
-        reads.append(json.loads((output / "preview.json").read_text(encoding="utf-8"))["kind"])
 
     monkeypatch.setattr(editor_module, "run_worker", recorded)
     return reads
 
 
-def test_opening_a_step_file_with_a_closed_shell_reads_it_fully_once(cad_editor, monkeypatch, qapp, tmp_path):
+def test_opening_a_step_file_with_a_closed_shell_reads_it_once(cad_editor, monkeypatch, qapp, tmp_path):
     editor, _ = cad_editor
-    monkeypatch.setattr(editor, "ask_closed_shell", lambda name: "air")
     reads = record_reads(editor, monkeypatch)
 
     editor.set_step_path(str(waveguide(tmp_path / "wg.step", surface_model=True)))
     wait(qapp, lambda: not editor.loading)
-    assert reads == ["scan", "preview"]
 
-    editor.set_step_path(str(vented_box(tmp_path / "other.step")))
+    assert reads == ["wg.step"]
+
+
+def test_the_previous_preview_stays_while_reading_and_with_the_error_when_reading_fails(
+    cad_editor, monkeypatch, qapp, tmp_path
+):
+    editor, _ = cad_editor
+    bodies = list(body_items(editor))
+    editor_module = sys.modules[type(editor).__module__]
+
+    def failing(job, output, *args, **kwargs):
+        raise ValueError("Could not read STEP file broken.step")
+
+    monkeypatch.setattr(editor_module, "run_worker", failing)
+    broken = tmp_path / "broken.step"
+    broken.write_text("not STEP", encoding="utf-8")
+    editor.set_step_path(str(broken))
+
+    assert editor.loading  # the result arrives through the event loop
+    assert list(body_items(editor)) == bodies and "Reading broken.step" in editor.info.text()
     wait(qapp, lambda: not editor.loading)
-    assert reads == ["scan", "preview", "preview"]  # no closed shell: straight to the full read
+    assert list(body_items(editor)) == bodies and editor.geometry is not None
+    assert "Could not read STEP file broken.step" in editor.info.text()
+    assert face_points(editor) is not None  # still drawn
 
 
 @pytest.mark.parametrize(
@@ -636,9 +636,6 @@ def test_step_file_edited_while_it_loads_offers_to_re_mesh(cad_editor, monkeypat
 
 def mouse(widget, button, press, release=None, modifier=Qt.KeyboardModifier.NoModifier):
     """Press at ``press`` and release at ``release`` (default: same point) through the widget's real events."""
-    from PySide6.QtCore import QPoint
-    from PySide6.QtTest import QTest
-
     QTest.mousePress(widget, button, modifier, QPoint(*press))
     if release is not None:
         QTest.mouseMove(widget, QPoint(*release))
@@ -684,7 +681,7 @@ def row_of(editor, name):
     return next(r for r in range(table.rowCount()) if table.item(r, 0).text() == name)
 
 
-def test_walls_row_comes_first_and_interface_rows_last(cad_editor):
+def test_walls_row_comes_first_then_the_interface_rows_then_the_face_groups(cad_editor):
     editor, _ = cad_editor
     (interface,) = editor.geometry["interfaces"]
     driver = [f["id"] for f in editor.geometry["faces"] if f["step_name"] == "Driver"]
@@ -692,8 +689,8 @@ def test_walls_row_comes_first_and_interface_rows_last(cad_editor):
 
     assert list(all_rows(editor).items()) == [
         ("walls", len(walls)),
-        ("Driver", 1),
         ("Interface 1 Port", len(interface["face_ids"])),
+        ("Driver", 1),
     ]
     editor.groups_table.selectRow(row_of(editor, "walls"))
     assert editor.selected_faces() == walls
@@ -747,7 +744,7 @@ def test_each_face_group_is_drawn_in_its_own_colour_with_a_swatch(cad_editor, qa
         table.item(r, 0).text(): table.item(r, 0).data(Qt.ItemDataRole.DecorationRole).name()
         for r in range(table.rowCount())
     }
-    assert list(swatches) == ["walls", "A", "B", "Driver", "Interface 1 Port"]
+    assert list(swatches) == ["walls", "Interface 1 Port", "A", "B", "Driver"]
     assert len(set(swatches.values())) == len(swatches)
     assert swatches["walls"] == "#c8ccd2"  # the plain face colour
     assert sorted(editor.viewport.plotter.colours) == sorted(swatches.values())
@@ -756,6 +753,67 @@ def test_each_face_group_is_drawn_in_its_own_colour_with_a_swatch(cad_editor, qa
     qapp.processEvents()
     assert "#e8a33d" in editor.viewport.plotter.colours  # the selection on top
     assert swatches["A"] not in editor.viewport.plotter.colours
+
+
+def test_the_face_under_the_mouse_is_pale_orange_or_dark_orange_when_selected(cad_editor, faces_under_mouse, qapp):
+    editor, _ = cad_editor
+    first, second = cabinet_faces(editor, lambda f: abs(abs(f["normal"][0]) - 1) < 1e-9)
+    faces, _ = faces_under_mouse
+    plotter = editor.viewport.plotter
+    editor.pick_face(first)
+
+    faces.append(second)
+    hover(plotter, (20, 30))
+    qapp.processEvents()
+    assert editor.hovered_face() == second
+    assert {"#e8a33d", "#f6cf98"} <= set(plotter.colours)  # selected orange, hovered pale orange
+
+    faces[0] = first
+    hover(plotter, (25, 30))
+    qapp.processEvents()
+    assert "#b8620f" in plotter.colours and "#f6cf98" not in plotter.colours  # hovered and selected: dark orange
+
+    faces[0] = None
+    hover(plotter, (30, 30))
+    qapp.processEvents()
+    assert editor.hovered_face() is None and "#b8620f" not in plotter.colours
+
+
+def hover(widget, position):
+    """Move the mouse over ``widget`` with no button pressed (QTest's moves do not arrive offscreen)."""
+    point = QPointF(*position)
+    event = QMouseEvent(
+        QEvent.Type.MouseMove,
+        point,
+        widget.mapToGlobal(point),
+        Qt.MouseButton.NoButton,
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    QApplication.sendEvent(widget, event)
+
+
+def test_clicking_a_body_row_selects_all_its_faces(cad_editor):
+    editor, _ = cad_editor
+    chamber = body_items(editor)["Chamber"]
+
+    editor.tree.itemClicked.emit(chamber, 0)
+
+    assert editor.selected_faces() == {face["id"] for face in editor.geometry["faces"] if "Chamber" in face["bodies"]}
+
+
+def test_placement_change_updates_the_interfaces_and_their_face_groups(cad_editor, qapp, tmp_path):
+    editor, _ = cad_editor
+    # A half model written 30 mm off X=0: the port mouth only opens into the cabinet once moved onto X=0.
+    editor.set_step_path(str(vented_box(tmp_path / "half.step", symmetry="x", shift_mm=(30, 0, 0))))
+    wait(qapp, lambda: not editor.loading)
+    assert "Interface 1 Port" not in all_rows(editor)
+
+    editor.translation_spins[0].setValue(-30)
+
+    assert not editor.loading
+    assert [i["name"] for i in editor.geometry["interfaces"]] == ["Interface 1 Port"]
+    assert list(all_rows(editor))[:2] == ["walls", "Interface 1 Port"]
 
 
 def menu_entries(menu):
@@ -781,10 +839,9 @@ def test_right_click_menu_adds_a_face_to_a_group_and_removes_it(cad_editor, monk
     menu_entries(editor.face_menu(second))["New group…"].trigger()
     assert group_rows(editor) == {"Driver": 2, "Sides": 1}
 
-    menu_entries(editor.face_menu(first))["Move to walls"].trigger()  # second is selected: acts on the selection
+    menu_entries(editor.face_menu(second))["Move to walls"].trigger()  # second is selected: acts on the selection
     assert group_rows(editor) == {"Driver": 2}
-    editor.select_faces(())
-    menu_entries(editor.face_menu(first))["Move to walls"].trigger()  # nothing selected: acts on the face
+    menu_entries(editor.face_menu(first))["Move to walls"].trigger()  # first is not: acts on the face
     assert group_rows(editor) == {"Driver": 1}
 
     editor.pick_face(first)
@@ -793,35 +850,41 @@ def test_right_click_menu_adds_a_face_to_a_group_and_removes_it(cad_editor, monk
     assert group_rows(editor) == {"Driver": 3}
 
 
-def test_right_click_marks_the_face_names_its_group_and_points_at_its_row_while_the_menu_is_open(
+def test_right_click_outside_the_selection_selects_the_face_names_its_group_and_points_at_its_row(
     cad_editor, faces_under_mouse, monkeypatch, qapp
 ):
     editor, _ = cad_editor
     interface_face = editor.geometry["interfaces"][0]["face_ids"][0]
-    assert [a.text() for a in editor.face_menu(interface_face).actions()] == ["Rename interface…"]
-    selected = cabinet_faces(editor, lambda f: True)[0]
-    editor.pick_face(selected)
+    assert [a.text() for a in editor.face_menu(interface_face).actions()][0] == "Rename interface…"
+    first, second = cabinet_faces(editor, lambda f: abs(abs(f["normal"][0]) - 1) < 1e-9)
+    editor.pick_face(first)
+    editor.pick_face(second, add=True)
 
     faces, _ = faces_under_mouse
-    faces.append(interface_face)
     seen = []
 
     def opened(_pos):
         rows = {editor.groups_table.item(i.row(), 0).text() for i in editor.groups_table.selectedItems()}
-        seen.append((editor.highlighted_faces(), editor.status.text(), rows, editor.viewport.plotter.colours))
+        opacities = {kw.get("opacity", 1.0) for mesh, kw in editor.viewport.plotter.meshes if "name" not in kw}
+        seen.append((editor.selected_faces(), editor.status.text(), rows, editor.viewport.plotter.colours, opacities))
 
     menu = SimpleNamespace(exec=opened, deleteLater=lambda: None)
     monkeypatch.setattr(editor, "face_menu", lambda face: menu)
-    mouse(editor.viewport.plotter, Qt.MouseButton.RightButton, (20, 30), (60, 30))  # a drag pans the view
-    mouse(editor.viewport.plotter, Qt.MouseButton.RightButton, (20, 30))
+    faces.append(second)
+    mouse(editor.viewport.plotter, Qt.MouseButton.RightButton, (20, 30))  # on a selected face: the selection stays
     wait(qapp, lambda: seen)
+    faces[0] = interface_face
+    mouse(editor.viewport.plotter, Qt.MouseButton.RightButton, (20, 30), (60, 30))  # a drag pans the view
+    mouse(editor.viewport.plotter, Qt.MouseButton.RightButton, (20, 30))  # outside it: the face becomes it
+    wait(qapp, lambda: len(seen) == 2)
 
-    ((marked, status, rows, colours),) = seen
-    assert marked == {interface_face} and "#e0218a" in colours
+    (kept, *_), (selected, status, rows, colours, opacities) = seen
+    assert kept == {first, second}
+    assert selected == {interface_face}
     assert status == f"Face {interface_face} · Group 'Interface 1 Port'"
     assert rows == {"Interface 1 Port"}
-    assert editor.selected_faces() == {selected}  # the row only points
-    assert editor.highlighted_faces() == set() and "#e0218a" not in editor.viewport.plotter.colours
+    assert "#e8a33d" in colours and opacities == {1.0}  # the selection in orange, nothing see-through
+    assert editor.selected_faces() == {interface_face}  # the row only points
 
 
 def test_an_interface_is_renamed_from_its_face_menu_and_keeps_its_size(cad_editor, monkeypatch):
@@ -852,9 +915,11 @@ def test_faces_grouped_before_they_became_interface_faces_move_to_the_interface(
     cad_editor, monkeypatch, qapp, tmp_path
 ):
     editor, host = cad_editor
-    monkeypatch.setattr(editor, "ask_closed_shell", lambda name: "exterior")
     step = waveguide(tmp_path / "wg.step", surface_model=True)
     editor.set_step_path(str(step))
+    wait(qapp, lambda: not editor.loading)
+    combo = editor.kind_combos["Closed shell 1"]
+    combo.setCurrentIndex(combo.findData("exterior"))
     wait(qapp, lambda: not editor.loading)
     assert not editor.geometry["interfaces"]
     as_air = inspect_step(step, closed_shells={"Closed shell 1": "air"})
@@ -865,7 +930,7 @@ def test_faces_grouped_before_they_became_interface_faces_move_to_the_interface(
     editor.pick_face(face)
     editor.group_selection("Interface")
 
-    editor.closed_shell_combos["Closed shell 1"].setCurrentIndex(0)  # air volume
+    editor.kind_combos["Closed shell 1"].setCurrentIndex(0)  # air body
     wait(qapp, lambda: not editor.loading)
 
     (interface,) = editor.geometry["interfaces"]

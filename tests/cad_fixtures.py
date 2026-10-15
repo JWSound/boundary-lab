@@ -186,17 +186,21 @@ def named_sides(centre):
     return "Driver" if abs(centre[2] + 200) < 1e-6 else None
 
 
-def waveguide(path: Path, *, surface_model: bool = False) -> Path:
+def waveguide(path: Path, *, surface_model: bool = False, covered: bool = False) -> Path:
     """Conical throat (r 15 -> 40 mm over 40 mm) opening into a 200 mm baffle box at z=0.
 
     ``surface_model`` writes it like SolidWorks writes parts mixing solid and surface
     bodies: no solid, the throat only as the closed shell of a surface model, no names.
+    ``covered`` makes the baffle box a solid without the hole: in a surface model, a closed shell too.
     """
 
     def build():
         occ = gmsh.model.occ
         throat = [(3, occ.addCone(0, 0, -40, 0, 0, 40, 15, 40))]
-        baffle = _cabinet(100, 100, 150, [(0, 0, 40)])
+        if covered:
+            baffle = [(3, occ.addBox(-100, -100, -150, 200, 200, 150))]
+        else:
+            baffle = _cabinet(100, 100, 150, [(0, 0, 40)])
         return throat + baffle, ["Throat"] + ["Baffle"] * len(baffle)
 
     write_step(path, build, face_names=lambda c: "Driver" if abs(c[2] + 40) < 1e-6 else None)

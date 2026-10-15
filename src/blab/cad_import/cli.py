@@ -12,7 +12,8 @@ def _build_arg_parser(prog: str | None = None) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=prog,
         description="Mesh a STEP file: solids become FEM air bodies, surface bodies the BEM exterior. "
-        "Closed shells of surfaces are exterior unless --closed-shell makes them air.",
+        "Closed shells of surfaces are guessed air bodies (or, when the file has no other exterior "
+        "surface, the largest one exterior) unless --closed-shell says otherwise.",
     )
     parser.add_argument("step", help="STEP file (units are taken from the file)")
     parser.add_argument("--fmax", type=float, required=True, help="Maximum frequency in Hz")
@@ -40,7 +41,7 @@ def _build_arg_parser(prog: str | None = None) -> argparse.ArgumentParser:
         action="append",
         default=[],
         metavar="NAME=air|exterior",
-        help="Treat a closed shell of surfaces as an air volume or exterior surface (default: exterior); repeatable",
+        help="Treat a closed shell of surfaces as an air body or exterior surface (default: guessed); repeatable",
     )
     return parser
 

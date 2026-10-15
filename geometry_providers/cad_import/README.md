@@ -16,29 +16,34 @@ in **Edit > Generator Plugins...** and add a design.
    generated mesh). The editor shows the bodies and their faces, the model
    size and the suggested symmetry
    (from open exterior edges on X=0 / Y=0), plus warnings for covered air faces
-   and exterior gaps.
+   and exterior gaps. While a file is read, the previous preview and controls
+   stay; if reading fails they stay with the error, so the change can be undone.
    A **closed shell** of surfaces (free faces that close up, as SolidWorks
    writes the solids of parts mixing solid and surface bodies) could be either,
-   so the editor asks for each one after a quick scan, before the file is read
-   fully once with the answers, with the shell highlighted and framed and
-   the rest see-through: **Air volume** makes it an air body named
-   after the shell, **Exterior surface** (also Escape) keeps it exterior. Change
-   the choice later under **Closed shells**; another STEP file is asked afresh.
-   The CLI takes `--closed-shell "Closed shell 1=air"` (unset shells are exterior).
-2. Pick **Forward** and **Up**: the CAD axes that become Boundary Lab +Z and +Y.
-   Under **Placement**, rotate by any angle about the Boundary Lab X, Y and Z
-   axes (in that order, about the origin), then translate in mm. The view, size
-   and suggested symmetry follow at once, without reading the file again;
-   which faces open into air bodies is kept from the last read, and Generate
-   uses the new placement. **Show axes and planes** draws the axes at the
-   origin and the X=0, Y=0 (symmetry) and Z=0 planes. The Meshes dialog keeps
-   the generated meshes' scale and position locked: place them here.
+   so it is guessed: an air body, unless the file has no other exterior
+   surface, in which case the largest closed shell is the exterior and the
+   others air. Change it in the **Kind** dropdown on its body row (Air body /
+   Exterior surface), which re-reads the file; another STEP file starts from
+   the guesses again. The CLI takes `--closed-shell "Closed shell 1=air"`
+   (unset shells get the guess).
+2. Under **Placement**, rotate by any angle about the Boundary Lab X, Y and Z
+   axes (in that order, about the origin), then translate in mm. The view, size,
+   suggested symmetry and the detected interfaces follow at once, without
+   reading the file again, as Generate will see them. **Show axes and planes**
+   draws the labelled axes through the origin and the X=0 and Y=0 symmetry
+   planes in green. The Meshes dialog keeps the generated meshes' scale and
+   position locked: place them here.
    The CLI takes `--rotate X,Y,Z` (degrees) and `--translate X,Y,Z` (mm).
 3. Use the tree checkboxes to hide bodies or single faces; **Show all** undoes
    all hiding, **Clear** also clears the selection.
 4. Click faces in the view (Ctrl/Shift+click adds or removes) or select them
-   in the tree, enter a name and **Group selection** to make a **face group**
-   (an existing name adds the faces; a face is in one group only). Faces named
+   in the tree; clicking a body row selects all its faces. The selection is
+   orange, the face under the mouse pale orange (dark orange when selected).
+   Enter a name and **New group** / **Add to "…"** to make a **face group**
+   (an existing name adds the faces; a face is in one group only). Right-click
+   a face for the same actions on the selection; a face outside the selection
+   becomes the selection first. The list shows walls, then the interface
+   groups, then the face groups. Faces named
    in the STEP file form groups of their name unless picked into another
    group. Groups store STEP names and fingerprints in CAD axes, so they
    survive changing the placement. **Delete group** removes a picked group.

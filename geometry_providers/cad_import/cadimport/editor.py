@@ -43,7 +43,6 @@ from blab.cad_import import (
     WALLS,
     CadFace,
     CadFaceRef,
-    CadScan,
     face_ref,
     match_face_ref,
     place_preview,
@@ -61,12 +60,12 @@ SIZING = (
     ("curvature_elements_per_circle", "Curvature elements per circle", 3.0, 100.0, 0, ""),
     ("growth_rate", "Growth rate", 1.05, 3.0, 2, "×"),
 )
-FACE_COLOUR, SELECTED_COLOUR, OUTLINE_COLOUR = "#c8ccd2", "#e8a33d", "#2b2f36"
-HIGHLIGHT_COLOUR = "#e0218a"  # a closed shell being asked about, a right-clicked face
-SEE_THROUGH = 0.15  # opacity of the faces around highlighted ones
+FACE_COLOUR, OUTLINE_COLOUR = "#c8ccd2", "#2b2f36"
+# The selection is orange; the face under the mouse pale orange, or dark orange when selected.
+SELECTED_COLOUR, HOVER_COLOUR, HOVER_SELECTED_COLOUR = "#e8a33d", "#f6cf98", "#b8620f"
 AXIS_COLOURS = ("#d62728", "#2ca02c", "#1f77b4")  # X, Y, Z
 AXIS_LABELS = ("X · Horizontal", "Y · Vertical", "Z · On Axis")  # as the balloon and mesh views name them
-PLANE_OPACITY = 0.15  # the symmetry planes X=0 and Y=0
+PLANE_COLOUR, PLANE_OPACITY = "#98df8a", 0.15  # the symmetry planes X=0 and Y=0, a lighter green than the Y axis
 GROUP_COLOURS = (
     "#4e79a7", "#59a14f", "#e15759", "#76b7b2", "#b07aa1",
     "#9c755f", "#edc948", "#ff9da7", "#2f6f4f", "#8c6bb1",
@@ -97,13 +96,21 @@ def outline_edges(triangles, face_ids):
 
 
 class Viewport(QWidget):
-    """Visible faces of the preview tessellation in a VTK plotter; a click picks a face, a right-click asks a menu.
+    """Visible faces of the preview tessellation in a VTK plotter; a click picks a face, a right-click asks a menu,
+    and the face under the mouse is reported as it changes.
 
     Clicks come from the plotter widget's Qt mouse events: the camera interaction holds VTK's mouse focus
     between press and release, so VTK observers never see the release.
     """
 
-    def __init__(self, parent=None, *, picked=lambda face_id, add: None, menu=lambda face_id, global_pos: None):
+    def __init__(
+        self,
+        parent=None,
+        *,
+        picked=lambda face_id, add: None,
+        menu=lambda face_id, global_pos: None,
+        hovered=lambda face_id: None,
+    ):
         super().__init__(parent)
         from pyvistaqt import QtInteractor
         from vtkmodules.vtkRenderingCore import vtkMapper
@@ -117,29 +124,34 @@ class Viewport(QWidget):
         self.setMinimumHeight(220)
         self.picked = picked
         self.menu = menu
+        self.hovered = hovered
         self._cell_faces = {}  # actor -> face id per cell
         self._press = None  # button and position of the last press
+        self._hover = None  # the face under the mouse
+        self.plotter.setMouseTracking(True)
         self.plotter.installEventFilter(self)
 
     def show_faces(
-        self, preview, visible, selected=frozenset(), colours=None, *, highlight=None, guides=None, reset_camera=False
+        self, preview, visible, selected=frozenset(), colours=None, *, hovered=None, guides=None, reset_camera=False
     ):
         """Draw the ``visible`` faces smooth with their outlines, in their ``colours`` (face id -> colour, default
-        plain), ``selected`` on top; ``highlight`` (face ids) stands out, all other faces see-through. ``guides``
+        plain), ``selected`` in orange and ``hovered`` (a face id) pale or, when selected, dark orange. ``guides``
         (a bounding box, m) draws the axes and symmetry planes around it."""
         import pyvista as pv
 
         self.plotter.clear()
         self._cell_faces = {}
         if preview is not None:
-            by_look = {}
+            by_colour = {}
             for face in visible:
-                colour = SELECTED_COLOUR if face in selected else (colours or {}).get(face, FACE_COLOUR)
-                opacity = 1.0 if highlight is None or face in highlight else SEE_THROUGH
-                if highlight is not None and face in highlight:
-                    colour = HIGHLIGHT_COLOUR
-                by_look.setdefault((colour, opacity), []).append(face)
-            for (colour, opacity), faces in by_look.items():
+                if face == hovered:
+                    colour = HOVER_SELECTED_COLOUR if face in selected else HOVER_COLOUR
+                elif face in selected:
+                    colour = SELECTED_COLOUR
+                else:
+                    colour = (colours or {}).get(face, FACE_COLOUR)
+                by_colour.setdefault(colour, []).append(face)
+            for colour, faces in by_colour.items():
                 mask = np.isin(preview["face_ids"], faces)
                 if mask.any():
                     triangles = preview["triangles"][mask]
@@ -148,28 +160,22 @@ class Viewport(QWidget):
                     actor = self.plotter.add_mesh(
                         pv.PolyData(preview["points"], cells),
                         color=colour,
-                        opacity=opacity,
                         smooth_shading=True,
                         split_sharp_edges=True,
                         reset_camera=False,
                     )
                     self._cell_faces[_actor_key(actor)] = preview["face_ids"][mask]
-            outlined = {}
-            for face in visible:
-                outlined.setdefault(1.0 if highlight is None or face in highlight else SEE_THROUGH, []).append(face)
-            for opacity, faces in outlined.items():
-                mask = np.isin(preview["face_ids"], faces)
-                edges = outline_edges(preview["triangles"][mask], preview["face_ids"][mask])
-                if len(edges):
-                    lines = np.hstack([np.full((len(edges), 1), 2), edges]).ravel()
-                    self.plotter.add_mesh(
-                        pv.PolyData(preview["points"], lines=lines),
-                        color=OUTLINE_COLOUR,
-                        opacity=opacity,
-                        line_width=1.5,
-                        pickable=False,
-                        reset_camera=False,
-                    )
+            mask = np.isin(preview["face_ids"], list(visible))
+            edges = outline_edges(preview["triangles"][mask], preview["face_ids"][mask])
+            if len(edges):
+                lines = np.hstack([np.full((len(edges), 1), 2), edges]).ravel()
+                self.plotter.add_mesh(
+                    pv.PolyData(preview["points"], lines=lines),
+                    color=OUTLINE_COLOUR,
+                    line_width=1.5,
+                    pickable=False,
+                    reset_camera=False,
+                )
             if guides is not None:
                 self._show_guides(guides)
             if reset_camera:
@@ -177,18 +183,25 @@ class Viewport(QWidget):
         self.plotter.render()
 
     def _show_guides(self, bbox_m):
-        """Labelled axes through the origin and the see-through symmetry planes X=0 and Y=0, all reaching
-        past the model and the origin by a fifth of their span (at least a tenth of the model's size)."""
+        """Labelled axes through the origin and the see-through symmetry planes X=0 and Y=0. The planes reach past
+        the model and the origin by a fifth of their span (at least a tenth of the model's size), the axes by at
+        least half their span, so the labels at their tips sit clear of the model."""
         import pyvista as pv
 
         low, high = np.minimum(bbox_m[0], 0), np.maximum(bbox_m[1], 0)
         margin = np.maximum(0.2 * (high - low), 0.1 * (float(np.max(np.subtract(bbox_m[1], bbox_m[0]))) or 1.0))
-        low, high = low - margin, high + margin
+        axis_margin = np.maximum(margin, 0.5 * (high - low))
         for axis, name in enumerate("XYZ"):
             start, tip = np.zeros(3), np.zeros(3)
-            start[axis], tip[axis] = low[axis], high[axis]
-            common = dict(color=AXIS_COLOURS[axis], pickable=False, reset_camera=False)
-            self.plotter.add_mesh(pv.Line(start, tip), line_width=3, name=f"axis {name}", **common)
+            start[axis], tip[axis] = low[axis] - axis_margin[axis], high[axis] + axis_margin[axis]
+            self.plotter.add_mesh(
+                pv.Line(start, tip),
+                color=AXIS_COLOURS[axis],
+                line_width=3,
+                name=f"axis {name}",
+                pickable=False,
+                reset_camera=False,
+            )
             self.plotter.add_point_labels(
                 [tip],
                 [AXIS_LABELS[axis]],
@@ -203,27 +216,16 @@ class Viewport(QWidget):
                 continue  # Z=0 is no symmetry plane
             i, j = (axis + 1) % 3, (axis + 2) % 3
             corners = np.zeros((4, 3))
-            corners[:, i] = low[i], high[i], high[i], low[i]
-            corners[:, j] = low[j], low[j], high[j], high[j]
+            corners[:, i] = low[i] - margin[i], high[i] + margin[i], high[i] + margin[i], low[i] - margin[i]
+            corners[:, j] = low[j] - margin[j], low[j] - margin[j], high[j] + margin[j], high[j] + margin[j]
             self.plotter.add_mesh(
                 pv.PolyData(corners, [4, 0, 1, 2, 3]),
+                color=PLANE_COLOUR,
                 opacity=PLANE_OPACITY,
                 name=f"plane {name}=0",
-                **common,
+                pickable=False,
+                reset_camera=False,
             )
-
-    def frame(self, preview, face_ids):
-        """Fit the view to ``face_ids``; returns the camera to give back to :meth:`restore_camera`."""
-        camera = self.plotter.camera_position
-        points = preview["points"][np.unique(preview["triangles"][np.isin(preview["face_ids"], list(face_ids))])]
-        if len(points):
-            low, high = points.min(axis=0), points.max(axis=0)
-            self.plotter.reset_camera(bounds=[v for pair in zip(low, high, strict=True) for v in pair])
-        return camera
-
-    def restore_camera(self, camera):
-        self.plotter.camera_position = camera
-        self.plotter.render()
 
     def eventFilter(self, watched, event):
         kind = event.type()
@@ -235,14 +237,24 @@ class Viewport(QWidget):
             moved = event.position() - press
             if button == event.button() and abs(moved.x()) + abs(moved.y()) <= 3:  # else a drag moves the camera
                 self._clicked(event)
+        elif kind == QEvent.Type.MouseMove and event.buttons() == Qt.MouseButton.NoButton:
+            self._hover_at(self.face_at(*self._display(event.position())))
+        elif kind == QEvent.Type.Leave:
+            self._hover_at(None)
         return False  # the camera interaction sees every event
 
-    def _clicked(self, event):
+    def _hover_at(self, face):
+        if face != self._hover:
+            self._hover = face
+            self.hovered(face)
+
+    def _display(self, position):
+        """VTK display coordinates (pixels, y up) of widget ``position``."""
         ratio = self.plotter.devicePixelRatioF()
-        position = event.position()
-        x = round(position.x() * ratio)
-        y = round(self.plotter.height() * ratio) - round(position.y() * ratio) - 1
-        face = self.face_at(x, y)
+        return round(position.x() * ratio), round(self.plotter.height() * ratio) - round(position.y() * ratio) - 1
+
+    def _clicked(self, event):
+        face = self.face_at(*self._display(event.position()))
         if event.button() == Qt.MouseButton.LeftButton:
             add = event.modifiers() & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier)
             self.picked(face, bool(add))
@@ -279,7 +291,7 @@ class CadImportEditor:
         self._key = None
         self._placement = None  # of the shown preview, as keyword arguments of the pipeline functions
         self._hidden = set()
-        self._highlight = None  # face ids of the closed shell being asked about
+        self._hover = None  # the face under the mouse
         self._face_items = {}
         self._body_items = {}
         self._faces = None  # face id -> CadFace of the loaded preview, for matching stored face groups
@@ -307,7 +319,7 @@ class CadImportEditor:
         layout.addWidget(self.info)
 
         splitter = QSplitter(Qt.Orientation.Vertical)
-        self.viewport = Viewport(picked=self._viewport_picked, menu=self._show_face_menu)
+        self.viewport = Viewport(picked=self._viewport_picked, menu=self._show_face_menu, hovered=self._hovered)
         splitter.addWidget(self.viewport)
         tree_panel = QWidget()
         tree_layout = QVBoxLayout(tree_panel)
@@ -316,18 +328,22 @@ class CadImportEditor:
         self.hint.setWordWrap(True)
         tree_layout.addWidget(self.hint)
         self.tree = QTreeWidget()
-        self.tree.setColumnCount(2)
-        self.tree.setHeaderLabels(["Body / face", "Size (mm)"])
+        self.tree.setColumnCount(3)
+        self.tree.setHeaderLabels(["Body / face", "Mesh size", "Kind"])
         self.tree.headerItem().setToolTip(1, "Element size override for an air or exterior surface body.")
+        self.tree.headerItem().setToolTip(2, "Whether a closed shell of surfaces is an air body or exterior surface.")
         header = self.tree.header()
         header.setStretchLastSection(False)
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.kind_combos = {}  # closed shell name -> its Kind dropdown
         self.tree.setSelectionMode(QTreeWidget.SelectionMode.ExtendedSelection)
         self.tree.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.tree.setAccessibleName("Bodies and faces")
         self.tree.itemChanged.connect(self._item_changed)
         self.tree.itemDoubleClicked.connect(self._tree_double_clicked)
+        self.tree.itemClicked.connect(self._tree_clicked)
         self.tree.itemSelectionChanged.connect(self._selection_changed)
         tree_layout.addWidget(self.tree)
         buttons = QHBoxLayout()
@@ -378,13 +394,6 @@ class CadImportEditor:
         self.groups_table.itemSelectionChanged.connect(self._group_selected)
         groups_layout.addWidget(self.groups_table)
         layout.addWidget(self.groups_box)
-
-        self.closed_shell_box = QGroupBox("Closed shells")
-        self.closed_shell_box.setToolTip("Closed shells of surfaces can be air volumes or exterior surfaces.")
-        self.closed_shell_form = QFormLayout(self.closed_shell_box)
-        self.closed_shell_box.hide()
-        self.closed_shell_combos = {}
-        layout.addWidget(self.closed_shell_box)
 
         form = QFormLayout()
         self.placement_box = QGroupBox("Placement")
@@ -474,7 +483,7 @@ class CadImportEditor:
 
     def set_step_path(self, path):
         if path != self.source.get("step_path"):
-            # Closed shell choices belong to a file; another file is asked about afresh.
+            # Closed shell choices belong to a file; another file starts from the guesses.
             self.edited({"step_path": path, "closed_shells": {}})
 
     def _browse(self):
@@ -485,18 +494,19 @@ class CadImportEditor:
     # -- preview ------------------------------------------------------------------------------
 
     def _load(self, key):
+        """Read ``key``'s STEP file; the shown preview, tree and controls stay until it arrives, and with the
+        error when reading fails, so the change that caused it can be undone."""
         self._key = key
         self._cancel_preview.set()
         self._cancel_preview = cancel = threading.Event()
-        self._read = None
-        self._placement = self._placement_of(self.source)
-        self._show_preview(None)
         path, closed_shells = key
-        placement = self._placement
+        placement = self._placement_of(self.source)
         # Taken before reading: an edit while the file loads changes it, so the next focus asks.
         self._stamp = _file_stamp(path) if path else None
         if not path:
             self.loading = False
+            self._read = None
+            self._show_preview(None)
             return
         if not Path(path).is_file():
             self.loading = False
@@ -535,21 +545,6 @@ class CadImportEditor:
         if error is not None:
             self.info.setText(error)
             return
-        if isinstance(preview, CadScan):
-            # Closed shells without a choice: ask now, then the answers read the file fully, once.
-            try:
-                preview = place_preview(preview, **self._placement)
-            except ValueError:
-                pass  # shown as read; the full read reports the placement
-            view = _view(preview)
-            stored = self.source.get("closed_shells", {})
-            answers = {
-                shell.name: self._ask_highlighted(view, shell)
-                for shell in preview.closed_shells
-                if shell.name not in stored
-            }
-            self.edited({"closed_shells": stored | answers})
-            return
         self._read = preview
         self._place()
 
@@ -562,17 +557,17 @@ class CadImportEditor:
 
     def _place(self):
         """Show the read preview with the source's placement, moved without reading the STEP file again."""
-        self._placement = self._placement_of(self.source)
         if self._read is None:
             if not self.loading and self._key is not None and self._key[0]:
-                self._load(self._key)  # nothing read yet, e.g. the last read's placement was invalid
+                self._load(self._key)  # nothing read yet, e.g. the last read failed
             return
+        placement = self._placement_of(self.source)
         try:
-            placed = place_preview(self._read, **self._placement)
+            placed = place_preview(self._read, **placement)
         except ValueError as exc:
-            self._show_preview(None)
             self.info.setText(str(exc))
             return
+        self._placement = placement
         self._show_preview(_view(placed) | {"geometry": asdict(placed.geometry)})
 
     def _application_state_changed(self, state):
@@ -599,58 +594,6 @@ class CadImportEditor:
         )
         return answer == QMessageBox.StandardButton.Yes
 
-    def _ask_highlighted(self, view, shell):
-        """Ask about closed ``shell`` of the scan ``view`` with its faces highlighted and framed; the view
-        comes back after."""
-        faces = set(view["face_ids"].tolist())
-        self._highlight = set(shell.face_ids)
-        self.viewport.show_faces(view, faces, highlight=self._highlight)
-        camera = self.viewport.frame(view, self._highlight)
-        try:
-            return self.ask_closed_shell(shell.name)
-        finally:
-            self._highlight = None
-            self.viewport.restore_camera(camera)
-            self.viewport.show_faces(view, faces)
-
-    def highlighted_faces(self):
-        """The faces drawn highlighted (the rest see-through), empty when none are."""
-        return set(self._highlight or ())
-
-    def ask_closed_shell(self, name):
-        """Ask whether closed shell ``name`` is an air volume or an exterior surface."""
-        box = QMessageBox(self.widget)
-        box.setWindowTitle("Closed shell")
-        box.setText(
-            f"'{name}' is a closed shell of surfaces. Is it an air volume (meshed inside, like a solid) "
-            "or an exterior surface?"
-        )
-        air = box.addButton("Air volume", QMessageBox.ButtonRole.AcceptRole)
-        exterior = box.addButton("Exterior surface", QMessageBox.ButtonRole.RejectRole)
-        box.setEscapeButton(exterior)
-        box.exec()
-        return "air" if box.clickedButton() is air else "exterior"
-
-    def _show_closed_shells(self):
-        if self.geometry is None:
-            # Hide only: a role change reloads the preview from inside its combo's signal.
-            self.closed_shell_box.hide()
-            return
-        while self.closed_shell_form.rowCount():
-            self.closed_shell_form.removeRow(0)
-        self.closed_shell_combos = {}
-        shells = self.geometry["closed_shells"]
-        for shell in shells:
-            combo = QComboBox()
-            combo.addItem("Air volume", "air")
-            combo.addItem("Exterior surface", "exterior")
-            combo.setCurrentIndex(combo.findData(shell["role"]))
-            combo.setAccessibleName(shell["name"])
-            combo.currentIndexChanged.connect(lambda _, n=shell["name"], c=combo: self._set_role(n, c.currentData()))
-            self.closed_shell_form.addRow(shell["name"], combo)
-            self.closed_shell_combos[shell["name"]] = combo
-        self.closed_shell_box.setVisible(bool(shells))
-
     def _set_role(self, name, role):
         self.edited({"closed_shells": self.source.get("closed_shells", {}) | {name: role}})
 
@@ -659,13 +602,16 @@ class CadImportEditor:
         self.geometry = None if preview is None else preview["geometry"]
         self._faces = None
         self._hidden.clear()
+        self._hover = None
         self._face_items = {}
         self._body_items = {}
+        self.kind_combos = {}
         self._syncing = True
         self.tree.clear()
         if self.geometry is not None:
             faces = {face["id"]: face for face in self.geometry["faces"]}
             self._faces = {face_id: CadFace(**face) for face_id, face in faces.items()}
+            roles = {shell["name"]: shell["role"] for shell in self.geometry["closed_shells"]}
             for body in self.geometry["bodies"]:
                 item = QTreeWidgetItem([body["name"]])
                 item.setFlags(
@@ -679,6 +625,8 @@ class CadImportEditor:
                 item.setToolTip(1, "Double-click to override the element size (mm); empty uses the target size.")
                 self.tree.addTopLevelItem(item)
                 self._body_items[body["name"]] = item
+                if body["name"] in roles:
+                    self._add_kind_combo(item, body["name"], roles[body["name"]])
                 for face_id in body["face_ids"]:
                     face = faces[face_id]
                     child = QTreeWidgetItem([face["step_name"] or f"Face {face_id}"])
@@ -696,10 +644,21 @@ class CadImportEditor:
             self.info.setText("\n".join(lines))
         self._syncing = False
         self._show_overrides()
-        self._show_closed_shells()
         self._render(reset_camera=True)
         if self.geometry is not None:
             self._drop_interface_faces()
+
+    def _add_kind_combo(self, item, name, role):
+        """The Kind dropdown of closed shell ``name``'s body row; a change re-reads the file."""
+        combo = QComboBox()
+        combo.addItem("Air body", "air")
+        combo.addItem("Exterior surface", "exterior")
+        combo.setCurrentIndex(combo.findData(role))
+        combo.setAccessibleName(f"Kind of {name}")
+        combo.setToolTip("A closed shell of surfaces: guessed until you choose.")
+        combo.currentIndexChanged.connect(lambda _: self._set_role(name, combo.currentData()))
+        self.tree.setItemWidget(item, 2, combo)
+        self.kind_combos[name] = combo
 
     # -- visibility and selection -------------------------------------------------------------
 
@@ -735,23 +694,30 @@ class CadImportEditor:
         )
         self._render_timer.start(0)
 
+    def _hovered(self, face_id):
+        self._hover = face_id
+        self._render_timer.start(0)
+
+    def hovered_face(self):
+        """The face under the mouse in the view, or ``None``."""
+        return self._hover
+
     def _show_face_menu(self, face_id, global_pos):
         if self._faces is None:
             return
+        if face_id not in self.selected_faces():
+            self.select_faces({face_id})  # the menu never acts on faces not pointed at
         self.mark_face(face_id)
+        self._render()
         menu = self.face_menu(face_id)
         try:
             menu.exec(global_pos)
         finally:
             menu.deleteLater()
-            self._highlight = None
-            self._render()
 
     def mark_face(self, face_id):
-        """Highlight ``face_id``, name it and its face group in the status line and point at the group's row."""
+        """Name ``face_id`` and its face group in the status line and point at the group's row."""
         name, _ = self.group_of(face_id)
-        self._highlight = {face_id}
-        self._render()
         self.status.setText(f"Face {face_id} · Group '{name}'")
         row = next(r for r, (n, _, _) in enumerate(self.rows()) if n == name)
         self._syncing = True  # the row only points: the face selection stays
@@ -759,8 +725,8 @@ class CadImportEditor:
         self._syncing = False
 
     def face_menu(self, face_id):
-        """The right-click menu of ``face_id``: an interface face renames its interface; any other face's menu
-        acts on the selection, or on the face when nothing is selected."""
+        """The right-click menu of ``face_id``, acting on the selection when the face is in it, else on the face.
+        On an interface face it renames the interface."""
         menu = QMenu(self.widget)
         if self._faces is None:
             return menu
@@ -768,7 +734,8 @@ class CadImportEditor:
         if interface is not None:
             menu.addAction("Rename interface…", lambda: self._rename_interface_asked(interface))
             return menu
-        faces = self.selected_faces() or {face_id}
+        selected = self.selected_faces()
+        faces = selected if face_id in selected else {face_id}
         for name, _, kind in self.rows():
             if kind == "group":
                 menu.addAction(f'Add to "{name}"', lambda n=name: self.add_to_group(n, faces))
@@ -834,6 +801,11 @@ class CadImportEditor:
         self._syncing = False
         self._render_timer.start(0)
 
+    def _tree_clicked(self, item, column):
+        """A body row selects all its faces."""
+        if item.parent() is None and column == 0:
+            self.select_faces(item.child(i).data(0, FACE_ROLE) for i in range(item.childCount()))
+
     def _tree_double_clicked(self, item, column):
         if column == 1 and item.parent() is None:
             self.tree.editItem(item, 1)
@@ -860,7 +832,7 @@ class CadImportEditor:
             self.visible_faces(),
             self.selected_faces(),
             face_colours,
-            highlight=self._highlight,
+            hovered=self._hover,
             guides=self.geometry["bbox_m"] if self.geometry is not None and self.guides_check.isChecked() else None,
             reset_camera=reset_camera,
         )
@@ -925,7 +897,7 @@ class CadImportEditor:
         return [g["name"] for g in self.source.get("face_groups", []) if self._members(g)[1]]
 
     def rows(self):
-        """``[(name, face ids, kind)]`` as listed: walls, the face groups, then the interface groups."""
+        """``[(name, face ids, kind)]`` as listed: walls, the interface groups, then the face groups."""
         if self._faces is None:
             return []
         groups = self.face_groups()
@@ -934,8 +906,8 @@ class CadImportEditor:
         walls = set(self._faces) - set().union(*groups.values(), *interfaces.values())
         return (
             [(WALLS, walls, "walls")]
-            + [(name, faces, "group") for name, faces in groups.items()]
             + [(name, faces, "interface") for name, faces in interfaces.items()]
+            + [(name, faces, "group") for name, faces in groups.items()]
         )
 
     def group_selection(self, name):
@@ -986,6 +958,9 @@ class CadImportEditor:
         named = sorted(f for f in face_ids if self.group_of(f)[1] == "group")
         if named:
             self.status.setText(f"Faces {', '.join(map(str, named))} stay in the face groups their STEP names form.")
+        interface_of = self._interface_of()
+        if face_ids & interface_of.keys():
+            self.status.setText(_in_interfaces(face_ids & interface_of.keys(), interface_of))
 
     def _regrouped(self, stored, face_ids, name=None):
         """``stored`` groups with ``face_ids`` moved into group ``name`` (``None``: into none)."""
@@ -1136,7 +1111,7 @@ class CadImportEditor:
             self.placement_box,
             self.groups_box,
             *self.spins.values(),
-            self.closed_shell_box,
+            *self.kind_combos.values(),
         )
         for widget in widgets:
             widget.setEnabled(not state.active)

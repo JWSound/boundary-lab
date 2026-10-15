@@ -17,7 +17,6 @@ from blab.cad_import import (
     CadFaceRef,
     CadImportSettings,
     CadPreview,
-    CadScan,
     face_ref,
     inspect_step,
     match_face_ref,
@@ -466,16 +465,42 @@ def test_surface_model_fixture_holds_no_solid(surface_model):
         gmsh.finalize()
 
 
-def test_closed_shell_without_a_choice_stays_exterior(surface_model):
+def test_closed_shell_without_a_choice_is_guessed_air_beside_another_exterior_surface(surface_model):
     geometry = inspect_step(surface_model)
 
     (shell,) = geometry.closed_shells
-    assert (shell.name, shell.role) == ("Closed shell 1", "exterior")
+    assert (shell.name, shell.role) == ("Closed shell 1", "air")
+    assert [(r.mesh_id, r.kind) for r in geometry.regions] == [
+        ("closed_shell_1", "bounded_air"),
+        ("exterior", "unbounded_air"),
+    ]
+    assert inspect_step(surface_model, closed_shells={"Closed shell 1": "air"}) == geometry
+
+
+def test_closed_shell_chosen_as_exterior_is_an_exterior_body_of_its_name(surface_model):
+    geometry = inspect_step(surface_model, closed_shells={"Closed shell 1": "exterior"})
+
+    (shell,) = geometry.closed_shells
+    assert shell.role == "exterior"
     faces = {f.id: f for f in geometry.faces}
     assert sorted(faces[f].surface_type for f in shell.face_ids) == ["Cone", "Plane", "Plane"]
+    assert [(b.name, b.kind, b.face_ids) for b in geometry.bodies if b.name == "Closed shell 1"] == [
+        ("Closed shell 1", "exterior", shell.face_ids)
+    ]
     assert [(r.mesh_id, r.kind) for r in geometry.regions] == [("exterior", "unbounded_air")]
     assert geometry.interfaces == ()
-    assert inspect_step(surface_model, closed_shells={"Closed shell 1": "exterior"}) == geometry
+
+
+def test_with_only_closed_shells_the_largest_is_guessed_exterior_and_the_others_air(tmp_path):
+    step = waveguide(tmp_path / "wg.step", surface_model=True, covered=True)
+
+    geometry = inspect_step(step)
+
+    assert [(s.name, s.role) for s in geometry.closed_shells] == [
+        ("Closed shell 1", "air"),  # the throat
+        ("Closed shell 2", "exterior"),  # the 200 mm baffle box
+    ]
+    assert {b.name: b.kind for b in geometry.bodies} == {"Closed shell 1": "air", "Closed shell 2": "exterior"}
 
 
 def test_closed_shell_chosen_as_air_becomes_a_bounded_region_with_an_interface(surface_model, tmp_path):
@@ -587,17 +612,30 @@ def test_port_mouth_is_a_node_for_node_interface_on_a_closed_outward_exterior(ve
     assert vented.geometry.warnings == ()
 
 
-def test_closed_shell_without_a_choice_opens_as_a_quick_scan_only(surface_model):
-    scan = open_step(surface_model)
+def test_opening_a_file_with_a_closed_shell_reads_it_fully_with_the_guessed_kind(surface_model):
+    preview = open_step(surface_model)
 
-    assert isinstance(scan, CadScan)
-    (shell,) = scan.closed_shells
-    assert (shell.name, shell.role) == ("Closed shell 1", "exterior")
-    assert set(shell.face_ids) < set(scan.face_ids.tolist())  # the other faces are shown around it
-    assert scan.triangles.max() < len(scan.points)
-    preview = open_step(surface_model, closed_shells={"Closed shell 1": "air"})
     assert isinstance(preview, CadPreview)
-    assert preview.geometry == inspect_step(surface_model, closed_shells={"Closed shell 1": "air"})
+    assert preview.geometry == inspect_step(surface_model)
+    assert preview.triangles.max() < len(preview.points)
+
+
+def test_placing_a_preview_re_detects_the_interfaces(tmp_path):
+    # A half model written 30 mm off X=0: only moved back onto X=0 does the half port mouth open into the cabinet.
+    step = vented_box(tmp_path / "box.step", symmetry="x", shift_mm=(30, 0, 0))
+    placement = dict(translation_m=(-0.03, 0.0, 0.0))
+    preview = open_step(step)
+
+    placed = place_preview(preview, **placement)
+    read = open_step(step, **placement)
+
+    assert interfaces(placed.geometry) == interfaces(read.geometry) == [("Interface 1 Port", "chamber", 1)]
+    assert interfaces(preview.geometry) != interfaces(read.geometry)
+    assert interfaces(place_preview(placed).geometry) == interfaces(preview.geometry)
+
+
+def interfaces(geometry):
+    return [(i.name, i.mesh_id, len(i.face_ids)) for i in geometry.interfaces]
 
 
 # Placements that keep the cabinet front, which the port mouth opens in, off X=0 and Y=0.
@@ -665,12 +703,14 @@ def test_placement_moves_the_symmetry_planes_the_open_edges_suggest(tmp_path):
 
 
 def test_previews_survive_their_json_form(surface_model):
-    for preview in (open_step(surface_model), open_step(surface_model, closed_shells={"Closed shell 1": "air"})):
-        copy = preview_from_json(json.loads(json.dumps(preview_to_json(preview))))
+    preview = open_step(surface_model)
+    copy = preview_from_json(json.loads(json.dumps(preview_to_json(preview))))
 
-        assert type(copy) is type(preview)
-        for name, value in vars(preview).items():
-            if isinstance(value, np.ndarray):
-                assert np.array_equal(getattr(copy, name), value)
-            else:
-                assert getattr(copy, name) == value
+    for name, value in vars(preview).items():
+        if isinstance(value, np.ndarray):
+            assert np.array_equal(getattr(copy, name), value)
+        elif name != "openings":
+            assert getattr(copy, name) == value
+    # What finding the openings needs survives too: placing the copy finds the same.
+    moved = dict(rotation_deg=(0.0, 0.0, 90.0))
+    assert place_preview(copy, **moved).geometry == place_preview(preview, **moved).geometry
