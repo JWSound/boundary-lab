@@ -1228,6 +1228,23 @@ def test_a_read_dropping_a_size_and_holding_an_interface_face_shows_both_notes(c
     assert "stays in interface" in editor.status.text()
 
 
+def test_an_invalid_stored_face_size_stays_shown_beside_the_interface_note(cad_editor, qapp, tmp_path):
+    editor, host = cad_editor
+    group_the_future_interface_face(editor, qapp, tmp_path)
+    face = {"step_name": None, "centre": (0.0, 0.0, 0.0), "area": 1.0, "normal": (0.0, 0.0, 1.0)}
+    entry = {"face": face | {"surface_type": "Plane"}, "size_m": -1}
+    snapshot = host.update_source(
+        host.snapshot().source | {"face_sizes": [entry]}, expected_revision=host.snapshot().revision
+    )
+    editor.apply_source(snapshot.source, snapshot.revision)
+
+    editor.kind_combos["Closed shell 1"].setCurrentIndex(0)  # air body: a read with an interface note
+    wait(qapp, lambda: not editor.loading)
+
+    assert "Invalid face size: Size override edge length must be a positive number." in editor.status.text()
+    assert "stays in interface" in editor.status.text()
+
+
 def test_picking_and_grouping_keep_the_camera(cad_editor, faces_under_mouse, qapp):
     editor, _ = cad_editor
     faces, _ = faces_under_mouse

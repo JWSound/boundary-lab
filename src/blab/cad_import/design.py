@@ -109,7 +109,7 @@ class CadFaceGroups:
         stored faces not found, unknown face ids and faces in two stored groups."""
         self._check_interface_names(self.interface_names)
         for name in self.found:
-            if not name or name in self._reserved:
+            if not name or name == WALLS:  # interface names: taken, checked above
                 raise ValueError(f"Face group name '{name}' is reserved.")
         # A group missing any stored face would silently lose it to walls: the user reviews it.
         if self.needs_review:

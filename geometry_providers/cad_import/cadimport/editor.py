@@ -716,7 +716,7 @@ class CadImportEditor:
         self._show_overrides()
         self._render(reset_camera=reset_camera)
         if self.geometry is not None:
-            notes = [self._drop_lost_sizes()]
+            notes = [self._size_error, self._drop_lost_sizes()]
             self._migrate_sizes()
             interface_note = self._groups.interface_note(self._groups.held_by_interfaces)
             if interface_note != self._interface_note:  # once per change, not on every read
