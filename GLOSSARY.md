@@ -40,7 +40,7 @@ A surface body in imported CAD geometry representing the outside of a cabinet or
 _Avoid_: Shell, skin, BEM body
 
 **Closed shell**:
-Free faces in imported CAD geometry that close up among themselves without being a solid; the user chooses whether it is an air body or exterior surface.
+Free faces in imported CAD geometry that close up among themselves without being a solid; it is guessed to be an air body or exterior surface, and the user can change that.
 _Avoid_: Surface solid, watertight body
 
 **Face group**:
@@ -58,3 +58,11 @@ _Avoid_: Forward, depth axis
 **Target element size**:
 The default mesh edge length, sound speed ÷ maximum frequency ÷ elements per wavelength.
 _Avoid_: Mesh resolution, density
+
+**Mesh fineness**:
+The choice of elements per wavelength at the maximum frequency, as a named level (Coarse, Medium, Fine) or a custom number.
+_Avoid_: Mesh density, mesh quality, resolution
+
+**Size override**:
+A mesh fineness or edge length set on a body, a face group or single faces that replaces the target element size there; the most specific one wins (face, then face group, then body).
+_Avoid_: Local refinement, size field
