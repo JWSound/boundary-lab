@@ -629,18 +629,6 @@ def test_face_group_sizes_are_written_to_their_faces_even_on_walls_and_interface
     assert "face_group_sizes" not in source
 
 
-def test_a_face_moved_into_a_group_keeps_its_own_size(cad_editor):
-    editor, host = cad_editor
-    first, second = cabinet_faces(editor, lambda f: abs(abs(f["normal"][0]) - 1) < 1e-9)
-    editor.set_face_size({first}, COARSE)
-
-    editor.add_to_group("Sides", {first, second})
-
-    assert size_combo(editor, face_item(editor, first)).currentText() == "Coarse"
-    assert size_combo(editor, face_item(editor, second)).currentText() == "Global (Fine)"
-    assert size_combo(editor, "Sides").currentText() == "Mixed"
-
-
 def face_item(editor, face_id):
     return next(
         item

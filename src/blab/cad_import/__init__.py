@@ -18,7 +18,6 @@ from .pipeline import (
     CadMesh,
     CadPreview,
     CadRegion,
-    CadSizeOverride,
     face_ref,
     inspect_step,
     match_face_ref,
@@ -30,6 +29,7 @@ from .pipeline import (
     result_from_json,
     result_to_json,
 )
+from .sizing import LEVELS, MIXED, CadSizeOverride, CadSizes, CadSizing
 
 __all__ = [
     "WALLS",
@@ -47,6 +47,10 @@ __all__ = [
     "CadPreview",
     "CadRegion",
     "CadSizeOverride",
+    "CadSizes",
+    "CadSizing",
+    "LEVELS",
+    "MIXED",
     "face_ref",
     "inspect_step",
     "match_face_ref",

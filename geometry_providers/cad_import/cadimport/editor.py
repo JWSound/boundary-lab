@@ -40,13 +40,17 @@ from PySide6.QtWidgets import (
 )
 
 from blab.cad_import import (
+    LEVELS,
+    MIXED,
     WALLS,
     CadFaceGroups,
-    CadFaceRef,
+    CadSizeOverride,
+    CadSizes,
+    CadSizing,
     face_ref,
-    match_face_ref,
     place_preview,
 )
+from blab.cad_import.sizing import size_override
 from blab.generators.configuration import DEFAULT_SOUND_SPEED_M_PER_S
 from blab.ui.file_dialogs import FileDialogService
 
@@ -56,11 +60,8 @@ from .parameters import size_overrides
 SYMMETRY_LABELS = {"off": "Off", "x": "X", "xy": "XY"}
 FACE_ROLE = Qt.ItemDataRole.UserRole
 ROW_ROLE = Qt.ItemDataRole.UserRole + 1  # ("body" | "volume" | "faces", body name) of the rows above the faces
-LEVELS = {"Coarse": 2, "Medium": 4, "Fine": 6}  # mesh fineness: elements per wavelength at the maximum frequency
-LEVEL_NAMES = {n: name for name, n in LEVELS.items()}
 CUSTOM = "custom"  # the Mesh size choice that asks an edge length
 SIZE_CHOICES = (*LEVELS.items(), ("Custom…", CUSTOM))  # after Global, which clears
-MIXED = "mixed"  # the shown size of a row whose members differ
 LEGACY_SIZES = ("body_sizes", "face_group_sizes", "body_sizes_m", "face_group_sizes_m")  # converted on load
 SIZING = (
     ("curvature_elements_per_circle", "Curvature elements per circle", 3.0, 100.0, 0, ""),
@@ -302,7 +303,7 @@ class CadImportEditor:
         self._body_items = {}
         self._faces = None  # face id -> CadFace of the loaded preview, for matching stored face groups
         self._geometry = None  # the CadGeometry shown
-        self._groups = None  # its CadFaceGroups under the source
+        self._groups = self._sizes = None  # its CadFaceGroups and CadSizes under the source
         self._syncing = False
         self._fmax_hz = None
         self._sound_speed = DEFAULT_SOUND_SPEED_M_PER_S  # the project's, once its context arrives
@@ -490,7 +491,7 @@ class CadImportEditor:
 
     def apply_source(self, source, revision):
         self.source, self.revision = dict(source), revision
-        self._resolve_groups()
+        self._resolve()
         self.step_path.setText(str(source.get("step_path", "")))
         for key, spin in self.spins.items():
             blocked = spin.blockSignals(True)
@@ -514,7 +515,7 @@ class CadImportEditor:
     def _show_fineness(self):
         """The level of the source's elements per wavelength, else (or while chosen) Custom with its number."""
         n = float(self.source["elements_per_wavelength"])
-        custom = self._custom_fineness or n not in LEVEL_NAMES
+        custom = self._custom_fineness or n not in LEVELS.values()
         self.fineness.setCurrentIndex(self.fineness.count() - 1 if custom else self.fineness.findData(n))
         self.spins["elements_per_wavelength"].setHidden(not custom)
 
@@ -654,7 +655,7 @@ class CadImportEditor:
         self._preview = preview
         self.geometry = None if preview is None else preview["geometry"]
         self._faces = None if preview is None else {face.id: face for face in self._geometry.faces}
-        self._resolve_groups()
+        self._resolve()
         self._hidden.clear()
         self._hover = None
         self._face_items = {}
@@ -856,7 +857,7 @@ class CadImportEditor:
     def _add_size_menu(self, menu, apply):
         """A Mesh size submenu of ``menu`` that ``apply``-s the chosen override (``None``: Global)."""
         sizes = menu.addMenu("Mesh size")
-        for label, choice in ((self._global_text(), None), *SIZE_CHOICES):
+        for label, choice in ((self._sizing().text(None), None), *SIZE_CHOICES):
             sizes.addAction(label, lambda c=choice: self._size_chosen(c, apply))
 
     def _rename_interface_asked(self, name):
@@ -972,16 +973,19 @@ class CadImportEditor:
     def _ref(self, face_id):
         return asdict(face_ref(self._faces[face_id], **self._placement))
 
-    def _resolve_groups(self):
-        """Resolve the source's face groups on the shown geometry, once per change of either."""
+    def _resolve(self):
+        """Resolve the source's face groups and sizes on the shown geometry, once per change of either."""
         if self._geometry is None:
-            self._groups = None
+            self._groups = self._sizes = None
             return
         self._groups = CadFaceGroups(
             self._geometry,
             {g["name"]: g["faces"] for g in self.source.get("face_groups", [])},
             interface_names=self.source.get("interface_names", {}),
             **self._placement,
+        )
+        self._sizes = CadSizes(
+            self._geometry, self.source.get("face_sizes", []), self.source.get("volume_sizes", {}), **self._placement
         )
 
     def _interface_of(self):
@@ -1063,54 +1067,23 @@ class CadImportEditor:
         self._set_sizes(size, next(faces for n, faces, _ in self.rows() if n == name))
 
     def _set_sizes(self, size, face_ids=(), volumes=()):
-        if self._faces is None:
+        """Write ``size`` (an override or its stored fields; ``None``: Global) to ``face_ids`` and ``volumes``."""
+        if self._sizes is None:
             return
-        face_ids = set(face_ids)
-        entries = self.source.get("face_sizes", [])
-        kept = [e for e, f in zip(entries, self._face_size_ids(entries), strict=True) if f not in face_ids]
-        added = [] if size is None else [{"face": self._ref(f)} | size for f in sorted(face_ids)]
-        sizes = self.source.get("volume_sizes", {})
-        for name in volumes:
-            sizes = _with_size(sizes, name, size)
-        self.edited({"face_sizes": kept + added, "volume_sizes": sizes})
-
-    def _sizes(self):
-        """``({face id: size}, {air body: size})`` stored for the loaded geometry."""
-        entries = self.source.get("face_sizes", [])
-        faces = {f: _size_of(e) for e, f in zip(entries, self._face_size_ids(entries), strict=True) if f is not None}
-        return faces, dict(self.source.get("volume_sizes", {}))
-
-    def _face_size_ids(self, entries):
-        """The face each stored face size stands for in the loaded geometry, or ``None``."""
-        bbox = self.geometry["bbox_m"]
-        return [match_face_ref(CadFaceRef(**e["face"]), self._faces.values(), bbox, **self._placement) for e in entries]
+        try:
+            size = None if size is None else size_override(size)
+        except ValueError as exc:
+            self.status.setText(str(exc))
+            return
+        self.edited(self._sizes.written(size, face_ids, volumes))
 
     def _drop_lost_sizes(self):
         """Drop the face sizes whose faces the loaded STEP file no longer has, and volume sizes of bodies that are no
         air bodies, saying so."""
-        entries = self.source.get("face_sizes", [])
-        found = self._face_size_ids(entries)
-        lost = found.count(None)
-        air = self._air_bodies()
-        volumes = self.source.get("volume_sizes", {})
-        gone = sorted(set(volumes) - air)
-        if not lost and not gone:
-            return
-        self.edited(
-            {
-                "face_sizes": [e for e, f in zip(entries, found, strict=True) if f is not None],
-                "volume_sizes": {name: size for name, size in volumes.items() if name in air},
-            }
-        )
-        notes = []
-        if lost:
-            notes.append(
-                f"{lost} face size override{'' if lost == 1 else 's'} dropped: "
-                "{} face{} no longer in the STEP file.".format(*(("its", " is") if lost == 1 else ("their", "s are")))
-            )
-        if gone:
-            notes.append(f"Volume size of {', '.join(gone)} dropped: no air body.")
-        self.status.setText(" ".join(notes))
+        changes, note = self._sizes.dropped()
+        if changes:
+            self.edited(changes)
+            self.status.setText(note)
 
     def _migrate_sizes(self):
         """Turn an older design's body and face group sizes into the face and volume sizes meshing gave them (face,
@@ -1119,23 +1092,18 @@ class CadImportEditor:
         if self._faces is None or self._fmax_hz is None or not any(self.source.get(k) for k in LEGACY_SIZES):
             return False
         bodies, groups, entries = size_overrides(self.source)
-        own, volumes = self._sizes()
-        group_of = {f: name for name, faces, _ in self.rows() for f in faces}
-        target = self._edge_m(self._fineness())
+        bodies = {name: size_override(size) for name, size in bodies.items()}
+        groups = {name: size_override(size) for name, size in groups.items()}
+        sizing = self._sizing()
         added = []
         for face_id, face in self._faces.items():
-            if face_id in own:
+            if face_id in self._sizes.faces:
                 continue
-            size = groups.get(group_of[face_id])
-            if size is None:
-                sized = [bodies[b] for b in face.bodies if b in bodies]
-                finest = min(sized, key=self._edge_m, default=None)
-                # A body without a size meshes at the target size.
-                if finest is not None and (len(sized) == len(face.bodies) or self._edge_m(finest) < target):
-                    size = finest
+            size = sizing.winning(None, groups.get(self.group_of(face_id)[0]), [bodies.get(b) for b in face.bodies])
             if size is not None:
-                added.append({"face": self._ref(face_id)} | size)
-        volumes = {name: size for name, size in bodies.items() if name in self._air_bodies()} | volumes
+                added.append({"face": self._ref(face_id)} | size.stored())
+        volumes = {name: size.stored() for name, size in bodies.items() if name in self._air_bodies()}
+        volumes |= {name: size.stored() for name, size in self._sizes.volumes.items()}
         self.edited({"face_sizes": entries + added, "volume_sizes": volumes}, drop=LEGACY_SIZES)
         self.status.setText("Body and face group sizes are now set on their faces and volumes.")
         return True
@@ -1152,9 +1120,9 @@ class CadImportEditor:
             size_mm = self.ask_size_mm()
             if size_mm is None:
                 return False
-            apply({"size_m": size_mm / 1000})
+            apply(CadSizeOverride(size_m=size_mm / 1000))
         else:
-            apply(None if choice is None else {"elements_per_wavelength": choice})
+            apply(None if choice is None else CadSizeOverride(elements_per_wavelength=choice))
         return True
 
     def _size_combo(self, face_ids, volumes):
@@ -1186,44 +1154,27 @@ class CadImportEditor:
         fixed = 1 + len(SIZE_CHOICES)
         while combo.count() > fixed:
             combo.removeItem(fixed)
-        combo.setItemText(0, self._global_text())
-        n = None if size in (None, MIXED) else size.get("elements_per_wavelength")
+        sizing = self._sizing()
+        combo.setItemText(0, sizing.text(None))
+        levels = list(LEVELS.values())
         if size is None:
             index = 0
-        elif n in LEVEL_NAMES:
-            index = 1 + list(LEVELS.values()).index(n)
+        elif size != MIXED and size.elements_per_wavelength in levels:
+            index = 1 + levels.index(size.elements_per_wavelength)
         else:
-            combo.addItem("Mixed" if size == MIXED else self._size_text(size))
+            combo.addItem(sizing.text(size))
             combo.model().item(fixed).setEnabled(False)
             index = fixed
         combo.setCurrentIndex(index)
         if size is None:
-            combo.setToolTip(f"The mesh fineness: {self._size_text(self._fineness(), edge=True)}")
+            combo.setToolTip(f"The mesh fineness: {sizing.text(sizing.fineness, edge=True)}")
         else:
-            combo.setToolTip("Its members have different sizes." if size == MIXED else self._size_text(size, edge=True))
+            combo.setToolTip("Its members have different sizes." if size == MIXED else sizing.text(size, edge=True))
         combo.blockSignals(blocked)
 
-    def _fineness(self):
-        return {"elements_per_wavelength": float(self.source["elements_per_wavelength"])}
-
-    def _global_text(self):
-        return f"Global ({self._size_text(self._fineness())})"
-
-    def _size_text(self, size, *, edge=False):
-        """The text of ``size``; ``edge`` adds a level's edge length when it is known."""
-        if "size_m" in size:
-            return f"{size['size_m'] * 1000:.3g} mm"
-        n = size["elements_per_wavelength"]
-        text = LEVEL_NAMES.get(n, f"{n:g} per wavelength")
-        if edge and self._fmax_hz is not None:
-            text += f" ({self._sound_speed / self._fmax_hz / n * 1000:.3g} mm)"
-        return text
-
-    def _edge_m(self, size):
-        """The edge length of ``size`` (levels at the project's maximum frequency, else 1 kHz)."""
-        if "size_m" in size:
-            return size["size_m"]
-        return self._sound_speed / (self._fmax_hz or 1000.0) / size["elements_per_wavelength"]
+    def _sizing(self):
+        """The design's sizing at the project's maximum frequency and sound speed (once they are known)."""
+        return CadSizing(self._fmax_hz, self._sound_speed, float(self.source["elements_per_wavelength"]))
 
     def _group_selected(self):
         """A clicked row selects its faces; a single row other than an interface becomes the current group."""
@@ -1235,7 +1186,7 @@ class CadImportEditor:
         if len(selected) == 1 and rows[selected[0]][2] != "interface":
             self.set_current_group(rows[selected[0]][0])
 
-    def _show_groups(self, face_sizes):
+    def _show_groups(self):
         self._syncing = True
         stored = {g["name"] for g in self.source.get("face_groups", [])}
         rows = self.rows()
@@ -1258,7 +1209,7 @@ class CadImportEditor:
             for column, cell in enumerate(cells):
                 self.groups_table.setItem(row, column, cell)
             combo = self._size_combo(faces, ())
-            self._show_size(combo, _shared([face_sizes.get(f) for f in faces]))
+            self._show_size(combo, MIXED if self._sizes is None else self._sizes.shared(faces))
             self.groups_table.setCellWidget(row, 2, combo)
         self._syncing = False
         self._group_name_changed(self.group_name.text())
@@ -1269,10 +1220,9 @@ class CadImportEditor:
         group's the one its members share or Mixed. An older design's sizes are converted first."""
         if self._migrate_sizes():
             return
-        faces, volumes = self._sizes() if self._faces is not None else ({}, {})
-        for combo, row_faces, row_volumes in self._size_rows:
-            self._show_size(combo, _shared([faces.get(f) for f in row_faces] + [volumes.get(v) for v in row_volumes]))
-        self._show_groups(faces)
+        for combo, row_faces, row_volumes in self._size_rows:  # rows exist only with a geometry, and so sizes
+            self._show_size(combo, self._sizes.shared(row_faces, row_volumes))
+        self._show_groups()
 
     # -- sizing and meshing -------------------------------------------------------------------
 
@@ -1293,10 +1243,10 @@ class CadImportEditor:
         if self._fmax_hz is None:
             self.target_label.setText("Target element size: waiting for the project frequency range.")
             return
-        n = float(self.source["elements_per_wavelength"])
-        size = self._sound_speed / self._fmax_hz / n
+        sizing = self._sizing()
         self.target_label.setText(
-            f"Target element size {size * 1000:.1f} mm = c / {self._fmax_hz:g} Hz / {n:g} "
+            f"Target element size {sizing.target_size_m * 1000:.1f} mm = c / {self._fmax_hz:g} Hz / "
+            f"{sizing.elements_per_wavelength:g} "
             f"(c = {self._sound_speed:g} m/s)"
         )
         for index, level in enumerate(LEVELS.values()):
@@ -1345,21 +1295,6 @@ def _file_stamp(path):
     except (OSError, ValueError):
         return None
     return stat.st_mtime_ns, stat.st_size
-
-
-def _with_size(sizes, name, size):
-    sizes = {k: v for k, v in sizes.items() if k != name}
-    return sizes if size is None else sizes | {name: size}
-
-
-def _size_of(entry):
-    """The size of a stored face size entry."""
-    return {k: v for k, v in entry.items() if k != "face"}
-
-
-def _shared(sizes):
-    """The size all of ``sizes`` are, else :data:`MIXED`; none is Global."""
-    return sizes[0] if sizes and all(size == sizes[0] for size in sizes) else (MIXED if sizes else None)
 
 
 def _exec(menu, global_pos):

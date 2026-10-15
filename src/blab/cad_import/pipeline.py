@@ -21,6 +21,8 @@ from pathlib import Path
 import meshio
 import numpy as np
 
+from .sizing import CadSizeOverride, CadSizing, size_override
+
 WALLS = "walls"
 EXTERIOR_MESH_ID = "exterior"
 SYMMETRY_LABELS = {"off": "Off", "x": "X", "xy": "XY"}
@@ -45,25 +47,6 @@ class CadFaceRef:
     area: float
     normal: tuple[float, float, float]
     surface_type: str
-
-
-@dataclass(frozen=True)
-class CadSizeOverride:
-    """A size override: elements per wavelength at the maximum frequency (a mesh fineness), or an edge length."""
-
-    elements_per_wavelength: float | None = None
-    size_m: float | None = None
-
-    def __post_init__(self) -> None:
-        if (self.elements_per_wavelength is None) == (self.size_m is None):
-            raise ValueError("Size override must be elements per wavelength or an edge length.")
-        for label, value in (("elements per wavelength", self.elements_per_wavelength), ("edge length", self.size_m)):
-            if value is not None and not (isinstance(value, int | float) and math.isfinite(value) and value > 0):
-                raise ValueError(f"Size override {label} must be a positive number.")
-
-
-def _size_override(size) -> CadSizeOverride:
-    return size if isinstance(size, CadSizeOverride) else CadSizeOverride(**size)
 
 
 @dataclass(frozen=True)
@@ -124,9 +107,9 @@ class CadImportSettings:
         }
         object.__setattr__(self, "face_groups", groups)
         for name in ("body_sizes", "face_group_sizes", "volume_sizes"):
-            object.__setattr__(self, name, {k: _size_override(v) for k, v in getattr(self, name).items()})
+            object.__setattr__(self, name, {k: size_override(v) for k, v in getattr(self, name).items()})
         faces = tuple(
-            (CadFaceRef(**face) if isinstance(face, Mapping) else face, _size_override(size))
+            (CadFaceRef(**face) if isinstance(face, Mapping) else face, size_override(size))
             for face, size in self.face_sizes
         )
         object.__setattr__(self, "face_sizes", faces)
@@ -134,15 +117,13 @@ class CadImportSettings:
             raise ValueError(f"Unknown symmetry '{self.symmetry}'.")
 
     @property
+    def sizing(self) -> CadSizing:
+        return CadSizing(self.fmax_hz, self.sound_speed_m_per_s, self.elements_per_wavelength)
+
+    @property
     def target_size_m(self) -> float:
         """Sound speed / maximum frequency / elements per wavelength."""
-        return self.sound_speed_m_per_s / self.fmax_hz / self.elements_per_wavelength
-
-    def edge_m(self, size: CadSizeOverride) -> float:
-        """The edge length a size override asks for."""
-        if size.size_m is not None:
-            return size.size_m
-        return self.sound_speed_m_per_s / self.fmax_hz / size.elements_per_wavelength
+        return self.sizing.target_size_m
 
     @property
     def placement(self) -> dict:
@@ -1026,36 +1007,39 @@ def _step_face_vertices(path) -> list[tuple[str, np.ndarray]]:
 def _apply_sizes(gmsh, model: _Model, settings: CadImportSettings, groups) -> None:
     """Target size everywhere, overrides per body / face group / face (the most specific wins) and air-body
     interiors, graded by the growth rate."""
-    target = settings.target_size_m
+    sizing = settings.sizing
+    target = sizing.target_size_m
     geometry = model.geometry
     unknown = sorted(set(settings.body_sizes) - {b.name for b in geometry.bodies})
     if unknown:
         raise ValueError(f"Size override for unknown body '{unknown[0]}'.")
-    unknown = sorted(set(settings.face_group_sizes) - {name for g in groups.values() for name in g})
+    group_of = {face: name for mesh_groups in groups.values() for name, faces in mesh_groups.items() for face in faces}
+    unknown = sorted(set(settings.face_group_sizes) - set(group_of.values()))
     if unknown:
         raise ValueError(f"Size override for unknown face group '{unknown[0]}'.")
-    body_size = {b.name: target for b in geometry.bodies} | {
-        name: settings.edge_m(size) for name, size in settings.body_sizes.items()
-    }
-    face_size = {f: min(body_size[b] for b in bodies) for f, bodies in model.face_bodies.items()}
-    for mesh_groups in groups.values():
-        for name, faces in mesh_groups.items():
-            if name in settings.face_group_sizes:
-                face_size.update(dict.fromkeys(faces, settings.edge_m(settings.face_group_sizes[name])))
+    own = {}
     for face, size in settings.face_sizes:
         if isinstance(face, CadFaceRef):
             face = match_face_ref(face, geometry.faces, geometry.bbox_m, **settings.placement)
             if face is None:
                 continue  # gone after a re-import: the editor notes it, generation goes on
-        elif face not in face_size:
+        elif face not in model.face_bodies:
             raise ValueError(f"Size override for unknown face {face}.")
-        face_size[face] = settings.edge_m(size)
+        own[face] = size
+    face_size = {
+        f: sizing.edge_m(
+            sizing.winning(
+                own.get(f),
+                settings.face_group_sizes.get(group_of[f]),
+                [settings.body_sizes.get(b) for b in bodies],
+            )
+        )
+        for f, bodies in model.face_bodies.items()
+    }
     unknown = sorted(set(settings.volume_sizes) - set(model.volumes))
     if unknown:
         raise ValueError(f"Volume size for '{unknown[0]}', which is no air body.")
-    volume_size = {b: body_size[b] for b in model.volumes} | {
-        name: settings.edge_m(size) for name, size in settings.volume_sizes.items()
-    }
+    volume_size = {b: sizing.edge_m(settings.volume_sizes.get(b) or settings.body_sizes.get(b)) for b in model.volumes}
     sizes = [*face_size.values(), *volume_size.values()] or [target]
     smallest, largest = min(sizes), max(sizes)
     option = gmsh.option.setNumber
