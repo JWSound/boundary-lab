@@ -14,10 +14,12 @@ import pytest
 from blab.cad_import import (
     CadClosedShell,
     CadFace,
+    CadFaceGroups,
     CadFaceRef,
     CadImportSettings,
     CadPreview,
     CadSizeOverride,
+    CadSizes,
     face_ref,
     inspect_step,
     match_face_ref,
@@ -30,6 +32,7 @@ from blab.cad_import import (
     result_to_json,
 )
 from blab.cad_import import cli as cad_cli
+from blab.cad_import.sizing import legacy_sizes, migrated, read_face_sizes
 from blab.interface_conform import validate_conforming_interfaces
 from cad_fixtures import named_sides, strip_names, two_chambers, vented_box, waveguide
 
@@ -235,6 +238,48 @@ def test_volume_size_coarsens_the_interior_only(vented, tmp_path):
     # Its faces keep the target size.
     walls = np.median(chamber_edges(vented, "triangle", "walls"))
     assert np.median(chamber_edges(result, "triangle", "walls")) == pytest.approx(walls, rel=0.1)
+
+
+def face_edges_and_tets(result):
+    """``({(mesh id, face id): sorted triangle edge lengths}, {mesh id: tet count})`` of a meshing result."""
+    faces, tets = {}, {}
+    for mesh in result.meshes:
+        data = meshio.read(mesh.path)
+        triangles = data.cells_dict["triangle"]
+        tags = data.cell_data_dict["gmsh:geometrical"]["triangle"]
+        for face in np.unique(tags):
+            corners = data.points[triangles[tags == face]]
+            faces[mesh.id, int(face)] = np.sort(np.linalg.norm(corners - np.roll(corners, 1, axis=1), axis=2).ravel())
+        tets[mesh.id] = len(data.cells_dict.get("tetra", ()))
+    return faces, tets
+
+
+def test_a_migrated_legacy_design_meshes_like_the_legacy_design(tmp_path):
+    step = vented_box(tmp_path / "box.step")
+    geometry = inspect_step(step)
+    legacy = {
+        "body_sizes_m": {"Chamber": 0.04},  # coarser: its faces shared with no other body only
+        "face_group_sizes_m": {"Driver": 0.008},
+        "body_sizes": {"Port": {"size_m": 0.03}, "Cabinet": {"size_m": 0.01}},
+        "face_group_sizes": {"walls": {"elements_per_wavelength": 2}},
+    }
+    new = migrated(legacy, CadFaceGroups(geometry, {}), CadSizes(geometry, [], {}), SETTINGS.sizing)
+    body_sizes, face_group_sizes = legacy_sizes(legacy)
+
+    before = mesh_step(
+        step, replace(SETTINGS, body_sizes=body_sizes, face_group_sizes=face_group_sizes), tmp_path / "legacy"
+    )
+    after = mesh_step(
+        step,
+        replace(SETTINGS, face_sizes=tuple(read_face_sizes(new["face_sizes"])), volume_sizes=new["volume_sizes"]),
+        tmp_path / "migrated",
+    )
+
+    (faces_before, tets_before), (faces_after, tets_after) = face_edges_and_tets(before), face_edges_and_tets(after)
+    assert faces_after.keys() == faces_before.keys()
+    for face, edges in faces_before.items():
+        assert faces_after[face].shape == edges.shape and np.allclose(faces_after[face], edges), face
+    assert tets_after == tets_before
 
 
 def face_edge_median(mesh, face_id):
