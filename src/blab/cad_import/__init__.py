@@ -4,13 +4,11 @@ Qt-free. Shared by the ``blab cad-import`` command and the CAD import geometry
 provider, so both produce identical meshes for identical inputs.
 """
 
-from .design import CadFaceGroups, FaceGroupRow
+from .design import WALLS, CadFaceGroups, FaceGroupRow
+from .face_refs import CadFace, CadFaceRef, face_ref, match_face_ref
 from .pipeline import (
-    WALLS,
     CadBody,
     CadClosedShell,
-    CadFace,
-    CadFaceRef,
     CadGeometry,
     CadImportResult,
     CadImportSettings,
@@ -18,9 +16,7 @@ from .pipeline import (
     CadMesh,
     CadPreview,
     CadRegion,
-    face_ref,
     inspect_step,
-    match_face_ref,
     mesh_step,
     open_step,
     place_preview,

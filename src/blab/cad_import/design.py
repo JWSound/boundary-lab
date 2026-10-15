@@ -7,9 +7,14 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
-from .pipeline import WALLS, ZERO, CadFaceRef, CadGeometry, face_ref, match_face_ref
+from .face_refs import ZERO, CadFaceRef, face_ref, match_face_ref
+
+if TYPE_CHECKING:
+    from .pipeline import CadGeometry
+
+WALLS = "walls"
 
 
 class FaceGroupRow(NamedTuple):

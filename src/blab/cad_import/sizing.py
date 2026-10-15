@@ -11,6 +11,8 @@ import math
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 
+from .face_refs import CadFaceRef, face_ref, match_face_ref
+
 LEVELS = {"Coarse": 2, "Medium": 4, "Fine": 6}  # mesh fineness: elements per wavelength at the maximum frequency
 LEVEL_NAMES = {n: name for name, n in LEVELS.items()}
 MIXED = "mixed"  # the shown size of several faces or volumes whose sizes differ
@@ -117,8 +119,6 @@ class CadSizes:
         rotation_deg=(0.0, 0.0, 0.0),
         translation_m=(0.0, 0.0, 0.0),
     ) -> None:
-        from .pipeline import CadFaceRef, match_face_ref  # the pipeline sizes through this module
-
         self.geometry = geometry
         self._placement = dict(rotation_deg=rotation_deg, translation_m=translation_m)
         self.found = [
@@ -149,8 +149,6 @@ class CadSizes:
 
     def entry(self, face: int, size: CadSizeOverride) -> dict:
         """How ``face_sizes`` stores ``size`` on ``face``: with the face as a face group stores it."""
-        from .pipeline import face_ref
-
         found = next(f for f in self.geometry.faces if f.id == face)
         return {"face": asdict(face_ref(found, **self._placement))} | size.stored()
 

@@ -21,32 +21,15 @@ from pathlib import Path
 import meshio
 import numpy as np
 
+from .design import WALLS, CadFaceGroups
+from .face_refs import ZERO, CadFace, CadFaceRef, match_face_ref
+from .face_refs import moved as _moved
+from .face_refs import placement as _placement
 from .sizing import CadSizeOverride, CadSizing, size_override
 
-WALLS = "walls"
 EXTERIOR_MESH_ID = "exterior"
 SYMMETRY_LABELS = {"off": "Off", "x": "X", "xy": "XY"}
-ZERO = (0.0, 0.0, 0.0)  # no rotation, no translation
 _GMSH_LOCK = threading.RLock()
-# Fingerprint tolerances for small CAD edits (see docs/specs/cad-import.md, "Re-import matching").
-_CENTRE_TOLERANCE = 1e-2  # fraction of the bounding-box diagonal
-_AREA_TOLERANCE = 5e-2  # fraction of the stored area
-_NORMAL_COSINE = 0.999  # minimum cosine between stored and found normals
-
-
-@dataclass(frozen=True)
-class CadFaceRef:
-    """A face as a face group stores it: STEP name and fingerprint in CAD axes (before the placement).
-
-    It resolves to one face: the only face carrying ``step_name``, else the face with the same
-    surface type, centre, area and normal (among those carrying ``step_name``, if several do).
-    """
-
-    step_name: str | None
-    centre: tuple[float, float, float]
-    area: float
-    normal: tuple[float, float, float]
-    surface_type: str
 
 
 @dataclass(frozen=True)
@@ -132,19 +115,6 @@ class CadImportSettings:
 
 
 @dataclass(frozen=True)
-class CadFace:
-    """A face of the fragmented geometry; ``id`` is stable for the same file and placement."""
-
-    id: int
-    bodies: tuple[str, ...]
-    step_name: str | None
-    centre: tuple[float, float, float]
-    area: float
-    normal: tuple[float, float, float]
-    surface_type: str
-
-
-@dataclass(frozen=True)
 class CadBody:
     name: str
     kind: str  # "air" | "exterior"
@@ -219,23 +189,6 @@ def inspect_step(
     placement = _placement(rotation_deg, translation_m)
     with _gmsh_session() as gmsh:
         return _analyse(gmsh, Path(step_path), placement, closed_shells or {}).geometry
-
-
-def face_ref(
-    face: CadFace,
-    *,
-    rotation_deg: Sequence[float] = ZERO,
-    translation_m: Sequence[float] = ZERO,
-) -> CadFaceRef:
-    """How a face group stores ``face`` of a geometry read with that placement: in CAD axes."""
-    matrix, offset = _placement(rotation_deg, translation_m)
-    return CadFaceRef(
-        face.step_name,
-        tuple(float(v) for v in matrix.T @ (np.asarray(face.centre, dtype=float) - offset)),
-        float(face.area),
-        tuple(float(v) for v in matrix.T @ np.asarray(face.normal, dtype=float)),
-        face.surface_type,
-    )
 
 
 @dataclass(frozen=True)
@@ -441,10 +394,6 @@ def _shown(rotation_deg, translation_m) -> dict:
     return dict(rotation_deg=tuple(rotation_deg), translation_m=tuple(translation_m))
 
 
-def _moved(matrix, vector, offset=ZERO) -> tuple[float, float, float]:
-    return tuple(float(v) for v in matrix @ np.asarray(vector, dtype=float) + offset)
-
-
 def _place(placement, points) -> np.ndarray:
     """``points`` (any shape ending in 3) moved by ``(matrix, offset)``."""
     matrix, offset = placement
@@ -463,8 +412,6 @@ def mesh_step(step_path: str | Path, settings: CadImportSettings, output_dir: st
                 f"Project symmetry {SYMMETRY_LABELS[settings.symmetry]} does not match the geometry, "
                 f"which suggests symmetry {SYMMETRY_LABELS[geometry.symmetry]}."
             )
-        from .design import CadFaceGroups  # it builds on this module
-
         face_groups = CadFaceGroups(geometry, settings.face_groups, **settings.placement)
         face_groups.check()
         groups = face_groups.surface_groups(model.mesh_faces)
@@ -506,37 +453,6 @@ class _Model:
             self.geometry, interfaces=tuple(replace(i, name=renamed[i.name]) for i in self.geometry.interfaces)
         )
         self.interface_of = {face: renamed[name] for face, name in self.interface_of.items()}
-
-
-def match_face_ref(
-    ref: CadFaceRef,
-    faces: Sequence[CadFace],
-    bbox_m,
-    *,
-    rotation_deg: Sequence[float] = ZERO,
-    translation_m: Sequence[float] = ZERO,
-) -> int | None:
-    """Id of the face among ``faces`` (read with that placement, bounded by ``bbox_m``) that ``ref`` stands for.
-
-    The only face carrying its STEP name; else, among the faces with that name (or all faces
-    when none has it), the one face whose fingerprint matches after the placement. Several
-    matching faces are ambiguous and match none.
-    """
-    named = [f for f in faces if ref.step_name and f.step_name == ref.step_name]
-    if len(named) == 1:
-        return named[0].id
-    matrix, offset = _placement(rotation_deg, translation_m)
-    centre, normal = _moved(matrix, ref.centre, offset), _moved(matrix, ref.normal)
-    tol = _CENTRE_TOLERANCE * math.dist(*bbox_m)
-    matches = [
-        f
-        for f in named or faces
-        if f.surface_type == ref.surface_type
-        and math.dist(f.centre, centre) <= tol
-        and abs(f.area - ref.area) <= _AREA_TOLERANCE * ref.area
-        and np.dot(f.normal, normal) >= _NORMAL_COSINE
-    ]
-    return matches[0].id if len(matches) == 1 else None
 
 
 @dataclass
@@ -916,22 +832,6 @@ def _unique_id(name, used, sep="_") -> str:
 def _slug(name) -> str:
     slug = re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
     return slug if slug[:1].isalpha() else f"air_{slug}".rstrip("_")
-
-
-def _placement(rotation_deg=ZERO, translation_m=ZERO) -> tuple[np.ndarray, np.ndarray]:
-    """``(matrix, offset)`` placing CAD point p at ``matrix @ p + offset``: the rotations about the
-    fixed X, Y and Z axes (in that order, about the origin), then the translation."""
-    matrix = np.eye(3)
-    for label, values in (("Rotation", rotation_deg), ("Translation", translation_m)):
-        if not (len(values) == 3 and all(isinstance(v, int | float) and math.isfinite(v) for v in values)):
-            raise ValueError(f"{label} must be three finite numbers.")
-    for axis, angle in enumerate(math.radians(v) for v in rotation_deg):
-        i, j = (axis + 1) % 3, (axis + 2) % 3
-        turn = np.eye(3)
-        turn[i, i] = turn[j, j] = math.cos(angle)
-        turn[j, i], turn[i, j] = math.sin(angle), -math.sin(angle)
-        matrix = turn @ matrix
-    return matrix, np.array(translation_m, dtype=float)
 
 
 # --- STEP face names ------------------------------------------------------------------------------
