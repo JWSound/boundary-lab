@@ -138,19 +138,21 @@ class CadSizes:
 
     def written(self, size: CadSizeOverride | None, faces=(), volumes=()) -> dict:
         """The design source's size fields with ``size`` (``None``: Global) on each of ``faces`` and ``volumes``."""
-        from .pipeline import face_ref
 
         faces = set(faces)
         kept = [entry for entry, face in self.found if face not in faces]
-        added = []
-        if size is not None:
-            by_id = {f.id: f for f in self.geometry.faces}
-            for face in sorted(faces):
-                added.append({"face": asdict(face_ref(by_id[face], **self._placement))} | size.stored())
+        added = [] if size is None else [self.entry(face, size) for face in sorted(faces)]
         volume_sizes = {name: s.stored() for name, s in self.volumes.items() if name not in volumes}
         if size is not None:
             volume_sizes |= dict.fromkeys(volumes, size.stored())
         return {"face_sizes": kept + added, "volume_sizes": volume_sizes}
+
+    def entry(self, face: int, size: CadSizeOverride) -> dict:
+        """How ``face_sizes`` stores ``size`` on ``face``: with the face as a face group stores it."""
+        from .pipeline import face_ref
+
+        found = next(f for f in self.geometry.faces if f.id == face)
+        return {"face": asdict(face_ref(found, **self._placement))} | size.stored()
 
     def dropped(self) -> tuple[dict, str]:
         """The size fields without face sizes whose faces the geometry no longer has, nor volume sizes of bodies
@@ -173,3 +175,45 @@ class CadSizes:
             "volume_sizes": {name: size.stored() for name, size in self.volumes.items() if name in air},
         }
         return changes, " ".join(notes)
+
+
+# -- older designs ---------------------------------------------------------------------------------------------------
+
+LEGACY_SIZES = ("body_sizes", "face_group_sizes", "body_sizes_m", "face_group_sizes_m")  # design source keys
+
+
+def legacy_sizes(source: Mapping) -> tuple[dict[str, CadSizeOverride], dict[str, CadSizeOverride]]:
+    """``(body_sizes, face_group_sizes)`` of a design source. Designs saved before levels existed stored edge
+    lengths (m) as ``body_sizes_m`` and ``face_group_sizes_m``; they are kept as edge lengths."""
+    result = []
+    for key in ("body_sizes", "face_group_sizes"):
+        stored = {name: {"size_m": size} for name, size in source.get(f"{key}_m", {}).items()} | source.get(key, {})
+        result.append({name: size_override(size) for name, size in stored.items()})
+    return result[0], result[1]
+
+
+def migrated(source: Mapping, groups, sizes: CadSizes, sizing: CadSizing) -> dict | None:
+    """``source`` with its body and face-group sizes turned into the face and volume sizes that mesh the same, or
+    ``None`` when it has none (ADR 0001).
+
+    Each face without its own size gets the one that won on it (face group, then the finest body), unless that is
+    the target element size; an air body's size becomes its volume size unless the volume has its own. ``groups``
+    (:class:`CadFaceGroups`) and ``sizes`` are the design's on the read geometry; ``sizing`` needs the maximum
+    frequency, which compares levels with edge lengths.
+    """
+    if not any(source.get(key) for key in LEGACY_SIZES):
+        return None
+    bodies, group_sizes = legacy_sizes(source)
+    added = []
+    for face in sizes.geometry.faces:
+        if face.id not in sizes.faces:
+            group = group_sizes.get(groups.group_of(face.id).name)
+            size = sizing.winning(None, group, [bodies.get(body) for body in face.bodies])
+            if size is not None:
+                added.append(sizes.entry(face.id, size))
+    air = {body.name for body in sizes.geometry.bodies if body.kind == "air"}
+    volumes = {name: size.stored() for name, size in bodies.items() if name in air}
+    return {k: v for k, v in source.items() if k not in LEGACY_SIZES} | {
+        "face_sizes": [*source.get("face_sizes", []), *added],
+        "volume_sizes": volumes | dict(source.get("volume_sizes", {})),
+    }

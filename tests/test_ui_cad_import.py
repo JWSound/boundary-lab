@@ -685,17 +685,28 @@ def test_face_overrides_whose_faces_are_gone_are_dropped_with_a_note(cad_editor,
     assert "1 face size override dropped" in editor.status.text()
 
 
-def test_designs_with_no_body_or_face_group_sizes_are_left_as_they_are(cad_editor, main_window, qapp):
+def test_designs_with_no_body_or_face_group_sizes_are_left_as_they_are(
+    cad_editor, main_window, monkeypatch, qapp, tmp_path
+):
     editor, host = cad_editor
     main_window.freq_max_spin.setValue(3430)
     editor.spins["curvature_elements_per_circle"].setValue(13)  # an edit fetches the project context
     wait(qapp, lambda: "3430" in editor.target_label.text())
     empty = host.snapshot().source | {"body_sizes": {}, "face_group_sizes": {}}  # as earlier slices saved them
     snapshot = host.update_source(empty, expected_revision=host.snapshot().revision)
+    update_source = host.update_source
+    stored = []
+    monkeypatch.setattr(
+        host, "update_source", lambda source, **kw: stored.append(source) or update_source(source, **kw)
+    )
 
     editor.apply_source(snapshot.source, snapshot.revision)
+    editor.set_step_path(str(vented_box(tmp_path / "other.step")))  # the one edit: reads and draws the file
+    wait(qapp, lambda: not editor.loading)
+    editor.spins["curvature_elements_per_circle"].setValue(14)  # and another, which fetches the context again
+    qapp.processEvents()
 
-    assert host.snapshot().revision == snapshot.revision
+    assert len(stored) == 2
     assert "sizes are now set" not in editor.status.text()
 
 

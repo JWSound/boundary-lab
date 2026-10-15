@@ -6,7 +6,8 @@ from dataclasses import asdict, replace
 
 import pytest
 
-from blab.cad_import import MIXED, CadSizeOverride, CadSizes, CadSizing, face_ref, inspect_step
+from blab.cad_import import MIXED, CadFaceGroups, CadSizeOverride, CadSizes, CadSizing, face_ref, inspect_step
+from blab.cad_import.sizing import LEGACY_SIZES, legacy_sizes, migrated
 from cad_fixtures import vented_box
 
 COARSE, FINE = CadSizeOverride(elements_per_wavelength=2), CadSizeOverride(elements_per_wavelength=6)
@@ -125,3 +126,51 @@ def test_sizes_of_faces_gone_and_volumes_of_bodies_no_longer_air_are_dropped_wit
         == "1 face size override dropped: its face is no longer in the STEP file. Volume size of Cabinet dropped: no air body."
     )
     assert sizes(box, changes).dropped() == ({}, "")
+
+
+# -- older designs ---------------------------------------------------------------------------------------------------
+
+
+def effective(geometry, source):
+    """``({face: edge length}, {air body: edge length})`` that meshing gives ``source`` (m)."""
+    body_sizes, group_sizes = legacy_sizes(source)
+    own = sizes(geometry, source)
+    groups = CadFaceGroups(geometry, {})
+    faces = {
+        f.id: SIZING.edge_m(
+            SIZING.winning(
+                own.faces.get(f.id),
+                group_sizes.get(groups.group_of(f.id).name),
+                [body_sizes.get(b) for b in f.bodies],
+            )
+        )
+        for f in geometry.faces
+    }
+    air = [b.name for b in geometry.bodies if b.kind == "air"]
+    return faces, {b: SIZING.edge_m(own.volumes.get(b) or body_sizes.get(b)) for b in air}
+
+
+def test_body_face_group_and_legacy_sizes_become_face_and_volume_sizes_that_mesh_the_same(box):
+    own = sizes(box, {}).written(MM_8, faces_of(box, "Cabinet")[:1], ["Port"])
+    source = own | {
+        "elements_per_wavelength": 5.0,  # 20 mm
+        "body_sizes_m": {"Chamber": 0.04},  # coarser: its faces shared with no other body only
+        "face_group_sizes_m": {"Driver": 0.008},
+        "body_sizes": {"Port": {"size_m": 0.03}, "Cabinet": {"size_m": 0.01}},
+        "face_group_sizes": {"walls": {"elements_per_wavelength": 2}},
+    }
+
+    new = migrated(source, CadFaceGroups(box, {}), sizes(box, source), SIZING)
+
+    assert not set(LEGACY_SIZES) & new.keys()
+    assert new["elements_per_wavelength"] == 5.0
+    assert new["volume_sizes"] == {"Chamber": {"size_m": 0.04}, "Port": {"size_m": 0.008}}  # the volume's own stays
+    assert new["face_sizes"][: len(own["face_sizes"])] == own["face_sizes"]
+    assert effective(box, new) == effective(box, source)
+    assert migrated(new, CadFaceGroups(box, {}), sizes(box, new), SIZING) is None
+
+
+def test_designs_without_body_or_face_group_sizes_are_not_migrated(box):
+    source = {"face_sizes": [], "volume_sizes": {}, "body_sizes": {}, "face_group_sizes": {}}  # as earlier slices saved
+
+    assert migrated(source, CadFaceGroups(box, {}), sizes(box, source), SIZING) is None

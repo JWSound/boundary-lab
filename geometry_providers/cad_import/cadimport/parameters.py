@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from blab.cad_import import CadImportSettings
+from blab.cad_import.sizing import legacy_sizes
 from blab.generators.configuration import exterior_sound_speed
 
 
@@ -19,20 +20,6 @@ def face_groups(source):
     return result
 
 
-def size_overrides(source):
-    """``(body_sizes, face_group_sizes, face_sizes)`` of the source, each override ``{"elements_per_wavelength": N}``
-    or ``{"size_m": x}``; ``face_sizes`` a list of ``{"face": CadFaceRef fields, **override}``.
-
-    Designs saved before levels existed stored edge lengths (m) as ``body_sizes_m`` and ``face_group_sizes_m``;
-    they are kept as edge lengths.
-    """
-    sizes = []
-    for key in ("body_sizes", "face_group_sizes"):
-        legacy = {name: {"size_m": size} for name, size in source.get(f"{key}_m", {}).items()}
-        sizes.append(legacy | source.get(key, {}))
-    return sizes[0], sizes[1], list(source.get("face_sizes", []))
-
-
 def translation_m(source):
     """The source's translation (millimetres) in metres; values that are no numbers are left for the check."""
     return tuple(v / 1000 if isinstance(v, int | float) else v for v in source["translation_mm"])
@@ -41,7 +28,7 @@ def translation_m(source):
 def settings(source, configuration):
     """Pipeline settings for ``source`` with c, fmax and symmetry from the project configuration."""
     try:
-        body_sizes, face_group_sizes, face_sizes = size_overrides(source)
+        body_sizes, face_group_sizes = legacy_sizes(source)  # older designs, until the editor converts them
         return CadImportSettings(
             face_groups=face_groups(source),
             fmax_hz=float(configuration["frequency"]["freq_max_hz"]),
@@ -49,7 +36,9 @@ def settings(source, configuration):
             elements_per_wavelength=float(source["elements_per_wavelength"]),
             body_sizes=body_sizes,
             face_group_sizes=face_group_sizes,
-            face_sizes=tuple((entry["face"], {k: v for k, v in entry.items() if k != "face"}) for entry in face_sizes),
+            face_sizes=tuple(
+                (entry["face"], {k: v for k, v in entry.items() if k != "face"}) for entry in source.get("face_sizes", [])
+            ),
             volume_sizes=dict(source.get("volume_sizes", {})),
             curvature_elements_per_circle=float(source["curvature_elements_per_circle"]),
             growth_rate=float(source["growth_rate"]),

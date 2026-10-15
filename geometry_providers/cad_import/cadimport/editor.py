@@ -47,22 +47,19 @@ from blab.cad_import import (
     CadSizeOverride,
     CadSizes,
     CadSizing,
-    face_ref,
     place_preview,
 )
-from blab.cad_import.sizing import size_override
+from blab.cad_import.sizing import LEGACY_SIZES, migrated, size_override
 from blab.generators.configuration import DEFAULT_SOUND_SPEED_M_PER_S
 from blab.ui.file_dialogs import FileDialogService
 
 from .jobs import preview_in_worker
-from .parameters import size_overrides
 
 SYMMETRY_LABELS = {"off": "Off", "x": "X", "xy": "XY"}
 FACE_ROLE = Qt.ItemDataRole.UserRole
 ROW_ROLE = Qt.ItemDataRole.UserRole + 1  # ("body" | "volume" | "faces", body name) of the rows above the faces
 CUSTOM = "custom"  # the Mesh size choice that asks an edge length
 SIZE_CHOICES = (*LEVELS.items(), ("Custom…", CUSTOM))  # after Global, which clears
-LEGACY_SIZES = ("body_sizes", "face_group_sizes", "body_sizes_m", "face_group_sizes_m")  # converted on load
 SIZING = (
     ("curvature_elements_per_circle", "Curvature elements per circle", 3.0, 100.0, 0, ""),
     ("growth_rate", "Growth rate", 1.05, 3.0, 2, "×"),
@@ -511,6 +508,7 @@ class CadImportEditor:
             self._place()
         else:
             self._show_overrides()
+            self._migrate_sizes()
 
     def _show_fineness(self):
         """The level of the source's elements per wavelength, else (or while chosen) Custom with its number."""
@@ -719,6 +717,7 @@ class CadImportEditor:
         self._render(reset_camera=reset_camera)
         if self.geometry is not None:
             self._drop_lost_sizes()
+            self._migrate_sizes()
             if note := self._groups.interface_note(self._groups.held_by_interfaces):
                 self.status.setText(note)
 
@@ -923,9 +922,6 @@ class CadImportEditor:
     def _body(self, name):
         return next(body for body in self.geometry["bodies"] if body["name"] == name)
 
-    def _air_bodies(self):
-        return {body["name"] for body in self.geometry["bodies"] if body["kind"] == "air"}
-
     def show_all(self):
         self._syncing = True
         for items in self._face_items.values():
@@ -969,9 +965,6 @@ class CadImportEditor:
         return colours
 
     # -- face groups --------------------------------------------------------------------------
-
-    def _ref(self, face_id):
-        return asdict(face_ref(self._faces[face_id], **self._placement))
 
     def _resolve(self):
         """Resolve the source's face groups and sizes on the shown geometry, once per change of either."""
@@ -1086,27 +1079,14 @@ class CadImportEditor:
             self.status.setText(note)
 
     def _migrate_sizes(self):
-        """Turn an older design's body and face group sizes into the face and volume sizes meshing gave them (face,
-        face group, then the finest body; an air body's own size for its volume); ``True`` when it did. Waits for the
-        maximum frequency, which compares levels with edge lengths. Empty ones, as every earlier design has, stay."""
-        if self._faces is None or self._fmax_hz is None or not any(self.source.get(k) for k in LEGACY_SIZES):
-            return False
-        bodies, groups, entries = size_overrides(self.source)
-        bodies = {name: size_override(size) for name, size in bodies.items()}
-        groups = {name: size_override(size) for name, size in groups.items()}
-        sizing = self._sizing()
-        added = []
-        for face_id, face in self._faces.items():
-            if face_id in self._sizes.faces:
-                continue
-            size = sizing.winning(None, groups.get(self.group_of(face_id)[0]), [bodies.get(b) for b in face.bodies])
-            if size is not None:
-                added.append({"face": self._ref(face_id)} | size.stored())
-        volumes = {name: size.stored() for name, size in bodies.items() if name in self._air_bodies()}
-        volumes |= {name: size.stored() for name, size in self._sizes.volumes.items()}
-        self.edited({"face_sizes": entries + added, "volume_sizes": volumes}, drop=LEGACY_SIZES)
-        self.status.setText("Body and face group sizes are now set on their faces and volumes.")
-        return True
+        """Convert an older design's body and face group sizes once its geometry and the maximum frequency, which
+        compares levels with edge lengths, are known."""
+        if self._groups is None or self._fmax_hz is None:
+            return
+        source = migrated(self.source, self._groups, self._sizes, self._sizing())
+        if source is not None:
+            self.edited(source, drop=LEGACY_SIZES)
+            self.status.setText("Body and face group sizes are now set on their faces and volumes.")
 
     def ask_size_mm(self):
         """Ask a custom edge length in mm; ``None`` when cancelled."""
@@ -1217,9 +1197,7 @@ class CadImportEditor:
 
     def _show_overrides(self):
         """Each row's size in its Mesh size dropdown: a face's or volume's own or Global, a body's, Faces' or face
-        group's the one its members share or Mixed. An older design's sizes are converted first."""
-        if self._migrate_sizes():
-            return
+        group's the one its members share or Mixed."""
         for combo, row_faces, row_volumes in self._size_rows:  # rows exist only with a geometry, and so sizes
             self._show_size(combo, self._sizes.shared(row_faces, row_volumes))
         self._show_groups()
@@ -1236,6 +1214,7 @@ class CadImportEditor:
                 self._fmax_hz, self._sound_speed = context.freq_max_hz, context.sound_speed_m_per_s
                 self._show_target_size()
                 self._show_overrides()  # levels' edge lengths in the tooltips
+                self._migrate_sizes()
 
         future.add_done_callback(done)
 
