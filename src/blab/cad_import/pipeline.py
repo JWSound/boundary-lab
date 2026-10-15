@@ -462,7 +462,11 @@ def mesh_step(step_path: str | Path, settings: CadImportSettings, output_dir: st
                 f"Project symmetry {SYMMETRY_LABELS[settings.symmetry]} does not match the geometry, "
                 f"which suggests symmetry {SYMMETRY_LABELS[geometry.symmetry]}."
             )
-        groups = model.surface_groups(settings.face_groups, **settings.placement)
+        from .design import CadFaceGroups  # it builds on this module
+
+        face_groups = CadFaceGroups(geometry, settings.face_groups, **settings.placement)
+        face_groups.check()
+        groups = face_groups.surface_groups(model.mesh_faces)
         _apply_sizes(gmsh, model, settings, groups)
         gmsh.model.mesh.generate(3)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -501,51 +505,6 @@ class _Model:
             self.geometry, interfaces=tuple(replace(i, name=renamed[i.name]) for i in self.geometry.interfaces)
         )
         self.interface_of = {face: renamed[name] for face, name in self.interface_of.items()}
-
-    def surface_groups(
-        self, face_groups: Mapping[str, tuple[int | CadFaceRef, ...]], **placement
-    ) -> dict[str, dict[str, list[int]]]:
-        """Mesh id -> {surface group name -> faces}, sorted by name; ``placement`` as read."""
-        member = {}
-        reserved = {WALLS, *self.interface_of.values()}
-        geometry = self.geometry
-        found = {}
-        for name, refs in face_groups.items():
-            if not name or name in reserved:
-                raise ValueError(f"Face group name '{name}' is reserved.")
-            found[name] = [
-                match_face_ref(ref, geometry.faces, geometry.bbox_m, **placement)
-                if isinstance(ref, CadFaceRef)
-                else ref
-                for ref in refs
-            ]
-        # A group missing any stored face would silently lose it to walls: the user reviews it.
-        review = [name for name, faces in found.items() if None in faces]
-        if review:
-            raise ValueError(
-                "Face groups need review (stored faces not found in the STEP file): "
-                f"{', '.join(repr(n) for n in review)}. Re-pick or delete them."
-            )
-        for name, faces in found.items():
-            for face in faces:
-                if face not in self.face_bodies:
-                    raise ValueError(f"Face group '{name}' refers to unknown face {face}.")
-                if face in self.interface_of:
-                    continue  # an interface face stays in its interface's face group
-                if face in member and member[face] != name:
-                    raise ValueError(f"Face {face} is in face groups '{member[face]}' and '{name}'.")
-                member[face] = name
-        for face in self.geometry.faces:
-            name = face.step_name
-            if name and name not in reserved and face.id not in member and face.id not in self.interface_of:
-                member[face.id] = name
-        result = {}
-        for mesh_id, faces in self.mesh_faces.items():
-            groups = defaultdict(list)
-            for face in faces:
-                groups[self.interface_of.get(face) or member.get(face) or WALLS].append(face)
-            result[mesh_id] = dict(sorted(groups.items()))
-        return result
 
 
 def match_face_ref(

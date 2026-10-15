@@ -41,7 +41,7 @@ from PySide6.QtWidgets import (
 
 from blab.cad_import import (
     WALLS,
-    CadFace,
+    CadFaceGroups,
     CadFaceRef,
     face_ref,
     match_face_ref,
@@ -302,6 +302,8 @@ class CadImportEditor:
         self._face_items = {}
         self._body_items = {}
         self._faces = None  # face id -> CadFace of the loaded preview, for matching stored face groups
+        self._geometry = None  # the CadGeometry shown
+        self._groups = None  # its CadFaceGroups under the source
         self._syncing = False
         self._fmax_hz = None
         self._sound_speed = DEFAULT_SOUND_SPEED_M_PER_S  # the project's, once its context arrives
@@ -489,6 +491,7 @@ class CadImportEditor:
 
     def apply_source(self, source, revision):
         self.source, self.revision = dict(source), revision
+        self._resolve_groups()
         self.step_path.setText(str(source.get("step_path", "")))
         for key, spin in self.spins.items():
             blocked = spin.blockSignals(True)
@@ -560,6 +563,7 @@ class CadImportEditor:
         if not path:
             self.loading = False
             self._read = None
+            self._geometry = None
             self._show_preview(None)
             return
         if not Path(path).is_file():
@@ -622,6 +626,7 @@ class CadImportEditor:
             self.info.setText(str(exc))
             return
         self._placement = placement
+        self._geometry = placed.geometry
         self._show_preview(_view(placed) | {"geometry": asdict(placed.geometry)}, reset_camera=reset_camera)
 
     def _application_state_changed(self, state):
@@ -654,7 +659,8 @@ class CadImportEditor:
     def _show_preview(self, preview, *, reset_camera=False):
         self._preview = preview
         self.geometry = None if preview is None else preview["geometry"]
-        self._faces = None
+        self._faces = None if preview is None else {face.id: face for face in self._geometry.faces}
+        self._resolve_groups()
         self._hidden.clear()
         self._hover = None
         self._face_items = {}
@@ -665,7 +671,6 @@ class CadImportEditor:
         self.tree.clear()
         if self.geometry is not None:
             faces = {face["id"]: face for face in self.geometry["faces"]}
-            self._faces = {face_id: CadFace(**face) for face_id, face in faces.items()}
             roles = {shell["name"]: shell["role"] for shell in self.geometry["closed_shells"]}
             checkable = Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable
             for body in self.geometry["bodies"]:
@@ -719,7 +724,9 @@ class CadImportEditor:
         self._render(reset_camera=reset_camera)
         if self.geometry is not None:
             self._drop_lost_sizes()
-            self._drop_interface_faces()
+            held = self._groups.held_by_interfaces
+            if held:
+                self.status.setText(_in_interfaces(held, self._groups.interface_of))
 
     def _add_kind_combo(self, item, name, role):
         """The Kind dropdown of closed shell ``name``'s body row; a change re-reads the file."""
@@ -873,12 +880,12 @@ class CadImportEditor:
 
     def rename_interface(self, name, new_name):
         """Rename interface face group ``name``; an empty ``new_name`` gives back the detected name."""
-        shown = self._interface_names()
+        shown = self._groups.interface_names
         detected = next(d for d, s in shown.items() if s == name)
         new_name = new_name.strip() or detected
         if new_name == name:
             return
-        if new_name in {WALLS, *shown.values(), *self.face_groups()}:
+        if new_name in {*(row.name for row in self.rows()), *self._groups.found}:
             self.status.setText(f"Face group name '{new_name}' is taken.")
             return
         names = {d: s for d, s in self.source.get("interface_names", {}).items() if d != detected}
@@ -983,60 +990,28 @@ class CadImportEditor:
     def _ref(self, face_id):
         return asdict(face_ref(self._faces[face_id], **self._placement))
 
-    def _members(self, group):
-        """Face ids of a stored group in the loaded geometry, and its refs that match nothing."""
-        ids, unmatched = set(), []
-        for ref in group["faces"]:
-            found = match_face_ref(CadFaceRef(**ref), self._faces.values(), self.geometry["bbox_m"], **self._placement)
-            if found is None:
-                unmatched.append(ref)
-            else:
-                ids.add(found)
-        return ids, unmatched
-
-    def _interface_names(self):
-        """``{detected name: shown name}`` of the interfaces."""
-        names = self.source.get("interface_names", {})
-        return {i["name"]: names.get(i["name"], i["name"]) for i in self.geometry["interfaces"]}
+    def _resolve_groups(self):
+        """Resolve the source's face groups on the shown geometry, once per change of either."""
+        if self._geometry is None:
+            self._groups = None
+            return
+        self._groups = CadFaceGroups(
+            self._geometry,
+            {g["name"]: g["faces"] for g in self.source.get("face_groups", [])},
+            interface_names=self.source.get("interface_names", {}),
+            **self._placement,
+        )
 
     def _interface_of(self):
-        shown = self._interface_names()
-        return {f: shown[i["name"]] for i in self.geometry["interfaces"] for f in i["face_ids"]}
-
-    def face_groups(self, stored=None):
-        """``{name: face ids}``: ``stored`` (default: the source's) face groups, then those named in the STEP file."""
-        groups = {}
-        if self._faces is None:
-            return groups
-        for group in self.source.get("face_groups", []) if stored is None else stored:
-            groups[group["name"]] = self._members(group)[0]
-        interface_of = self._interface_of()
-        reserved = {WALLS, *interface_of.values()}
-        taken = set().union(*groups.values(), interface_of)
-        for face in self._faces.values():
-            if face.step_name and face.step_name not in reserved and face.id not in taken:
-                groups.setdefault(face.step_name, set()).add(face.id)
-        return groups
+        return self._groups.interface_of
 
     def groups_needing_review(self):
         """Stored face groups with faces the loaded STEP file no longer has; Generate rejects them."""
-        if self._faces is None:
-            return []
-        return [g["name"] for g in self.source.get("face_groups", []) if self._members(g)[1]]
+        return [] if self._groups is None else list(self._groups.needs_review)
 
     def rows(self):
         """``[(name, face ids, kind)]`` as listed: walls, the interface groups, then the face groups."""
-        if self._faces is None:
-            return []
-        groups = self.face_groups()
-        shown = self._interface_names()
-        interfaces = {shown[i["name"]]: set(i["face_ids"]) for i in self.geometry["interfaces"]}
-        walls = set(self._faces) - set().union(*groups.values(), *interfaces.values())
-        return (
-            [(WALLS, walls, "walls")]
-            + [(name, faces, "interface") for name, faces in interfaces.items()]
-            + [(name, faces, "group") for name, faces in groups.items()]
-        )
+        return [] if self._groups is None else self._groups.rows
 
     def group_selection(self, name):
         """Put the selected faces into face group ``name``."""
@@ -1067,15 +1042,6 @@ class CadImportEditor:
         if skipped:
             self.status.setText(_in_interfaces(skipped, interface_of))
 
-    def _drop_interface_faces(self):
-        """Take the faces that are now interface faces out of the stored face groups, saying so."""
-        stored = self.source.get("face_groups", [])
-        interface_of = self._interface_of()
-        moved = {f for group in stored for f in self._members(group)[0]} & interface_of.keys()
-        if moved:
-            self._edit_groups(self._regrouped(stored, moved))
-            self.status.setText(_in_interfaces(moved, interface_of))
-
     def remove_from_group(self, face_ids):
         """Move ``face_ids`` out of their face groups, back to walls."""
         face_ids = set(face_ids)
@@ -1094,7 +1060,9 @@ class CadImportEditor:
         """``stored`` groups with ``face_ids`` moved into group ``name`` (``None``: into none)."""
         groups = []
         for group in stored:
-            ids, unmatched = self._members(group)
+            found = self._groups.found.get(group["name"], [])
+            ids = {face for _, face in found if face is not None}
+            unmatched = [ref for ref, face in found if face is None]
             if group["name"] == name:
                 ids, unmatched = ids | face_ids, []
             else:
@@ -1105,7 +1073,8 @@ class CadImportEditor:
 
     def group_of(self, face_id):
         """``(name, kind)`` of the row holding ``face_id``."""
-        return next((name, kind) for name, faces, kind in self.rows() if face_id in faces)
+        row = self._groups.group_of(face_id)
+        return row.name, row.kind
 
     def set_current_group(self, name):
         """Make ``name`` the group the selection is added to."""

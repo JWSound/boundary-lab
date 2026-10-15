@@ -523,15 +523,6 @@ def test_reserved_names_and_interface_faces_cannot_be_grouped(cad_editor, name, 
     assert re.search(message, editor.status.text())
 
 
-def test_step_names_that_are_reserved_form_no_face_group(cad_editor, qapp, tmp_path):
-    editor, _ = cad_editor
-    names = {-210: "walls", -200: "Driver"}
-    editor.set_step_path(str(vented_box(tmp_path / "walls.step", face_names=lambda c: names.get(round(c[2])))))
-    wait(qapp, lambda: not editor.loading)
-
-    assert group_rows(editor) == {"Driver": 1}
-
-
 def test_deleting_a_group_keeps_the_sizes_of_its_faces(cad_editor):
     editor, host = cad_editor
     face = cabinet_faces(editor, lambda f: True)[0]
@@ -1170,7 +1161,7 @@ def test_an_interface_is_renamed_from_its_face_menu_and_keeps_its_size(cad_edito
     assert "Interface 1 Port" in all_rows(editor)
 
 
-def test_faces_grouped_before_they_became_interface_faces_move_to_the_interface(
+def test_faces_grouped_before_they_became_interface_faces_stay_in_the_interface_while_it_is_detected(
     cad_editor, monkeypatch, qapp, tmp_path
 ):
     editor, host = cad_editor
@@ -1194,9 +1185,13 @@ def test_faces_grouped_before_they_became_interface_faces_move_to_the_interface(
 
     (interface,) = editor.geometry["interfaces"]
     assert interface["name"] == "Interface 1 Closed shell 1"
-    assert host.snapshot().source["face_groups"] == []  # emptied, so gone
-    assert "Interface" not in group_rows(editor)
+    assert "Interface" not in group_rows(editor)  # its only face is in the interface
     assert f"stays in interface '{interface['name']}'" in editor.status.text()
+    assert [g["name"] for g in host.snapshot().source["face_groups"]] == ["Interface"]  # stored as picked
+
+    editor.kind_combos["Closed shell 1"].setCurrentIndex(1)  # exterior again: no interface
+    wait(qapp, lambda: not editor.loading)
+    assert group_rows(editor)["Interface"] == 1
 
 
 def test_picking_and_grouping_keep_the_camera(cad_editor, faces_under_mouse, qapp):

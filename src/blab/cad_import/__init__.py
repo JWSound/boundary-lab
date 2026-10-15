@@ -4,6 +4,7 @@ Qt-free. Shared by the ``blab cad-import`` command and the CAD import geometry
 provider, so both produce identical meshes for identical inputs.
 """
 
+from .design import CadFaceGroups, FaceGroupRow
 from .pipeline import (
     WALLS,
     CadBody,
@@ -33,7 +34,9 @@ __all__ = [
     "CadBody",
     "CadClosedShell",
     "CadFace",
+    "CadFaceGroups",
     "CadFaceRef",
+    "FaceGroupRow",
     "CadGeometry",
     "CadImportResult",
     "CadImportSettings",
