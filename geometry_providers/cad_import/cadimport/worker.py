@@ -19,8 +19,6 @@ def main(job_path):
         # Only the quick scan while a closed shell has no choice: the answers decide the full read.
         preview = open_step(
             job["step_path"],
-            forward=job["forward"],
-            up=job["up"],
             rotation_deg=job["rotation_deg"],
             translation_m=job["translation_m"],
             closed_shells=job["closed_shells"],

@@ -394,7 +394,7 @@ Runs the CAD import pipeline without the desktop app and writes one `<mesh id>.m
 file per mesh, in metres. Solids become air bodies: touching air bodies share one
 tetrahedral mesh with a volume group per body. Surface bodies together form the
 `exterior.msh` BEM surface. Air faces that fill openings in the exterior get a
-`<body> opening` surface group in both meshes, node for node; every other face is in
+`Interface <n> <body>` surface group in both meshes, node for node; every other face is in
 `walls`. The target element size is sound speed ÷ `--fmax` ÷ elements per wavelength
 (`--sound-speed`, default 343 m/s), refined on curved edges to about 12 elements per
 circle. `--forward` and `--up` name the CAD axes that become +Z and +Y; then

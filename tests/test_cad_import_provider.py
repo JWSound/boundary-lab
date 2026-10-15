@@ -89,9 +89,9 @@ def test_vented_box_stages_regions_walls_and_interface_and_prepares_a_coupled_so
     assert boundaries == {
         ("chamber", "Driver"): "rigid",  # STEP face name
         ("chamber", "walls"): "rigid",
-        ("chamber", "Port opening"): "interface",
+        ("chamber", "Interface 1 Port"): "interface",
         ("exterior", "walls"): "rigid",
-        ("exterior", "Port opening"): "interface",
+        ("exterior", "Interface 1 Port"): "interface",
     }
     assert len(PhysicalSystemCompiler().compile(system).interfaces) == 1
     prepared = prepare_system_solve(
@@ -234,16 +234,17 @@ def test_new_face_group_arrives_as_a_rigid_boundary_and_user_edits_survive_regen
     assert len(PhysicalSystemCompiler().compile(system).interfaces) == 1
 
 
-def test_orientation_change_remeshes_reoriented_and_keeps_face_groups(plugin, tmp_path):
+def test_rotation_change_remeshes_reoriented_and_keeps_face_groups(plugin, tmp_path):
     catalog, backend = plugin
     step = vented_box(tmp_path / "box.step", cad_axes=("-Y", "+Z"))
-    # Picked before the axes were fixed: the cabinet front lies on CAD Y=0.
+    # Picked before the rotation was set: the cabinet front lies on CAD Y=0.
     group = stored_group("Baffle", step, lambda f: f.bodies == ("Cabinet",) and abs(f.centre[1]) < 1e-6)
     project = make_project(catalog, step, face_groups=[group])
     project, first = generate(backend, project, tmp_path)
     project.generator_documents = (
         replace(
-            project.generator_documents[0], source=project.generator_documents[0].source | {"forward": "-Y", "up": "+Z"}
+            project.generator_documents[0],
+            source=project.generator_documents[0].source | {"rotation_deg": [-90.0, 0.0, 0.0]},  # CAD -Y on axis
         ),
     )
 
@@ -456,7 +457,6 @@ def test_cancel_before_start_and_during_meshing(plugin, box_step, tmp_path):
         ({"step_path": ""}, "Choose a STEP file"),
         ({"step_path": "missing.step"}, "not found"),
         ({"elements_per_wavelength": 0}, "Elements per wavelength"),
-        ({"forward": "+Y"}, "perpendicular"),
         ({"rotation_deg": [0, "x", 0]}, "Rotation must be three finite numbers"),
         ({"translation_mm": [0, 0]}, "Translation must be three finite numbers"),
     ],

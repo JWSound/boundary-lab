@@ -40,7 +40,6 @@ from PySide6.QtWidgets import (
 )
 
 from blab.cad_import import (
-    AXES,
     WALLS,
     CadFace,
     CadFaceRef,
@@ -63,9 +62,11 @@ SIZING = (
     ("growth_rate", "Growth rate", 1.05, 3.0, 2, "×"),
 )
 FACE_COLOUR, SELECTED_COLOUR, OUTLINE_COLOUR = "#c8ccd2", "#e8a33d", "#2b2f36"
-SEE_THROUGH = 0.15  # opacity of the faces around a highlighted closed shell
+HIGHLIGHT_COLOUR = "#e0218a"  # a closed shell being asked about, a right-clicked face
+SEE_THROUGH = 0.15  # opacity of the faces around highlighted ones
 AXIS_COLOURS = ("#d62728", "#2ca02c", "#1f77b4")  # X, Y, Z
-PLANE_OPACITY = (0.15, 0.15, 0.06)  # X=0 and Y=0, the symmetry planes, stand out
+AXIS_LABELS = ("X · Horizontal", "Y · Vertical", "Z · On Axis")  # as the balloon and mesh views name them
+PLANE_OPACITY = 0.15  # the symmetry planes X=0 and Y=0
 GROUP_COLOURS = (
     "#4e79a7", "#59a14f", "#e15759", "#76b7b2", "#b07aa1",
     "#9c755f", "#edc948", "#ff9da7", "#2f6f4f", "#8c6bb1",
@@ -124,8 +125,8 @@ class Viewport(QWidget):
         self, preview, visible, selected=frozenset(), colours=None, *, highlight=None, guides=None, reset_camera=False
     ):
         """Draw the ``visible`` faces smooth with their outlines, in their ``colours`` (face id -> colour, default
-        plain), ``selected`` on top; with ``highlight`` (face ids) all other faces are see-through. ``guides``
-        (a bounding box, m) draws the axes and origin planes around it."""
+        plain), ``selected`` on top; ``highlight`` (face ids) stands out, all other faces see-through. ``guides``
+        (a bounding box, m) draws the axes and symmetry planes around it."""
         import pyvista as pv
 
         self.plotter.clear()
@@ -135,6 +136,8 @@ class Viewport(QWidget):
             for face in visible:
                 colour = SELECTED_COLOUR if face in selected else (colours or {}).get(face, FACE_COLOUR)
                 opacity = 1.0 if highlight is None or face in highlight else SEE_THROUGH
+                if highlight is not None and face in highlight:
+                    colour = HIGHLIGHT_COLOUR
                 by_look.setdefault((colour, opacity), []).append(face)
             for (colour, opacity), faces in by_look.items():
                 mask = np.isin(preview["face_ids"], faces)
@@ -174,25 +177,37 @@ class Viewport(QWidget):
         self.plotter.render()
 
     def _show_guides(self, bbox_m):
-        """An axis triad at the origin and see-through X=0, Y=0 and Z=0 planes over the model and the origin;
-        X=0 and Y=0, the symmetry planes, stand out."""
+        """Labelled axes through the origin and the see-through symmetry planes X=0 and Y=0, all reaching
+        past the model and the origin by a fifth of their span (at least a tenth of the model's size)."""
         import pyvista as pv
 
         low, high = np.minimum(bbox_m[0], 0), np.maximum(bbox_m[1], 0)
-        size = float(np.linalg.norm(high - low)) or 1.0
-        low, high = low - 0.1 * size, high + 0.1 * size
+        margin = np.maximum(0.2 * (high - low), 0.1 * (float(np.max(np.subtract(bbox_m[1], bbox_m[0]))) or 1.0))
+        low, high = low - margin, high + margin
         for axis, name in enumerate("XYZ"):
-            tip = np.zeros(3)
-            tip[axis] = 0.3 * size
+            start, tip = np.zeros(3), np.zeros(3)
+            start[axis], tip[axis] = low[axis], high[axis]
             common = dict(color=AXIS_COLOURS[axis], pickable=False, reset_camera=False)
-            self.plotter.add_mesh(pv.Line((0, 0, 0), tip), line_width=3, name=f"axis {name}", **common)
+            self.plotter.add_mesh(pv.Line(start, tip), line_width=3, name=f"axis {name}", **common)
+            self.plotter.add_point_labels(
+                [tip],
+                [AXIS_LABELS[axis]],
+                text_color=AXIS_COLOURS[axis],
+                shape=None,
+                show_points=False,
+                always_visible=True,
+                name=f"label {name}",
+                reset_camera=False,
+            )
+            if axis == 2:
+                continue  # Z=0 is no symmetry plane
             i, j = (axis + 1) % 3, (axis + 2) % 3
             corners = np.zeros((4, 3))
             corners[:, i] = low[i], high[i], high[i], low[i]
             corners[:, j] = low[j], low[j], high[j], high[j]
             self.plotter.add_mesh(
                 pv.PolyData(corners, [4, 0, 1, 2, 3]),
-                opacity=PLANE_OPACITY[axis],
+                opacity=PLANE_OPACITY,
                 name=f"plane {name}=0",
                 **common,
             )
@@ -322,7 +337,7 @@ class CadImportEditor:
         self.clear_button.setToolTip("Show everything and clear the selection.")
         self.clear_button.clicked.connect(self.clear)
         self.guides_check = QCheckBox("Show axes and planes")
-        self.guides_check.setToolTip("The Boundary Lab axes and the X=0, Y=0 (symmetry) and Z=0 planes.")
+        self.guides_check.setToolTip("The Boundary Lab axes and the symmetry planes X=0 and Y=0.")
         self.guides_check.setChecked(True)
         self.guides_check.toggled.connect(lambda _: self._render())
         buttons.addWidget(self.show_all_button)
@@ -372,17 +387,10 @@ class CadImportEditor:
         layout.addWidget(self.closed_shell_box)
 
         form = QFormLayout()
-        self.forward_combo, self.up_combo = QComboBox(), QComboBox()
-        for key, combo, label in (("forward", self.forward_combo, "Forward (+Z)"), ("up", self.up_combo, "Up (+Y)")):
-            for axis in AXES:
-                combo.addItem(f"CAD {axis}", axis)
-            combo.setAccessibleName(label)
-            combo.setToolTip(f"The CAD axis that becomes Boundary Lab {label[-3:-1]}.")
-            combo.currentIndexChanged.connect(lambda _, k=key, c=combo: self.edited({k: c.currentData()}))
-            form.addRow(label, combo)
         self.placement_box = QGroupBox("Placement")
         self.placement_box.setToolTip(
-            "After Forward/Up: rotate about the Boundary Lab X, Y and Z axes, in that order, then translate."
+            "Rotate about the Boundary Lab X (horizontal), Y (vertical) and Z (on axis) axes, in that order, "
+            "then translate."
         )
         placement_form = QFormLayout(self.placement_box)
         self.rotation_spins, self.translation_spins = [], []
@@ -441,10 +449,6 @@ class CadImportEditor:
             blocked = spin.blockSignals(True)
             spin.setValue(float(source[key]))
             spin.blockSignals(blocked)
-        for key, combo in (("forward", self.forward_combo), ("up", self.up_combo)):
-            blocked = combo.blockSignals(True)
-            combo.setCurrentIndex(combo.findData(source.get(key, "+Z" if key == "forward" else "+Y")))
-            combo.blockSignals(blocked)
         for key, spins in (("rotation_deg", self.rotation_spins), ("translation_mm", self.translation_spins)):
             for spin, value in zip(spins, source.get(key, (0.0, 0.0, 0.0)), strict=True):
                 blocked = spin.blockSignals(True)
@@ -552,8 +556,6 @@ class CadImportEditor:
     @staticmethod
     def _placement_of(source):
         return dict(
-            forward=source.get("forward", "+Z"),
-            up=source.get("up", "+Y"),
             rotation_deg=tuple(source.get("rotation_deg", (0.0, 0.0, 0.0))),
             translation_m=tuple(v / 1000 for v in source.get("translation_mm", (0.0, 0.0, 0.0))),
         )
@@ -696,6 +698,8 @@ class CadImportEditor:
         self._show_overrides()
         self._show_closed_shells()
         self._render(reset_camera=True)
+        if self.geometry is not None:
+            self._drop_interface_faces()
 
     # -- visibility and selection -------------------------------------------------------------
 
@@ -726,33 +730,81 @@ class CadImportEditor:
     def _selection_changed(self):
         count = len(self.selected_faces())
         self.hint.setText(
-            "Click a face to select it, Ctrl or Shift+click to add or remove one, right-click to group it. "
+            "Click a face to select it, Ctrl or Shift+click to add or remove one, right-click to show its group and act on it. "
             f"{count} face{'' if count == 1 else 's'} selected."
         )
         self._render_timer.start(0)
 
     def _show_face_menu(self, face_id, global_pos):
+        if self._faces is None:
+            return
+        self.mark_face(face_id)
         menu = self.face_menu(face_id)
-        if menu.actions():
+        try:
             menu.exec(global_pos)
-        menu.deleteLater()
+        finally:
+            menu.deleteLater()
+            self._highlight = None
+            self._render()
+
+    def mark_face(self, face_id):
+        """Highlight ``face_id``, name it and its face group in the status line and point at the group's row."""
+        name, _ = self.group_of(face_id)
+        self._highlight = {face_id}
+        self._render()
+        self.status.setText(f"Face {face_id} · Group '{name}'")
+        row = next(r for r, (n, _, _) in enumerate(self.rows()) if n == name)
+        self._syncing = True  # the row only points: the face selection stays
+        self.groups_table.selectRow(row)
+        self._syncing = False
 
     def face_menu(self, face_id):
-        """The right-click menu of ``face_id``: it acts on the selection if the face is in it, else on the face."""
+        """The right-click menu of ``face_id``: an interface face renames its interface; any other face's menu
+        acts on the selection, or on the face when nothing is selected."""
         menu = QMenu(self.widget)
-        if self._faces is None or face_id in self._interface_of():
+        if self._faces is None:
             return menu
-        selected = self.selected_faces()
-        faces = selected if face_id in selected else {face_id}
-        add = menu.addMenu("Add to")
+        interface = self._interface_of().get(face_id)
+        if interface is not None:
+            menu.addAction("Rename interface…", lambda: self._rename_interface_asked(interface))
+            return menu
+        faces = self.selected_faces() or {face_id}
         for name, _, kind in self.rows():
-            if kind != "interface":
-                add.addAction(name, lambda n=name: self.add_to_group(n, faces))
-        add.addAction("New group…", lambda: self._add_to_new_group(faces))
-        stored = {f for group in self.source.get("face_groups", []) for f in self._members(group)[0]}
-        if face_id in stored:
-            menu.addAction(f'Remove from "{self.group_of(face_id)[0]}"', lambda: self.remove_from_group(faces))
+            if kind == "group":
+                menu.addAction(f'Add to "{name}"', lambda n=name: self.add_to_group(n, faces))
+        menu.addAction("New group…", lambda: self._add_to_new_group(faces))
+        menu.addAction("Move to walls", lambda: self.remove_from_group(faces))
         return menu
+
+    def _rename_interface_asked(self, name):
+        new_name = self.ask_interface_name(name)
+        if new_name is not None:
+            self.rename_interface(name, new_name)
+
+    def ask_interface_name(self, name):
+        """Ask the new name of interface face group ``name``; ``None`` when cancelled."""
+        new_name, ok = QInputDialog.getText(
+            self.widget, "Rename interface", "Interface face group name (empty: as detected):", text=name
+        )
+        return new_name if ok else None
+
+    def rename_interface(self, name, new_name):
+        """Rename interface face group ``name``; an empty ``new_name`` gives back the detected name."""
+        shown = self._interface_names()
+        detected = next(d for d, s in shown.items() if s == name)
+        new_name = new_name.strip() or detected
+        if new_name == name:
+            return
+        if new_name in {WALLS, *shown.values(), *self.face_groups()}:
+            self.status.setText(f"Face group name '{new_name}' is taken.")
+            return
+        names = {d: s for d, s in self.source.get("interface_names", {}).items() if d != detected}
+        if new_name != detected:
+            names[detected] = new_name
+        sizes = dict(self.source.get("face_group_sizes_m", {}))
+        if name in sizes:
+            sizes[new_name] = sizes.pop(name)
+        self.edited({"interface_names": names, "face_group_sizes_m": sizes})
 
     def _add_to_new_group(self, face_ids):
         name = self.ask_group_name()
@@ -808,6 +860,7 @@ class CadImportEditor:
             self.visible_faces(),
             self.selected_faces(),
             face_colours,
+            highlight=self._highlight,
             guides=self.geometry["bbox_m"] if self.geometry is not None and self.guides_check.isChecked() else None,
             reset_camera=reset_camera,
         )
@@ -841,8 +894,14 @@ class CadImportEditor:
                 ids.add(found)
         return ids, unmatched
 
+    def _interface_names(self):
+        """``{detected name: shown name}`` of the interfaces."""
+        names = self.source.get("interface_names", {})
+        return {i["name"]: names.get(i["name"], i["name"]) for i in self.geometry["interfaces"]}
+
     def _interface_of(self):
-        return {f: i["name"] for i in self.geometry["interfaces"] for f in i["face_ids"]}
+        shown = self._interface_names()
+        return {f: shown[i["name"]] for i in self.geometry["interfaces"] for f in i["face_ids"]}
 
     def face_groups(self, stored=None):
         """``{name: face ids}``: ``stored`` (default: the source's) face groups, then those named in the STEP file."""
@@ -870,7 +929,8 @@ class CadImportEditor:
         if self._faces is None:
             return []
         groups = self.face_groups()
-        interfaces = {i["name"]: set(i["face_ids"]) for i in self.geometry["interfaces"]}
+        shown = self._interface_names()
+        interfaces = {shown[i["name"]]: set(i["face_ids"]) for i in self.geometry["interfaces"]}
         walls = set(self._faces) - set().union(*groups.values(), *interfaces.values())
         return (
             [(WALLS, walls, "walls")]
@@ -883,7 +943,8 @@ class CadImportEditor:
         self.add_to_group(name, self.selected_faces())
 
     def add_to_group(self, name, face_ids):
-        """Put ``face_ids`` into face group ``name`` (new or existing), out of any other; walls removes them."""
+        """Put ``face_ids`` into face group ``name`` (new or existing), out of any other; walls removes them.
+        Interface faces stay in their interface's face group."""
         name, face_ids = name.strip(), set(face_ids)
         if not name or not face_ids or self._faces is None:
             self.status.setText("Select faces and enter a face group name first.")
@@ -895,15 +956,25 @@ class CadImportEditor:
         if name in interface_of.values():
             self.status.setText(f"Face group name '{name}' is reserved.")
             return
-        if face_ids & interface_of.keys():
-            face = min(face_ids & interface_of.keys())
-            self.status.setText(f"Face group '{name}' contains face {face} of interface '{interface_of[face]}'.")
-            return
-        stored = list(self.source.get("face_groups", []))
-        if name not in [g["name"] for g in stored]:
-            stored.append({"name": name, "faces": []})
-        # Re-picking a group that needs review repairs it: its missing faces are dropped.
-        self._edit_groups(self._regrouped(stored, face_ids, name))
+        skipped = face_ids & interface_of.keys()
+        face_ids -= skipped
+        if face_ids:
+            stored = list(self.source.get("face_groups", []))
+            if name not in [g["name"] for g in stored]:
+                stored.append({"name": name, "faces": []})
+            # Re-picking a group that needs review repairs it: its missing faces are dropped.
+            self._edit_groups(self._regrouped(stored, face_ids, name))
+        if skipped:
+            self.status.setText(_in_interfaces(skipped, interface_of))
+
+    def _drop_interface_faces(self):
+        """Take the faces that are now interface faces out of the stored face groups, saying so."""
+        stored = self.source.get("face_groups", [])
+        interface_of = self._interface_of()
+        moved = {f for group in stored for f in self._members(group)[0]} & interface_of.keys()
+        if moved:
+            self._edit_groups(self._regrouped(stored, moved))
+            self.status.setText(_in_interfaces(moved, interface_of))
 
     def remove_from_group(self, face_ids):
         """Move ``face_ids`` out of their face groups, back to walls."""
@@ -1000,7 +1071,7 @@ class CadImportEditor:
         colours = self.group_colours()
         tips = {
             "walls": "Faces in no other face group",
-            "interface": "Interface face group: sizable, not editable",
+            "interface": "Interface face group: sizable; right-click one of its faces to rename it",
         }
         self.groups_table.setRowCount(len(rows))
         for row, (name, faces, kind) in enumerate(rows):
@@ -1062,8 +1133,6 @@ class CadImportEditor:
         widgets = (
             self.step_path,
             self.browse_button,
-            self.forward_combo,
-            self.up_combo,
             self.placement_box,
             self.groups_box,
             *self.spins.values(),
@@ -1091,6 +1160,10 @@ def _file_stamp(path):
     except (OSError, ValueError):
         return None
     return stat.st_mtime_ns, stat.st_size
+
+
+def _in_interfaces(face_ids, interface_of):
+    return "; ".join(f"Face {f} stays in interface '{interface_of[f]}'" for f in sorted(face_ids)) + "."
 
 
 def _mm(size_m):

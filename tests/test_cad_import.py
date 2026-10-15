@@ -55,8 +55,8 @@ def test_vented_box_becomes_one_air_mesh_and_one_exterior_mesh(vented):
         "exterior": "bem_surface",
     }
     # The chamber's back face is named "Driver" in the STEP file.
-    assert groups(meshes["chamber"].path) == {2: ["Driver", "Port opening", "walls"], 3: ["Chamber", "Port"]}
-    assert groups(meshes["exterior"].path) == {2: ["Port opening", "walls"], 3: []}
+    assert groups(meshes["chamber"].path) == {2: ["Driver", "Interface 1 Port", "walls"], 3: ["Chamber", "Port"]}
+    assert groups(meshes["exterior"].path) == {2: ["Interface 1 Port", "walls"], 3: []}
     assert np.allclose(vented.geometry.bbox_m, [(-0.06, -0.06, -0.21), (0.06, 0.06, 0.0)], atol=1e-6)
 
 
@@ -93,7 +93,10 @@ def test_step_named_face_group_takes_its_own_size(vented, tmp_path):
     settings = replace(SETTINGS, face_group_sizes_m={"Driver": 0.008})
     result = mesh_step(vented_box(tmp_path / "box.step"), settings, tmp_path / "out")
 
-    assert [m.surface_groups for m in result.meshes] == [("Driver", "Port opening", "walls"), ("Port opening", "walls")]
+    assert [m.surface_groups for m in result.meshes] == [
+        ("Driver", "Interface 1 Port", "walls"),
+        ("Interface 1 Port", "walls"),
+    ]
     assert 0.0065 < np.median(edge_lengths(read(result, "chamber"), group="Driver")) < 0.0095
     assert 0.016 < np.median(edge_lengths(read(result, "exterior"), group="walls")) < 0.022
 
@@ -105,8 +108,8 @@ def test_face_group_spans_several_faces_and_overrides_a_step_name(vented, tmp_pa
     result = mesh_step(vented_box(tmp_path / "box.step"), settings, tmp_path / "out")
 
     assert [m.surface_groups for m in result.meshes] == [
-        ("Cone", "Port opening", "walls"),
-        ("Port opening", "Sides", "walls"),
+        ("Cone", "Interface 1 Port", "walls"),
+        ("Interface 1 Port", "Sides", "walls"),
     ]
     sides = read(result, "exterior")
     assert (
@@ -138,7 +141,10 @@ def test_face_group_stored_in_cad_axes_survives_an_axis_mapping_change(tmp_path)
     settings = replace(SETTINGS, forward="-Y", up="+Z", face_groups={"Baffle": (ref,)})
     result = mesh_step(step, settings, tmp_path / "out")
 
-    assert [m.surface_groups for m in result.meshes] == [("Port opening", "walls"), ("Baffle", "Port opening", "walls")]
+    assert [m.surface_groups for m in result.meshes] == [
+        ("Interface 1 Port", "walls"),
+        ("Baffle", "Interface 1 Port", "walls"),
+    ]
     bem = read(result, "exterior")
     baffle = bem.cells_dict["triangle"][bem.cell_data_dict["gmsh:physical"]["triangle"] == bem.field_data["Baffle"][0]]
     assert np.allclose(bem.points[baffle][..., 2], 0, atol=1e-9)  # now the +Z front
@@ -154,8 +160,8 @@ def test_faces_sharing_a_step_name_can_be_split_across_face_groups(tmp_path):
 
     assert len(sides) == 4
     assert [m.surface_groups for m in result.meshes] == [
-        ("Driver", "Port opening", "walls"),
-        ("Left", "Port opening", "Right", "Side", "walls"),
+        ("Driver", "Interface 1 Port", "walls"),
+        ("Interface 1 Port", "Left", "Right", "Side", "walls"),
     ]
     bem = read(result, "exterior")
     physical, geometrical = (bem.cell_data_dict[k]["triangle"] for k in ("gmsh:physical", "gmsh:geometrical"))
@@ -217,7 +223,7 @@ def test_reduced_model_suggests_symmetry_and_meshes_conformally(tmp_path, symmet
     assert result.geometry.warnings == ()
     assert result.geometry.bbox_m[0][0] == pytest.approx(0, abs=1e-6)
     validate_conforming_interfaces(
-        fem, bem, fem_interface_name="Port opening", bem_interface_name="Port opening", symmetry_mode=symmetry
+        fem, bem, fem_interface_name="Interface 1 Port", bem_interface_name="Interface 1 Port", symmetry_mode=symmetry
     )
     # Signed volume about the origin still sees the open half/quarter shell as outward.
     full = 0.12 * 0.12 * 0.21
@@ -262,10 +268,12 @@ def test_placement_rotates_about_x_y_z_then_translates_and_keeps_the_interface_c
     assert np.allclose(np.abs(moved.normal), (1, 0, 0), atol=1e-9)
     fem, bem = read(result, "chamber"), read(result, "exterior")
     mouth = bem.cells_dict["triangle"][
-        bem.cell_data_dict["gmsh:physical"]["triangle"] == bem.field_data["Port opening"][0]
+        bem.cell_data_dict["gmsh:physical"]["triangle"] == bem.field_data["Interface 1 Port"][0]
     ]
     assert np.allclose(bem.points[mouth].reshape(-1, 3)[:, 0], 0.01, atol=1e-9)  # the mouth plane z=0 is now x=0.01
-    validate_conforming_interfaces(fem, bem, fem_interface_name="Port opening", bem_interface_name="Port opening")
+    validate_conforming_interfaces(
+        fem, bem, fem_interface_name="Interface 1 Port", bem_interface_name="Interface 1 Port"
+    )
     assert signed_volume(bem) == pytest.approx(0.12 * 0.12 * 0.21, rel=1e-3)
 
 
@@ -318,8 +326,12 @@ def test_placement_must_be_three_finite_numbers(changes, message):
         (lambda g: {"face_groups": {"Lid": (9999,)}}, "Face group 'Lid' refers to unknown face 9999"),
         (lambda g: {"face_groups": {"walls": ()}}, "Face group name 'walls' is reserved"),
         (
-            lambda g: {"face_groups": {"Mouth": g.interfaces[0].face_ids}},
-            "Face group 'Mouth' contains face .* of interface 'Port opening'",
+            lambda g: {"interface_names": {"Interface 1 Port": "walls"}},
+            "Interface 'Interface 1 Port' cannot be named 'walls'",
+        ),
+        (
+            lambda g: {"interface_names": {"Interface 1 Port": "Mouth"}, "face_groups": {"Mouth": (9999,)}},
+            "Face group name 'Mouth' is reserved",
         ),
     ],
 )
@@ -329,6 +341,21 @@ def test_invalid_face_groups_and_overrides_are_rejected(vented, tmp_path, change
     with pytest.raises(ValueError, match=message):
         mesh_step(step, replace(SETTINGS, **changes(vented.geometry)), tmp_path / "out")
     assert not (tmp_path / "out").exists()
+
+
+def test_interface_faces_stay_in_their_renamed_interface_face_group(vented, tmp_path):
+    step = vented_box(tmp_path / "box.step")
+    (interface,) = vented.geometry.interfaces
+    settings = replace(
+        SETTINGS,
+        face_groups={"Mouth": interface.face_ids},  # grouped before the interface was detected
+        interface_names={interface.name: "Port mouth", "Interface 2 Gone": "Ignored"},
+    )
+
+    result = mesh_step(step, settings, tmp_path / "out")
+
+    assert [(i.name, i.face_ids) for i in result.geometry.interfaces] == [("Port mouth", interface.face_ids)]
+    assert [m.surface_groups for m in result.meshes] == [("Driver", "Port mouth", "walls"), ("Port mouth", "walls")]
 
 
 def test_missing_step_file_is_rejected(tmp_path):
@@ -370,7 +397,7 @@ def test_unnamed_bodies_get_stable_default_names(tmp_path):
         ("air_body_1", ("Air body 1", "Air body 2")),
         ("exterior", ("Exterior surface 1",)),
     ]
-    assert [i.name for i in first.interfaces] == ["Air body 2 opening"]
+    assert [i.name for i in first.interfaces] == ["Interface 1 Air body 2"]
     assert all(face.step_name is None for face in first.faces)
 
 
@@ -400,8 +427,8 @@ def test_separate_air_bodies_get_separate_meshes_and_interfaces(tmp_path):
         ("exterior", "unbounded_air", ("Cabinet",)),
     ]
     assert [(i.name, i.mesh_id) for i in result.geometry.interfaces] == [
-        ("Left port opening", "left"),
-        ("Right port opening", "right"),
+        ("Interface 1 Left port", "left"),
+        ("Interface 1 Right port", "right"),
     ]
     bem = read(result, "exterior")
     for interface in result.geometry.interfaces:
@@ -421,8 +448,8 @@ def test_curvature_refines_curved_edges_beyond_the_target_size(tmp_path):
     # Target size 68.6 mm would put fewer than four elements around the 40 mm radius mouth.
     result = mesh_step(waveguide(tmp_path / "wg.step"), replace(SETTINGS, fmax_hz=1000.0), tmp_path / "out")
 
-    assert [i.name for i in result.geometry.interfaces] == ["Throat opening"]
-    assert boundary_edge_count(read(result, "throat"), "Throat opening") >= 12
+    assert [i.name for i in result.geometry.interfaces] == ["Interface 1 Throat"]
+    assert boundary_edge_count(read(result, "throat"), "Interface 1 Throat") >= 12
 
 
 @pytest.fixture(scope="module")
@@ -465,12 +492,12 @@ def test_closed_shell_chosen_as_air_becomes_a_bounded_region_with_an_interface(s
         ("closed_shell_1", "bounded_air", ("Closed shell 1",)),
         ("exterior", "unbounded_air", ("Exterior surface 1",)),
     ]
-    assert [(i.name, i.mesh_id) for i in geometry.interfaces] == [("Closed shell 1 opening", "closed_shell_1")]
+    assert [(i.name, i.mesh_id) for i in geometry.interfaces] == [("Interface 1 Closed shell 1", "closed_shell_1")]
     report = validate_conforming_interfaces(
         read(result, "closed_shell_1"),
         read(result, "exterior"),
-        fem_interface_name="Closed shell 1 opening",
-        bem_interface_name="Closed shell 1 opening",
+        fem_interface_name="Interface 1 Closed shell 1",
+        bem_interface_name="Interface 1 Closed shell 1",
     )
     assert report.interface_triangles > 0 and report.bem_boundary_edges == 0
 
@@ -495,7 +522,7 @@ def test_cli_sets_closed_shell_roles(surface_model, tmp_path, capsys):
 
     output = capsys.readouterr().out
     assert "Closed shell: Closed shell 1 (air)" in output
-    assert "Interface: Closed shell 1 opening (closed_shell_1 <-> exterior)" in output
+    assert "Interface: Interface 1 Closed shell 1 (closed_shell_1 <-> exterior)" in output
     with pytest.raises(SystemExit):
         cad_cli.main([str(surface_model), "--fmax", "1000", "--output", str(tmp_path), "--closed-shell", "air"])
     assert "NAME=air or NAME=exterior" in capsys.readouterr().err
@@ -513,8 +540,11 @@ def test_cli_writes_the_same_meshes_as_the_pipeline(vented, tmp_path, capsys):
         assert (tmp_path / "cli" / mesh.path.name).read_bytes() == mesh.path.read_bytes()
     output = capsys.readouterr().out
     assert "Target element size: 20.0 mm" in output
-    assert "chamber.msh (fem_volume): volume groups Chamber, Port; surface groups Driver, Port opening, walls" in output
-    assert "Interface: Port opening (chamber <-> exterior)" in output
+    assert (
+        "chamber.msh (fem_volume): volume groups Chamber, Port; surface groups Driver, Interface 1 Port, walls"
+        in output
+    )
+    assert "Interface: Interface 1 Port (chamber <-> exterior)" in output
     assert "Suggested symmetry: Off" in output
 
 
@@ -546,12 +576,12 @@ def signed_volume(mesh):
 def test_port_mouth_is_a_node_for_node_interface_on_a_closed_outward_exterior(vented):
     meshes = {mesh.id: meshio.read(mesh.path) for mesh in vented.meshes}
 
-    assert [(i.name, i.mesh_id) for i in vented.geometry.interfaces] == [("Port opening", "chamber")]
+    assert [(i.name, i.mesh_id) for i in vented.geometry.interfaces] == [("Interface 1 Port", "chamber")]
     report = validate_conforming_interfaces(
         meshes["chamber"],
         meshes["exterior"],
-        fem_interface_name="Port opening",
-        bem_interface_name="Port opening",
+        fem_interface_name="Interface 1 Port",
+        bem_interface_name="Interface 1 Port",
     )
     assert report.interface_triangles > 0 and report.bem_boundary_edges == 0
     # Cabinet 120 x 120 x 210 mm, outward normals.

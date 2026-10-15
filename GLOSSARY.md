@@ -48,8 +48,12 @@ A named set of geometry faces that becomes one physical surface group in a mesh.
 _Avoid_: Tag, patch, selection
 
 **Placement**:
-The rotation and translation that put imported CAD geometry into Boundary Lab coordinates; Forward/Up is its 90° axis-mapping part.
-_Avoid_: Transform, offset, pose
+The rotation and translation that put imported CAD geometry into Boundary Lab coordinates.
+_Avoid_: Transform, offset, pose, Forward/Up
+
+**On axis**:
+The Z direction of Boundary Lab coordinates, the loudspeaker's main radiation axis; **Horizontal** is X and **Vertical** is Y, whose planes through the origin are the symmetry planes.
+_Avoid_: Forward, depth axis
 
 **Target element size**:
 The default mesh edge length, sound speed ÷ maximum frequency ÷ elements per wavelength.

@@ -66,7 +66,8 @@ class CadImportSettings:
     fields), or face ids (``CadFace.id``). Faces with a STEP name in no face group form a
     group of that name. ``symmetry`` is the project symmetry to check the geometry
     against; ``None`` accepts what is detected. ``closed_shells`` maps a closed shell name
-    to ``"air"`` or ``"exterior"`` (the default).
+    to ``"air"`` or ``"exterior"`` (the default). ``interface_names`` renames interfaces by
+    their detected name; names of interfaces not detected are ignored.
     """
 
     fmax_hz: float
@@ -83,6 +84,7 @@ class CadImportSettings:
     closed_shells: Mapping[str, str] = field(default_factory=dict)
     rotation_deg: tuple[float, float, float] = ZERO
     translation_m: tuple[float, float, float] = ZERO
+    interface_names: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         for label, value in (
@@ -147,7 +149,7 @@ class CadRegion:
 
 @dataclass(frozen=True)
 class CadInterface:
-    """An opening between ``mesh_id`` and the exterior; ``name`` is the face group on both sides."""
+    """An interface between ``mesh_id`` and the exterior; ``name`` is the face group on both sides."""
 
     name: str
     mesh_id: str
@@ -442,6 +444,7 @@ def mesh_step(step_path: str | Path, settings: CadImportSettings, output_dir: st
     output_dir = Path(output_dir)
     with _gmsh_session() as gmsh:
         model = _analyse(gmsh, Path(step_path), _placement(**settings.placement), settings.closed_shells)
+        model.rename_interfaces(settings.interface_names)
         geometry = model.geometry
         if settings.symmetry is not None and settings.symmetry != geometry.symmetry:
             raise ValueError(
@@ -478,6 +481,18 @@ class _Model:
     overlap_edges: np.ndarray  # ... and of its edges shared by more than two faces
     cover_warnings: tuple[str, ...]  # the warnings the placement does not change
 
+    def rename_interfaces(self, names: Mapping[str, str]) -> None:
+        """Rename the interfaces by detected name; names of interfaces not detected are ignored."""
+        renamed = {i.name: names.get(i.name, i.name).strip() for i in self.geometry.interfaces}
+        counts = Counter(renamed.values())
+        for old, new in renamed.items():
+            if not new or new == WALLS or counts[new] > 1:
+                raise ValueError(f"Interface '{old}' cannot be named '{new}'.")
+        self.geometry = replace(
+            self.geometry, interfaces=tuple(replace(i, name=renamed[i.name]) for i in self.geometry.interfaces)
+        )
+        self.interface_of = {face: renamed[name] for face, name in self.interface_of.items()}
+
     def surface_groups(
         self, face_groups: Mapping[str, tuple[int | CadFaceRef, ...]], **placement
     ) -> dict[str, dict[str, list[int]]]:
@@ -507,9 +522,7 @@ class _Model:
                 if face not in self.face_bodies:
                     raise ValueError(f"Face group '{name}' refers to unknown face {face}.")
                 if face in self.interface_of:
-                    raise ValueError(
-                        f"Face group '{name}' contains face {face} of interface '{self.interface_of[face]}'."
-                    )
+                    continue  # an interface face stays in its interface's face group
                 if face in member and member[face] != name:
                     raise ValueError(f"Face {face} is in face groups '{member[face]}' and '{name}'.")
                 member[face] = name
@@ -726,7 +739,7 @@ def _analyse(
         by_body[body_of_volume[face_volumes[f][0]]].append(f)
     for body in volumes:
         for k, faces in enumerate(_components(by_body[body], edges), start=1):
-            name = f"{body} opening" + (f" {k}" if k > 1 else "")
+            name = f"Interface {k} {body}"
             interfaces.append(CadInterface(name, mesh_of_body[body], tuple(faces)))
             interface_of.update(dict.fromkeys(faces, name))
 

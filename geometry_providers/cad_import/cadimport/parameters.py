@@ -1,4 +1,4 @@
-"""Qt-free design source: the STEP file, axis mapping and sizing, turned into pipeline settings."""
+"""Qt-free design source: the STEP file, placement and sizing, turned into pipeline settings."""
 
 from pathlib import Path
 
@@ -42,8 +42,6 @@ def settings(source, configuration):
             fmax_hz=float(configuration["frequency"]["freq_max_hz"]),
             sound_speed_m_per_s=sound_speed(configuration),
             elements_per_wavelength=float(source["elements_per_wavelength"]),
-            forward=source["forward"],
-            up=source["up"],
             body_sizes_m=dict(source.get("body_sizes_m", {})),
             face_group_sizes_m=dict(source.get("face_group_sizes_m", {})),
             curvature_elements_per_circle=float(source["curvature_elements_per_circle"]),
@@ -52,6 +50,7 @@ def settings(source, configuration):
             closed_shells=dict(source.get("closed_shells", {})),
             rotation_deg=tuple(source["rotation_deg"]),
             translation_m=translation_m(source),
+            interface_names=dict(source.get("interface_names", {})),
         )
     except (KeyError, TypeError) as exc:
         raise ValueError(f"Invalid CAD import source: {exc}") from exc
