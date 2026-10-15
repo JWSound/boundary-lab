@@ -1158,10 +1158,9 @@ def test_an_interface_is_renamed_from_its_face_menu_and_keeps_its_size(cad_edito
     assert host.snapshot().source["interface_names"] == {"Interface 1 Port": "Port mouth"}
 
 
-def test_faces_grouped_before_they_became_interface_faces_stay_in_the_interface_while_it_is_detected(
-    cad_editor, monkeypatch, qapp, tmp_path
-):
-    editor, host = cad_editor
+def group_the_future_interface_face(editor, qapp, tmp_path):
+    """Read a waveguide whose closed shell is exterior and group the shell's mouth face as "Interface"; that face
+    becomes an interface face once the shell is an air body."""
     step = waveguide(tmp_path / "wg.step", surface_model=True)
     editor.set_step_path(str(step))
     wait(qapp, lambda: not editor.loading)
@@ -1177,6 +1176,13 @@ def test_faces_grouped_before_they_became_interface_faces_stay_in_the_interface_
     editor.pick_face(face)
     editor.group_selection("Interface")
 
+
+def test_faces_grouped_before_they_became_interface_faces_stay_in_the_interface_while_it_is_detected(
+    cad_editor, monkeypatch, qapp, tmp_path
+):
+    editor, host = cad_editor
+    group_the_future_interface_face(editor, qapp, tmp_path)
+
     editor.kind_combos["Closed shell 1"].setCurrentIndex(0)  # air body
     wait(qapp, lambda: not editor.loading)
 
@@ -1189,6 +1195,37 @@ def test_faces_grouped_before_they_became_interface_faces_stay_in_the_interface_
     editor.kind_combos["Closed shell 1"].setCurrentIndex(1)  # exterior again: no interface
     wait(qapp, lambda: not editor.loading)
     assert group_rows(editor)["Interface"] == 1
+
+
+def test_the_interface_note_shows_once_per_change_not_on_every_read(cad_editor, qapp, tmp_path):
+    editor, _ = cad_editor
+    group_the_future_interface_face(editor, qapp, tmp_path)
+    editor.kind_combos["Closed shell 1"].setCurrentIndex(0)  # air body
+    wait(qapp, lambda: not editor.loading)
+    assert "stays in interface" in editor.status.text()
+    editor.status.setText("")
+
+    editor._load(editor._key)  # read again, as after the file changed on disk
+    wait(qapp, lambda: not editor.loading)
+
+    assert "stays in interface" not in editor.status.text()
+
+
+def test_a_read_dropping_a_size_and_holding_an_interface_face_shows_both_notes(cad_editor, qapp, tmp_path):
+    editor, host = cad_editor
+    group_the_future_interface_face(editor, qapp, tmp_path)
+    gone = {"step_name": None, "centre": (9.0, 9.0, 9.0), "area": 1.0, "normal": (0.0, 0.0, 1.0)}
+    entry = {"face": gone | {"surface_type": "Plane"}, "size_m": 0.01}
+    snapshot = host.update_source(
+        host.snapshot().source | {"face_sizes": [entry]}, expected_revision=host.snapshot().revision
+    )
+    editor.apply_source(snapshot.source, snapshot.revision)
+
+    editor.kind_combos["Closed shell 1"].setCurrentIndex(0)  # air body: a read
+    wait(qapp, lambda: not editor.loading)
+
+    assert "1 face size override dropped" in editor.status.text()
+    assert "stays in interface" in editor.status.text()
 
 
 def test_picking_and_grouping_keep_the_camera(cad_editor, faces_under_mouse, qapp):

@@ -302,6 +302,7 @@ class CadImportEditor:
         self._geometry = None  # the CadGeometry shown
         self._groups = self._sizes = None  # its CadFaceGroups and CadSizes under the source
         self._size_error = ""  # why the source's sizes cannot be read
+        self._interface_note = ""  # last shown: which stored faces stay in their interface face groups
         self._syncing = False
         self._fmax_hz = None
         self._sound_speed = DEFAULT_SOUND_SPEED_M_PER_S  # the project's, once its context arrives
@@ -717,10 +718,14 @@ class CadImportEditor:
         self._show_overrides()
         self._render(reset_camera=reset_camera)
         if self.geometry is not None:
-            self._drop_lost_sizes()
+            notes = [self._drop_lost_sizes()]
             self._migrate_sizes()
-            if note := self._groups.interface_note(self._groups.held_by_interfaces):
-                self.status.setText(note)
+            interface_note = self._groups.interface_note(self._groups.held_by_interfaces)
+            if interface_note != self._interface_note:  # once per change, not on every read
+                self._interface_note = interface_note
+                notes.append(interface_note)
+            if any(notes):
+                self.status.setText(" ".join(note for note in notes if note))
 
     def _add_kind_combo(self, item, name, role):
         """The Kind dropdown of closed shell ``name``'s body row; a change re-reads the file."""
@@ -1085,13 +1090,13 @@ class CadImportEditor:
 
     def _drop_lost_sizes(self):
         """Drop the face sizes whose faces the loaded STEP file no longer has, and volume sizes of bodies that are no
-        air bodies, saying so."""
+        air bodies; the note saying so, else empty."""
         if self._size_error:
-            return
+            return ""
         changes, note = self._sizes.dropped()
         if changes:
             self.edited(changes)
-            self.status.setText(note)
+        return note
 
     def _migrate_sizes(self):
         """Convert an older design's body and face group sizes once its geometry and the maximum frequency, which
