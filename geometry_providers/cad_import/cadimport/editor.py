@@ -60,13 +60,13 @@ LEVELS = {"Coarse": 2, "Medium": 4, "Fine": 6}  # mesh fineness: elements per wa
 LEVEL_NAMES = {n: name for name, n in LEVELS.items()}
 CUSTOM = "custom"  # the Mesh size choice that asks an edge length
 SIZE_CHOICES = (("", None), *LEVELS.items(), ("Custom…", CUSTOM))  # "": inherited
-GLOBAL, MIXED = "Global", "Mixed"  # tree cells: inherits the mesh fineness; a body whose faces differ
 SIZING = (
     ("curvature_elements_per_circle", "Curvature elements per circle", 3.0, 100.0, 0, ""),
     ("growth_rate", "Growth rate", 1.05, 3.0, 2, "×"),
 )
 FACE_COLOUR, OUTLINE_COLOUR = "#c8ccd2", "#2b2f36"
-SELECTED_COLOUR = "#e8a33d"
+# The selection is orange; the face under the mouse pale orange, or dark orange when selected.
+SELECTED_COLOUR, HOVER_COLOUR, HOVER_SELECTED_COLOUR = "#e8a33d", "#f6cf98", "#b8620f"
 AXIS_COLOURS = ("#d62728", "#2ca02c", "#1f77b4")  # X, Y, Z
 AXIS_LABELS = ("X · Horizontal", "Y · Vertical", "Z · On Axis")  # as the balloon and mesh views name them
 PLANE_COLOUR, PLANE_OPACITY = "#98df8a", 0.15  # the symmetry planes X=0 and Y=0, a lighter green than the Y axis
@@ -96,9 +96,8 @@ class _SizeDelegate(QStyledItemDelegate):
         return combo
 
     def setEditorData(self, editor, index):
-        text = index.data() or ""
-        found = 0 if text in (GLOBAL, MIXED) else editor.findText(text)
-        editor.setCurrentIndex(found if found >= 0 else editor.findData(CUSTOM))  # an edge length: Custom
+        found = editor.findText(index.data() or "")  # an edge length or a number per wavelength is Custom
+        editor.setCurrentIndex(found if found >= 0 else editor.findData(CUSTOM))
 
     def setModelData(self, editor, model, index):
         self.chosen(index, editor.currentData())
@@ -124,13 +123,21 @@ def outline_edges(triangles, face_ids):
 
 
 class Viewport(QWidget):
-    """Visible faces of the preview tessellation in a VTK plotter; a click picks a face, a right-click asks a menu.
+    """Visible faces of the preview tessellation in a VTK plotter; a click picks a face, a right-click asks a menu,
+    and the face under the mouse is reported as it changes.
 
     Clicks come from the plotter widget's Qt mouse events: the camera interaction holds VTK's mouse focus
     between press and release, so VTK observers never see the release.
     """
 
-    def __init__(self, parent=None, *, picked=lambda face_id, add: None, menu=lambda face_id, global_pos: None):
+    def __init__(
+        self,
+        parent=None,
+        *,
+        picked=lambda face_id, add: None,
+        menu=lambda face_id, global_pos: None,
+        hovered=lambda face_id: None,
+    ):
         super().__init__(parent)
         from pyvistaqt import QtInteractor
         from vtkmodules.vtkRenderingCore import vtkMapper
@@ -144,13 +151,19 @@ class Viewport(QWidget):
         self.setMinimumHeight(220)
         self.picked = picked
         self.menu = menu
+        self.hovered = hovered
         self._cell_faces = {}  # actor -> face id per cell
         self._press = None  # button and position of the last press
+        self._hover = None  # the face under the mouse
+        self.plotter.setMouseTracking(True)
         self.plotter.installEventFilter(self)
 
-    def show_faces(self, preview, visible, selected=frozenset(), colours=None, *, guides=None, reset_camera=False):
+    def show_faces(
+        self, preview, visible, selected=frozenset(), colours=None, *, hovered=None, guides=None, reset_camera=False
+    ):
         """Draw the ``visible`` faces smooth with their outlines, in their ``colours`` (face id -> colour, default
-        plain), ``selected`` in orange. ``guides`` (a bounding box, m) draws the axes and symmetry planes around it."""
+        plain), ``selected`` in orange and ``hovered`` (a face id) pale or, when selected, dark orange. ``guides``
+        (a bounding box, m) draws the axes and symmetry planes around it."""
         import pyvista as pv
 
         self.plotter.clear()
@@ -158,7 +171,12 @@ class Viewport(QWidget):
         if preview is not None:
             by_colour = {}
             for face in visible:
-                colour = SELECTED_COLOUR if face in selected else (colours or {}).get(face, FACE_COLOUR)
+                if face == hovered:
+                    colour = HOVER_SELECTED_COLOUR if face in selected else HOVER_COLOUR
+                elif face in selected:
+                    colour = SELECTED_COLOUR
+                else:
+                    colour = (colours or {}).get(face, FACE_COLOUR)
                 by_colour.setdefault(colour, []).append(face)
             for colour, faces in by_colour.items():
                 mask = np.isin(preview["face_ids"], faces)
@@ -246,7 +264,16 @@ class Viewport(QWidget):
             moved = event.position() - press
             if button == event.button() and abs(moved.x()) + abs(moved.y()) <= 3:  # else a drag moves the camera
                 self._clicked(event)
+        elif kind == QEvent.Type.MouseMove and event.buttons() == Qt.MouseButton.NoButton:
+            self._hover_at(self.face_at(*self._display(event.position())))
+        elif kind == QEvent.Type.Leave:
+            self._hover_at(None)
         return False  # the camera interaction sees every event
+
+    def _hover_at(self, face):
+        if face != self._hover:
+            self._hover = face
+            self.hovered(face)
 
     def _display(self, position):
         """VTK display coordinates (pixels, y up) of widget ``position``."""
@@ -291,6 +318,7 @@ class CadImportEditor:
         self._key = None
         self._placement = None  # of the shown preview, as keyword arguments of the pipeline functions
         self._hidden = set()
+        self._hover = None  # the face under the mouse
         self._face_items = {}
         self._body_items = {}
         self._faces = None  # face id -> CadFace of the loaded preview, for matching stored face groups
@@ -318,7 +346,7 @@ class CadImportEditor:
         layout.addWidget(self.info)
 
         splitter = QSplitter(Qt.Orientation.Vertical)
-        self.viewport = Viewport(picked=self._viewport_picked, menu=self._show_face_menu)
+        self.viewport = Viewport(picked=self._viewport_picked, menu=self._show_face_menu, hovered=self._hovered)
         splitter.addWidget(self.viewport)
         tree_panel = QWidget()
         tree_layout = QVBoxLayout(tree_panel)
@@ -640,6 +668,7 @@ class CadImportEditor:
         self.geometry = None if preview is None else preview["geometry"]
         self._faces = None
         self._hidden.clear()
+        self._hover = None
         self._face_items = {}
         self._body_items = {}
         self.kind_combos = {}
@@ -733,6 +762,14 @@ class CadImportEditor:
             f"{count} face{'' if count == 1 else 's'} selected."
         )
         self._render_timer.start(0)
+
+    def _hovered(self, face_id):
+        self._hover = face_id
+        self._render_timer.start(0)
+
+    def hovered_face(self):
+        """The face under the mouse in the view, or ``None``."""
+        return self._hover
 
     def _show_face_menu(self, face_id, global_pos):
         if self._faces is None:
@@ -864,6 +901,7 @@ class CadImportEditor:
             self.visible_faces(),
             self.selected_faces(),
             face_colours,
+            hovered=self._hover,
             guides=self.geometry["bbox_m"] if self.geometry is not None and self.guides_check.isChecked() else None,
             reset_camera=reset_camera,
         )
@@ -1114,25 +1152,20 @@ class CadImportEditor:
             text += f" ({DEFAULT_SOUND_SPEED_M_PER_S / self._fmax_hz / n * 1000:.3g} mm)"
         return text
 
-    def _fineness(self):
-        """The mesh fineness as an override."""
-        return {"elements_per_wavelength": float(self.source["elements_per_wavelength"])}
-
-    def _face_size(self, face_id, own, group, bodies, groups):
-        """Mesh size cell text and tooltip of face ``face_id`` (in face group ``group``): its own override (``own``),
-        else what it inherits, as meshing does: its face group's, the finest of its bodies' (a body without an
-        override at the target size), else the mesh fineness, shown as Global."""
-        if own is not None:
-            return self._size_text(own), self._size_text(own, edge=True)
-        if group in groups:
-            size = groups[group]
-            return self._size_text(size), f"Inherits face group '{group}': {self._size_text(size, edge=True)}"
-        sizes = {b: self._edge_m(bodies.get(b, self._fineness())) for b in self._faces[face_id].bodies}
-        finest = min(sizes, key=sizes.get)
-        if finest in bodies:
-            size = bodies[finest]
-            return self._size_text(size), f"Inherits body '{finest}': {self._size_text(size, edge=True)}"
-        return GLOBAL, f"Inherits the mesh fineness: {self._size_text(self._fineness(), edge=True)}"
+    def _inherited(self, face_id=None):
+        """Where a body's (``face_id`` ``None``) or face's inherited size comes from, as its tooltip says it."""
+        bodies, groups, _ = size_overrides(self.source)
+        fineness = {"elements_per_wavelength": float(self.source["elements_per_wavelength"])}
+        if face_id is not None:
+            group = self.group_of(face_id)[0]
+            if group in groups:
+                return f"Inherits face group '{group}': {self._size_text(groups[group], edge=True)}"
+            # As meshing does: the finest of the face's bodies, a body without an override at the target size.
+            sizes = {b: self._edge_m(bodies.get(b, fineness)) for b in self._faces[face_id].bodies}
+            finest = min(sizes, key=sizes.get)
+            if finest in bodies:
+                return f"Inherits body '{finest}': {self._size_text(bodies[finest], edge=True)}"
+        return f"Inherits the mesh fineness: {self._size_text(fineness, edge=True)}"
 
     def _edge_m(self, size):
         """The edge length of override ``size`` (levels at the project's maximum frequency, else 1 kHz)."""
@@ -1187,24 +1220,19 @@ class CadImportEditor:
         self._render_timer.start(0)  # group colours
 
     def _show_overrides(self):
-        """The size each face gets in the tree (a body's when all its faces agree, else Mixed); face groups in the
-        table."""
+        """Size overrides, or where an inherited size comes from, in the tree; face groups in the table."""
         self._syncing = True
-        bodies, groups, entries = size_overrides(self.source)
-        own = dict(zip(self._face_size_ids(entries), entries, strict=True)) if self._faces is not None else {}
-        group_of = {face: name for name, faces, _ in self.rows() for face in faces}
-        texts = {}
-        for face_id, items in self._face_items.items():
-            texts[face_id], tip = self._face_size(face_id, own.get(face_id), group_of[face_id], bodies, groups)
-            for item in items:
-                item.setText(1, texts[face_id])
-                item.setToolTip(1, tip)
+        bodies, _, entries = size_overrides(self.source)
         for name, item in self._body_items.items():
-            shown = {item.child(i).text(1) for i in range(item.childCount())}
-            item.setText(1, next(iter(shown)) if len(shown) == 1 else MIXED)
-            size = bodies.get(name, self._fineness())
-            tip = f"{'Override' if name in bodies else 'Mesh fineness'}: {self._size_text(size, edge=True)}"
-            item.setToolTip(1, tip + (" · its faces have different sizes" if len(shown) > 1 else ""))
+            item.setText(1, self._size_text(bodies.get(name)))
+            item.setToolTip(1, self._size_text(bodies[name], edge=True) if name in bodies else self._inherited())
+        own = dict(zip(self._face_size_ids(entries), entries, strict=True)) if self._faces is not None else {}
+        for face_id, items in self._face_items.items():
+            text = self._size_text(own.get(face_id))
+            tip = self._size_text(own[face_id], edge=True) if face_id in own else self._inherited(face_id)
+            for item in items:
+                item.setText(1, text)
+                item.setToolTip(1, tip)
         self._syncing = False
         self._show_groups()
 
