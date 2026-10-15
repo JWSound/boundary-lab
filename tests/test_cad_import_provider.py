@@ -408,19 +408,60 @@ def test_target_size_follows_project_sound_speed_and_maximum_frequency(plugin, b
 
     _, second = generate(backend, project, tmp_path)
 
-    # 343 / 3430 / 5 = 20 mm, then 686 / 3430 / 5 = 40 mm.
-    assert first.geometry.provider_metadata["target_size_m"] == pytest.approx(0.02)
-    assert second.geometry.provider_metadata["target_size_m"] == pytest.approx(0.04)
-    # The 120 mm cabinet faces hold only a few 40 mm elements, so edges grow less than 2x.
+    # New designs are Fine: 343 / 3430 / 6 = 16.7 mm, then 686 / 3430 / 6 = 33.3 mm.
+    assert first.geometry.provider_metadata["target_size_m"] == pytest.approx(0.343 / 3430 * 1000 / 6)
+    assert second.geometry.provider_metadata["target_size_m"] == pytest.approx(0.686 / 3430 * 1000 / 6)
+    # The 120 mm cabinet faces hold only a few 33 mm elements, so edges grow less than 2x.
     assert median_edge(second) > 1.25 * median_edge(first)
 
 
-def median_edge(response):
-    """Median triangle edge of the exterior walls, in metres."""
-    mesh = meshio.read(next(m.mesh_path for m in response.geometry.meshes if m.id == "exterior"))
-    walls = mesh.cell_data_dict["gmsh:physical"]["triangle"] == mesh.field_data["walls"][0]
-    triangles = mesh.points[mesh.cells_dict["triangle"][walls]]
+def median_edge(response, mesh_id="exterior", group="walls", face=None):
+    """Median triangle edge of a face group (or one face of it), in metres."""
+    mesh = meshio.read(next(m.mesh_path for m in response.geometry.meshes if m.id == mesh_id))
+    cells = mesh.cell_data_dict["gmsh:physical"]["triangle"] == mesh.field_data[group][0]
+    if face is not None:
+        cells &= mesh.cell_data_dict["gmsh:geometrical"]["triangle"] == face
+    triangles = mesh.points[mesh.cells_dict["triangle"][cells]]
     return np.median(np.linalg.norm(triangles - np.roll(triangles, 1, axis=1), axis=2))
+
+
+def test_existing_designs_keep_their_elements_per_wavelength_and_mm_overrides(plugin, box_step, tmp_path):
+    catalog, backend = plugin
+    legacy = dict(elements_per_wavelength=5.0, face_group_sizes_m={"Driver": 0.008}, body_sizes_m={"Port": 0.01})
+    project = make_project(catalog, box_step, **legacy)
+    for key in ("body_sizes", "face_group_sizes", "face_sizes"):  # saved before these existed
+        del project.generator_documents[0].source[key]
+
+    _, response = generate(backend, project, tmp_path)
+
+    assert response.geometry.provider_metadata["target_size_m"] == pytest.approx(0.02)
+    assert 0.0065 < median_edge(response, "chamber", "Driver") < 0.0095
+
+
+def test_size_overrides_from_the_source_take_levels_and_single_faces(plugin, box_step, tmp_path):
+    catalog, backend = plugin
+    sides = [f for f in inspect_step(box_step).faces if f.bodies == ("Cabinet",) and abs(abs(f.normal[0]) - 1) < 1e-9]
+    lost = asdict(face_ref(replace(sides[0], centre=(1.0, 1.0, 1.0))))
+    project = make_project(
+        catalog,
+        box_step,
+        face_group_sizes={"Driver": {"elements_per_wavelength": 12}},  # 343 / 3430 / 12 = 8.3 mm
+        face_sizes=[{"face": asdict(face_ref(sides[0])), "size_m": 0.006}, {"face": lost, "size_m": 0.001}],
+    )
+
+    _, response = generate(backend, project, tmp_path)
+
+    assert 0.0065 < median_edge(response, "chamber", "Driver") < 0.0095
+    # Face ids are stable for the same file and placement; the lost face blocks nothing.
+    assert median_edge(response, face=sides[0].id) < 0.008 < median_edge(response, face=sides[1].id)
+
+
+def test_new_designs_are_fine():
+    catalog = ProviderCatalog([ROOT], enabled=[PROVIDER])
+    catalog.scan()
+    source = catalog.source_defaults(PROVIDER)
+    assert source["elements_per_wavelength"] == 6
+    assert (source["body_sizes"], source["face_group_sizes"], source["face_sizes"]) == ({}, {}, [])
 
 
 def test_saved_project_reopens_with_meshes_without_the_plugin(plugin, box_step, tmp_path):

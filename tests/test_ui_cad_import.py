@@ -179,6 +179,7 @@ def test_sizing_settings_edit_the_source_and_show_the_target_size(cad_editor, ma
 
     editor.set_operation_state(SimpleNamespace(active=True))
     assert not editor.step_path.isEnabled() and not editor.spins["growth_rate"].isEnabled()
+    assert not editor.fineness.isEnabled()
     editor.set_operation_state(SimpleNamespace(active=False))
     assert editor.step_path.isEnabled() and editor.spins["growth_rate"].isEnabled()
 
@@ -332,10 +333,10 @@ def test_picking_into_a_group_moves_faces_and_groups_can_be_deleted(cad_editor):
 
     groups = {g["name"]: len(g["faces"]) for g in host.snapshot().source["face_groups"]}
     assert groups == {"A": 1, "B": 1}
-    editor.set_face_group_size("B", 0.008)
+    editor.set_face_group_size("B", FINE)
     editor.delete_face_group("B")
     assert [g["name"] for g in host.snapshot().source["face_groups"]] == ["A"]
-    assert host.snapshot().source["face_group_sizes_m"] == {}
+    assert host.snapshot().source["face_group_sizes"] == {}
 
 
 def all_rows(editor):
@@ -504,46 +505,175 @@ def test_deleting_a_picked_group_keeps_the_size_of_a_step_named_group_of_that_na
     editor, host = cad_editor
     editor.pick_face(cabinet_faces(editor, lambda f: True)[0])
     editor.group_selection("Driver")
-    editor.set_face_group_size("Driver", 0.008)
+    editor.set_face_group_size("Driver", FINE)
 
     editor.delete_face_group("Driver")
 
     assert host.snapshot().source["face_groups"] == []
-    assert host.snapshot().source["face_group_sizes_m"] == {"Driver": 0.008}
+    assert host.snapshot().source["face_group_sizes"] == {"Driver": FINE}
     assert group_rows(editor) == {"Driver": 1}
 
 
-@pytest.mark.parametrize("text", ["inf", "nan", "-5"])
-def test_size_override_must_be_finite_and_positive(cad_editor, text):
+FINE = {"elements_per_wavelength": 6}
+
+
+def choose_size(view, index, text, qapp):
+    """Choose ``text`` in the Mesh size dropdown of cell ``index`` of ``view``, as a user does."""
+    view.edit(index)
+    combo = view.indexWidget(index)
+    assert [combo.itemText(i) for i in range(combo.count())] == ["", "Coarse", "Medium", "Fine", "Custom…"]
+    combo.setCurrentIndex(combo.findText(text))
+    combo.activated.emit(combo.currentIndex())
+    qapp.processEvents()  # applied once the dropdown has closed
+
+
+def size_cell(editor, name):
+    """The Mesh size cell of body ``name`` in the tree, or of face group ``name`` in the list."""
+    bodies = body_items(editor)
+    if name in bodies:
+        return editor.tree, editor.tree.indexFromItem(bodies[name], 1)
+    return editor.groups_table, editor.groups_table.model().index(row_of(editor, name), 2)
+
+
+def test_mesh_size_dropdowns_set_levels_and_custom_sizes_on_bodies_and_face_groups(cad_editor, monkeypatch, qapp):
     editor, host = cad_editor
+    monkeypatch.setattr(editor, "ask_size_mm", lambda: 25.0)
 
-    body_items(editor)["Chamber"].setText(1, text)
-
-    assert host.snapshot().source.get("body_sizes_m", {}) == {}
-    assert "positive number" in editor.status.text()
-    assert body_items(editor)["Chamber"].text(1) == ""
-
-
-def test_size_overrides_for_bodies_and_face_groups_edit_the_source(cad_editor):
-    editor, host = cad_editor
-
-    editor.set_face_group_size("Driver", 0.008)
-    editor.set_body_size("Chamber", 0.04)
+    choose_size(*size_cell(editor, "Driver"), "Medium", qapp)
+    choose_size(*size_cell(editor, "Chamber"), "Custom…", qapp)
 
     source = host.snapshot().source
-    assert source["face_group_sizes_m"] == {"Driver": 0.008}
-    assert source["body_sizes_m"] == {"Chamber": 0.04}
-    driver_row = next(
-        r for r in range(editor.groups_table.rowCount()) if editor.groups_table.item(r, 0).text() == "Driver"
+    assert source["face_group_sizes"] == {"Driver": {"elements_per_wavelength": 4}}
+    assert source["body_sizes"] == {"Chamber": {"size_m": 0.025}}
+    assert editor.groups_table.item(row_of(editor, "Driver"), 2).text() == "Medium"
+    assert body_items(editor)["Chamber"].text(1) == "25 mm"
+
+    monkeypatch.setattr(editor, "ask_size_mm", lambda: None)  # cancelled
+    choose_size(*size_cell(editor, "Chamber"), "Custom…", qapp)
+    choose_size(*size_cell(editor, "Driver"), "", qapp)  # empty: inherited again
+    source = host.snapshot().source
+    assert source["face_group_sizes"] == {}
+    assert source["body_sizes"] == {"Chamber": {"size_m": 0.025}}
+
+
+def face_item(editor, face_id):
+    return next(
+        item for body in body_items(editor).values() for item in children_items(body) if item_face(item) == face_id
     )
-    assert editor.groups_table.item(driver_row, 2).text() == "8"
-    assert body_items(editor)["Chamber"].text(1) == "40"
 
-    editor.groups_table.item(driver_row, 2).setText("")  # typing in the table clears the override
-    body_items(editor)["Chamber"].setText(1, "25")
+
+def children_items(item):
+    return [item.child(i) for i in range(item.childCount())]
+
+
+def item_face(item):
+    return item.data(0, Qt.ItemDataRole.UserRole)
+
+
+def test_face_rows_show_their_own_size_or_where_the_inherited_one_comes_from(cad_editor, main_window, qapp):
+    editor, _ = cad_editor
+    main_window.freq_max_spin.setValue(3430)
+    wait(qapp, lambda: "3430" in editor.target_label.text())
+    driver = next(f["id"] for f in editor.geometry["faces"] if f["step_name"] == "Driver")
+    side, other = cabinet_faces(editor, lambda f: True)[:2]
+
+    editor.set_face_group_size("Driver", {"elements_per_wavelength": 4})
+    editor.set_body_size("Cabinet", {"size_m": 0.03})
+    editor.set_face_size({side}, {"elements_per_wavelength": 2})
+
+    assert face_item(editor, side).text(1) == "Coarse"
+    assert face_item(editor, driver).text(1) == ""
+    assert face_item(editor, driver).toolTip(1) == "Inherits face group 'Driver': Medium (25 mm)"
+    assert face_item(editor, other).toolTip(1) == "Inherits body 'Cabinet': 30 mm"
+    assert body_items(editor)["Chamber"].toolTip(1) == "Inherits the mesh fineness: Fine (16.7 mm)"
+
+
+def test_mesh_size_from_the_face_menu_sets_a_face_override_on_the_selection(cad_editor, monkeypatch):
+    editor, host = cad_editor
+    first, second = cabinet_faces(editor, lambda f: abs(abs(f["normal"][0]) - 1) < 1e-9)
+    interface_face = editor.geometry["interfaces"][0]["face_ids"][0]
+    editor.pick_face(first)
+    editor.pick_face(second, add=True)
+
+    menu = editor.face_menu(second)
+    assert list(menu_entries(menu)) == ['Add to "Driver"', "New group…", "Move to walls", "Mesh size"]
+    sizes = menu_entries(menu_entries(menu)["Mesh size"].menu())
+    assert list(sizes) == ["Coarse", "Medium", "Fine", "Custom…", "Clear"]
+    sizes["Fine"].trigger()
+
+    entries = host.snapshot().source["face_sizes"]
+    assert [e["elements_per_wavelength"] for e in entries] == [6, 6]
+    assert {round(abs(e["face"]["centre"][0]), 3) for e in entries} == {0.06}  # stored like face group faces
+    assert face_item(editor, first).text(1) == "Fine"
+
+    interface_entries = menu_entries(editor.face_menu(interface_face))
+    assert list(interface_entries) == ["Rename interface…", "Mesh size"]
+    menu_entries(interface_entries["Mesh size"].menu())["Coarse"].trigger()  # the face, outside the selection
+    assert len(host.snapshot().source["face_sizes"]) == 3
+    menu_entries(menu_entries(editor.face_menu(first))["Mesh size"].menu())["Clear"].trigger()
+    assert len(host.snapshot().source["face_sizes"]) == 1
+
+
+def test_face_overrides_whose_faces_are_gone_are_dropped_with_a_note(cad_editor, qapp, tmp_path):
+    editor, host = cad_editor
+    editor.set_step_path(str(strip_names(vented_box(tmp_path / "named.step"), tmp_path / "stripped.step")))
+    wait(qapp, lambda: not editor.loading)
+    editor.set_face_size({chamber_back(editor)}, FINE)
+
+    editor.set_step_path(str(strip_names(vented_box(tmp_path / "named.step", depth=230), tmp_path / "deep.step")))
+    wait(qapp, lambda: not editor.loading)
+
+    assert host.snapshot().source["face_sizes"] == []
+    assert "1 face size override dropped" in editor.status.text()
+
+
+def test_existing_designs_keep_their_mm_overrides_and_elements_per_wavelength(cad_editor, qapp):
+    editor, host = cad_editor
+    legacy = {
+        "elements_per_wavelength": 5.0,
+        "body_sizes_m": {"Chamber": 0.04},
+        "face_group_sizes_m": {"Driver": 0.008},
+    }
+    snapshot = host.update_source(host.snapshot().source | legacy, expected_revision=host.snapshot().revision)
+    editor.apply_source(snapshot.source, snapshot.revision)
+
+    assert editor.fineness.currentText() == "Custom" and not editor.spins["elements_per_wavelength"].isHidden()
+    assert body_items(editor)["Chamber"].text(1) == "40 mm"
+    assert editor.groups_table.item(row_of(editor, "Driver"), 2).text() == "8 mm"
+
+    editor.set_body_size("Port", FINE)
+
     source = host.snapshot().source
-    assert source["face_group_sizes_m"] == {}
-    assert source["body_sizes_m"] == {"Chamber": 0.025}
+    assert source["body_sizes"] == {"Chamber": {"size_m": 0.04}, "Port": FINE}
+    assert "body_sizes_m" not in source
+    assert source["face_group_sizes_m"] == {"Driver": 0.008}  # untouched until a face group size changes
+
+
+def test_mesh_fineness_levels_set_elements_per_wavelength_and_name_the_frequency_they_hold(
+    cad_editor, main_window, qapp
+):
+    editor, host = cad_editor
+    main_window.freq_max_spin.setValue(3000)
+    editor.spins["curvature_elements_per_circle"].setValue(13)  # an edit fetches the project context
+    wait(qapp, lambda: "3000" in editor.target_label.text())
+    fineness, custom = editor.fineness, editor.spins["elements_per_wavelength"]
+
+    assert [fineness.itemText(i) for i in range(fineness.count())] == ["Coarse", "Medium", "Fine", "Custom"]
+    assert fineness.currentText() == "Fine" and custom.isHidden()  # new designs
+    assert "6 per wavelength up to 1000 Hz" in fineness.itemData(0, Qt.ItemDataRole.ToolTipRole)
+    assert "up to 2000 Hz" in fineness.itemData(1, Qt.ItemDataRole.ToolTipRole)
+
+    fineness.setCurrentIndex(1)
+    fineness.activated.emit(1)
+    assert host.snapshot().source["elements_per_wavelength"] == 4
+    fineness.setCurrentIndex(3)
+    fineness.activated.emit(3)
+    assert not custom.isHidden() and fineness.currentText() == "Custom"
+    custom.setValue(4)  # a level's number keeps Custom while chosen
+    assert fineness.currentText() == "Custom"
+    custom.setValue(9)
+    assert host.snapshot().source["elements_per_wavelength"] == 9
+    assert "Target element size" in editor.target_label.text()
 
 
 def chamber_back(editor):
@@ -681,7 +811,7 @@ def row_of(editor, name):
     return next(r for r in range(table.rowCount()) if table.item(r, 0).text() == name)
 
 
-def test_walls_row_comes_first_then_the_interface_rows_then_the_face_groups(cad_editor):
+def test_walls_row_comes_first_then_the_interface_rows_then_the_face_groups(cad_editor, qapp):
     editor, _ = cad_editor
     (interface,) = editor.geometry["interfaces"]
     driver = [f["id"] for f in editor.geometry["faces"] if f["step_name"] == "Driver"]
@@ -702,9 +832,9 @@ def test_walls_row_comes_first_then_the_interface_rows_then_the_face_groups(cad_
     assert editor.selected_faces() == set(interface["face_ids"])
     assert editor.group_name.text() == "walls"  # an interface group is never the current group
     assert not editor.groups_table.item(row, 0).flags() & Qt.ItemFlag.ItemIsEditable
-    editor.groups_table.item(row, 2).setText("4")
-    editor.groups_table.item(row_of(editor, "walls"), 2).setText("30")
-    assert editor.source["face_group_sizes_m"] == {"Interface 1 Port": 0.004, "walls": 0.03}
+    choose_size(*size_cell(editor, "Interface 1 Port"), "Fine", qapp)
+    choose_size(*size_cell(editor, "walls"), "Coarse", qapp)
+    assert editor.source["face_group_sizes"] == {"Interface 1 Port": FINE, "walls": {"elements_per_wavelength": 2}}
 
 
 def test_single_faces_are_added_to_the_current_group_and_removed_back_to_walls(cad_editor):
@@ -747,10 +877,10 @@ def test_each_face_group_is_drawn_in_its_own_colour_with_a_swatch(cad_editor, qa
     assert list(swatches) == ["walls", "Interface 1 Port", "A", "B", "Driver"]
     assert len(set(swatches.values())) == len(swatches)
     assert swatches["walls"] == "#c8ccd2"  # the plain face colour
-    assert sorted(editor.viewport.plotter.colours) == sorted(swatches.values())
+    wait(qapp, lambda: sorted(editor.viewport.plotter.colours) == sorted(swatches.values()))
 
     editor.pick_face(first)
-    qapp.processEvents()
+    wait(qapp, lambda: "#e8a33d" in editor.viewport.plotter.colours)
     assert "#e8a33d" in editor.viewport.plotter.colours  # the selection on top
     assert swatches["A"] not in editor.viewport.plotter.colours
 
@@ -826,7 +956,7 @@ def test_right_click_menu_adds_a_face_to_a_group_and_removes_it(cad_editor, monk
     first, second = cabinet_faces(editor, lambda f: abs(abs(f["normal"][0]) - 1) < 1e-9)
 
     entries = menu_entries(editor.face_menu(first))
-    assert list(entries) == ['Add to "Driver"', "New group…", "Move to walls"]  # flat, no interface group
+    assert list(entries) == ['Add to "Driver"', "New group…", "Move to walls", "Mesh size"]  # no interface group
     entries['Add to "Driver"'].trigger()
     assert [(g["name"], len(g["faces"])) for g in host.snapshot().source["face_groups"]] == [("Driver", 1)]
 
@@ -890,7 +1020,7 @@ def test_right_click_outside_the_selection_selects_the_face_names_its_group_and_
 def test_an_interface_is_renamed_from_its_face_menu_and_keeps_its_size(cad_editor, monkeypatch):
     editor, host = cad_editor
     interface_face = editor.geometry["interfaces"][0]["face_ids"][0]
-    editor.set_face_group_size("Interface 1 Port", 0.004)
+    editor.set_face_group_size("Interface 1 Port", FINE)
 
     def rename(new_name):
         monkeypatch.setattr(editor, "ask_interface_name", lambda name: new_name)
@@ -899,7 +1029,7 @@ def test_an_interface_is_renamed_from_its_face_menu_and_keeps_its_size(cad_edito
     rename("Port mouth")
     source = host.snapshot().source
     assert source["interface_names"] == {"Interface 1 Port": "Port mouth"}
-    assert source["face_group_sizes_m"] == {"Port mouth": 0.004}
+    assert source["face_group_sizes"] == {"Port mouth": FINE}
     assert "Port mouth" in all_rows(editor) and "Interface 1 Port" not in all_rows(editor)
 
     rename("Driver")

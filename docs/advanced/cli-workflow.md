@@ -387,7 +387,7 @@ the [server developer reference](boundary-lab-server_advanced.md) for the remote
 ## Mesh A STEP File
 
 ```bash
-blab cad-import enclosure.step --fmax 2000 --elements-per-wavelength 5 --output meshes
+blab cad-import enclosure.step --fmax 2000 --elements-per-wavelength 6 --output meshes
 ```
 
 Runs the CAD import pipeline without the desktop app and writes one `<mesh id>.msh`
@@ -396,13 +396,14 @@ tetrahedral mesh with a volume group per body. Surface bodies together form the
 `exterior.msh` BEM surface. Air faces that fill openings in the exterior get a
 `Interface <n> <body>` surface group in both meshes, node for node; every other face is in
 `walls`. The target element size is sound speed ÷ `--fmax` ÷ elements per wavelength
-(`--sound-speed`, default 343 m/s), refined on curved edges to about 12 elements per
+(default 6; `--sound-speed`, default 343 m/s), refined on curved edges to about 12 elements per
 circle. `--rotate X,Y,Z` rotates by those degrees about the X, Y and Z axes (in that order, about
 the origin) and `--translate X,Y,Z` moves by those millimetres (write a leading negative
 value as `--rotate=-90,0,0`). Closed shells
 of surfaces (how SolidWorks writes solids of parts that mix solid and surface bodies)
-stay exterior unless `--closed-shell "Closed shell 1=air"` (repeatable) makes them air
-bodies. The command prints the meshes and groups, the bounding box, the closed shells
+are guessed air bodies, unless the file has no other exterior surface (then the largest
+is the exterior); `--closed-shell "Closed shell 1=exterior"` (repeatable) sets one. The
+command prints the meshes and groups, the bounding box, the closed shells
 and their roles, detected interfaces, the suggested
 symmetry (open exterior edges on X=0 / Y=0), and warnings such as open exterior
 edges or air faces covered by the exterior.

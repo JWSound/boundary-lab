@@ -48,6 +48,25 @@ class CadFaceRef:
 
 
 @dataclass(frozen=True)
+class CadSizeOverride:
+    """A size override: elements per wavelength at the maximum frequency (a mesh fineness), or an edge length."""
+
+    elements_per_wavelength: float | None = None
+    size_m: float | None = None
+
+    def __post_init__(self) -> None:
+        if (self.elements_per_wavelength is None) == (self.size_m is None):
+            raise ValueError("Size override must be elements per wavelength or an edge length.")
+        for label, value in (("elements per wavelength", self.elements_per_wavelength), ("edge length", self.size_m)):
+            if value is not None and not (isinstance(value, int | float) and math.isfinite(value) and value > 0):
+                raise ValueError(f"Size override {label} must be a positive number.")
+
+
+def _size_override(size) -> CadSizeOverride:
+    return size if isinstance(size, CadSizeOverride) else CadSizeOverride(**size)
+
+
+@dataclass(frozen=True)
 class CadImportSettings:
     """Meshing inputs. Sizes in metres.
 
@@ -61,14 +80,20 @@ class CadImportSettings:
     to ``"air"`` or ``"exterior"``; one without a choice gets its guessed kind (see
     :class:`CadClosedShell`). ``interface_names`` renames interfaces by
     their detected name; names of interfaces not detected are ignored.
+
+    Size overrides (:class:`CadSizeOverride` or mappings of its fields) replace the target element
+    size per body, per face group or, in ``face_sizes`` as ``(face, override)`` pairs, per face (a
+    ``CadFaceRef`` that no longer matches a face is ignored). On a face the most specific one wins:
+    face, face group, the finest of its bodies, then the target element size.
     """
 
     fmax_hz: float
     sound_speed_m_per_s: float = 343.0
-    elements_per_wavelength: float = 5.0
+    elements_per_wavelength: float = 6.0
     face_groups: Mapping[str, tuple[int | CadFaceRef, ...]] = field(default_factory=dict)
-    body_sizes_m: Mapping[str, float] = field(default_factory=dict)
-    face_group_sizes_m: Mapping[str, float] = field(default_factory=dict)
+    body_sizes: Mapping[str, CadSizeOverride] = field(default_factory=dict)
+    face_group_sizes: Mapping[str, CadSizeOverride] = field(default_factory=dict)
+    face_sizes: tuple[tuple[int | CadFaceRef, CadSizeOverride], ...] = ()
     curvature_elements_per_circle: float = 12.0
     growth_rate: float = 1.3
     symmetry: str | None = None
@@ -83,7 +108,6 @@ class CadImportSettings:
             ("Sound speed", self.sound_speed_m_per_s),
             ("Elements per wavelength", self.elements_per_wavelength),
             ("Curvature elements per circle", self.curvature_elements_per_circle),
-            *((f"Size override for '{k}'", v) for k, v in {**self.body_sizes_m, **self.face_group_sizes_m}.items()),
         ):
             if not (isinstance(value, int | float) and math.isfinite(value) and value > 0):
                 raise ValueError(f"{label} must be a positive number.")
@@ -97,6 +121,13 @@ class CadImportSettings:
             for name, faces in self.face_groups.items()
         }
         object.__setattr__(self, "face_groups", groups)
+        for name in ("body_sizes", "face_group_sizes"):
+            object.__setattr__(self, name, {k: _size_override(v) for k, v in getattr(self, name).items()})
+        faces = tuple(
+            (CadFaceRef(**face) if isinstance(face, Mapping) else face, _size_override(size))
+            for face, size in self.face_sizes
+        )
+        object.__setattr__(self, "face_sizes", faces)
         if self.symmetry not in (None, *SYMMETRY_LABELS):
             raise ValueError(f"Unknown symmetry '{self.symmetry}'.")
 
@@ -104,6 +135,12 @@ class CadImportSettings:
     def target_size_m(self) -> float:
         """Sound speed / maximum frequency / elements per wavelength."""
         return self.sound_speed_m_per_s / self.fmax_hz / self.elements_per_wavelength
+
+    def edge_m(self, size: CadSizeOverride) -> float:
+        """The edge length a size override asks for."""
+        if size.size_m is not None:
+            return size.size_m
+        return self.sound_speed_m_per_s / self.fmax_hz / size.elements_per_wavelength
 
     @property
     def placement(self) -> dict:
@@ -1006,20 +1043,32 @@ def _step_face_vertices(path) -> list[tuple[str, np.ndarray]]:
 
 
 def _apply_sizes(gmsh, model: _Model, settings: CadImportSettings, groups) -> None:
-    """Target size everywhere, overrides per body / face group, graded by the growth rate."""
+    """Target size everywhere, overrides per body / face group / face (the most specific wins), graded by the
+    growth rate."""
     target = settings.target_size_m
-    unknown = sorted(set(settings.body_sizes_m) - {b.name for b in model.geometry.bodies})
+    geometry = model.geometry
+    unknown = sorted(set(settings.body_sizes) - {b.name for b in geometry.bodies})
     if unknown:
         raise ValueError(f"Size override for unknown body '{unknown[0]}'.")
-    unknown = sorted(set(settings.face_group_sizes_m) - {name for g in groups.values() for name in g})
+    unknown = sorted(set(settings.face_group_sizes) - {name for g in groups.values() for name in g})
     if unknown:
         raise ValueError(f"Size override for unknown face group '{unknown[0]}'.")
-    body_size = {b.name: settings.body_sizes_m.get(b.name, target) for b in model.geometry.bodies}
+    body_size = {b.name: target for b in geometry.bodies} | {
+        name: settings.edge_m(size) for name, size in settings.body_sizes.items()
+    }
     face_size = {f: min(body_size[b] for b in bodies) for f, bodies in model.face_bodies.items()}
     for mesh_groups in groups.values():
         for name, faces in mesh_groups.items():
-            if name in settings.face_group_sizes_m:
-                face_size.update(dict.fromkeys(faces, settings.face_group_sizes_m[name]))
+            if name in settings.face_group_sizes:
+                face_size.update(dict.fromkeys(faces, settings.edge_m(settings.face_group_sizes[name])))
+    for face, size in settings.face_sizes:
+        if isinstance(face, CadFaceRef):
+            face = match_face_ref(face, geometry.faces, geometry.bbox_m, **settings.placement)
+            if face is None:
+                continue  # gone after a re-import: the editor notes it, generation goes on
+        elif face not in face_size:
+            raise ValueError(f"Size override for unknown face {face}.")
+        face_size[face] = settings.edge_m(size)
     volume_size = {b: body_size[b] for b in model.volumes}
     sizes = [*face_size.values(), *volume_size.values()] or [target]
     smallest, largest = min(sizes), max(sizes)

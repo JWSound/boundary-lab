@@ -18,7 +18,7 @@ def _build_arg_parser(prog: str | None = None) -> argparse.ArgumentParser:
     parser.add_argument("step", help="STEP file (units are taken from the file)")
     parser.add_argument("--fmax", type=float, required=True, help="Maximum frequency in Hz")
     parser.add_argument(
-        "--elements-per-wavelength", type=float, default=5.0, help="Elements per wavelength at --fmax (default: 5)"
+        "--elements-per-wavelength", type=float, default=6.0, help="Elements per wavelength at --fmax (default: 6)"
     )
     parser.add_argument("--output", required=True, help="Output folder for <mesh id>.msh files (metres)")
     parser.add_argument(

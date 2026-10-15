@@ -17,6 +17,7 @@ from blab.cad_import import (
     CadFaceRef,
     CadImportSettings,
     CadPreview,
+    CadSizeOverride,
     face_ref,
     inspect_step,
     match_face_ref,
@@ -31,7 +32,7 @@ from blab.interface_conform import validate_conforming_interfaces
 from cad_fixtures import named_sides, strip_names, two_chambers, vented_box, waveguide
 
 # Target element size 343 / 3430 / 5 = 20 mm.
-SETTINGS = CadImportSettings(fmax_hz=3430.0, sound_speed_m_per_s=343.0)
+SETTINGS = CadImportSettings(fmax_hz=3430.0, sound_speed_m_per_s=343.0, elements_per_wavelength=5.0)
 # Rotation taking a model written with its front along CAD -Y and CAD +Z up onto +Z on axis and +Y vertical.
 FRONT_ON_AXIS = (-90.0, 0.0, 0.0)
 
@@ -90,8 +91,14 @@ def test_edges_follow_the_target_element_size(vented):
     assert np.quantile(tets, 0.95) < 0.034
 
 
-def test_step_named_face_group_takes_its_own_size(vented, tmp_path):
-    settings = replace(SETTINGS, face_group_sizes_m={"Driver": 0.008})
+def test_new_settings_default_to_fine_six_elements_per_wavelength():
+    assert CadImportSettings(fmax_hz=1000.0).elements_per_wavelength == 6
+
+
+# An edge length, or a level: 343 / 3430 / 12 = 8.3 mm.
+@pytest.mark.parametrize("size", [CadSizeOverride(size_m=0.008), CadSizeOverride(elements_per_wavelength=12)])
+def test_step_named_face_group_takes_its_own_size(vented, tmp_path, size):
+    settings = replace(SETTINGS, face_group_sizes={"Driver": size})
     result = mesh_step(vented_box(tmp_path / "box.step"), settings, tmp_path / "out")
 
     assert [m.surface_groups for m in result.meshes] == [
@@ -203,7 +210,7 @@ def test_fingerprint_does_not_match_a_face_with_a_flipped_normal():
 
 
 def test_body_override_coarsens_one_air_body_only(vented, tmp_path):
-    settings = replace(SETTINGS, body_sizes_m={"Chamber": 0.04})
+    settings = replace(SETTINGS, body_sizes={"Chamber": CadSizeOverride(size_m=0.04)})
     result = mesh_step(vented_box(tmp_path / "box.step"), settings, tmp_path / "out")
 
     def chamber_median(result):
@@ -212,6 +219,46 @@ def test_body_override_coarsens_one_air_body_only(vented, tmp_path):
     assert chamber_median(result) > 1.15 * chamber_median(vented)
     # The nearby cabinet keeps the target size.
     assert 0.016 < np.median(edge_lengths(read(result, "exterior"), group="walls")) < 0.022
+
+
+def face_edge_median(mesh, face_id):
+    """Median edge length (m) of the triangles meshing CAD face ``face_id``."""
+    cells = mesh.cells_dict["triangle"][mesh.cell_data_dict["gmsh:geometrical"]["triangle"] == face_id]
+    corners = mesh.points[cells]
+    return np.median(np.linalg.norm(corners - np.roll(corners, 1, axis=1), axis=2))
+
+
+def test_face_override_wins_over_its_face_group_and_one_no_longer_found_is_ignored(vented, tmp_path):
+    step = vented_box(tmp_path / "box.step")
+    sides = [f for f in vented.geometry.faces if f.bodies == ("Cabinet",) and abs(abs(f.normal[0]) - 1) < 1e-9]
+    lost = CadFaceRef(None, (1.0, 1.0, 1.0), 0.5, (0.0, 0.0, 1.0), "Plane")
+    settings = replace(
+        SETTINGS,
+        face_groups={"Sides": tuple(face_ref(f) for f in sides)},
+        face_group_sizes={"Sides": CadSizeOverride(size_m=0.008)},
+        face_sizes=((face_ref(sides[0]), CadSizeOverride(size_m=0.004)), (lost, CadSizeOverride(size_m=0.001))),
+    )
+
+    result = mesh_step(step, settings, tmp_path / "out")
+
+    bem = read(result, "exterior")
+    (own,) = [f.id for f in result.geometry.faces if np.allclose(f.centre, sides[0].centre)]
+    (grouped,) = [f.id for f in result.geometry.faces if np.allclose(f.centre, sides[1].centre)]
+    assert 0.003 < face_edge_median(bem, own) < 0.0055  # the face's own override, not its group's
+    assert 0.0065 < face_edge_median(bem, grouped) < 0.0095  # the group's
+
+
+@pytest.mark.parametrize(
+    ("size", "message"),
+    [
+        (dict(), "Size override must be elements per wavelength or an edge length"),
+        (dict(size_m=0.01, elements_per_wavelength=4), "Size override must be elements per wavelength or an edge"),
+        (dict(size_m=-1.0), "Size override edge length must be a positive number"),
+    ],
+)
+def test_size_override_is_one_positive_number(size, message):
+    with pytest.raises(ValueError, match=message):
+        CadSizeOverride(**size)
 
 
 @pytest.mark.parametrize("symmetry", ["x", "xy"])
@@ -323,7 +370,8 @@ def test_placement_must_be_three_finite_numbers(changes, message):
 @pytest.mark.parametrize(
     ("changes", "message"),
     [
-        (lambda g: {"body_sizes_m": {"Nope": 0.01}}, "Size override for unknown body 'Nope'"),
+        (lambda g: {"body_sizes": {"Nope": {"size_m": 0.01}}}, "Size override for unknown body 'Nope'"),
+        (lambda g: {"face_sizes": ((9999, {"size_m": 0.01}),)}, "Size override for unknown face 9999"),
         (lambda g: {"face_groups": {"Lid": (9999,)}}, "Face group 'Lid' refers to unknown face 9999"),
         (lambda g: {"face_groups": {"walls": ()}}, "Face group name 'walls' is reserved"),
         (
