@@ -84,7 +84,8 @@ class CadImportSettings:
     Size overrides (:class:`CadSizeOverride` or mappings of its fields) replace the target element
     size per body, per face group or, in ``face_sizes`` as ``(face, override)`` pairs, per face (a
     ``CadFaceRef`` that no longer matches a face is ignored). On a face the most specific one wins:
-    face, face group, the finest of its bodies, then the target element size.
+    face, face group, the finest of its bodies, then the target element size. ``volume_sizes`` sizes
+    only the interior of an air body, never its faces; it wins over the body's override there.
     """
 
     fmax_hz: float
@@ -94,6 +95,7 @@ class CadImportSettings:
     body_sizes: Mapping[str, CadSizeOverride] = field(default_factory=dict)
     face_group_sizes: Mapping[str, CadSizeOverride] = field(default_factory=dict)
     face_sizes: tuple[tuple[int | CadFaceRef, CadSizeOverride], ...] = ()
+    volume_sizes: Mapping[str, CadSizeOverride] = field(default_factory=dict)
     curvature_elements_per_circle: float = 12.0
     growth_rate: float = 1.3
     symmetry: str | None = None
@@ -121,7 +123,7 @@ class CadImportSettings:
             for name, faces in self.face_groups.items()
         }
         object.__setattr__(self, "face_groups", groups)
-        for name in ("body_sizes", "face_group_sizes"):
+        for name in ("body_sizes", "face_group_sizes", "volume_sizes"):
             object.__setattr__(self, name, {k: _size_override(v) for k, v in getattr(self, name).items()})
         faces = tuple(
             (CadFaceRef(**face) if isinstance(face, Mapping) else face, _size_override(size))
@@ -1043,8 +1045,8 @@ def _step_face_vertices(path) -> list[tuple[str, np.ndarray]]:
 
 
 def _apply_sizes(gmsh, model: _Model, settings: CadImportSettings, groups) -> None:
-    """Target size everywhere, overrides per body / face group / face (the most specific wins), graded by the
-    growth rate."""
+    """Target size everywhere, overrides per body / face group / face (the most specific wins) and air-body
+    interiors, graded by the growth rate."""
     target = settings.target_size_m
     geometry = model.geometry
     unknown = sorted(set(settings.body_sizes) - {b.name for b in geometry.bodies})
@@ -1069,7 +1071,12 @@ def _apply_sizes(gmsh, model: _Model, settings: CadImportSettings, groups) -> No
         elif face not in face_size:
             raise ValueError(f"Size override for unknown face {face}.")
         face_size[face] = settings.edge_m(size)
-    volume_size = {b: body_size[b] for b in model.volumes}
+    unknown = sorted(set(settings.volume_sizes) - set(model.volumes))
+    if unknown:
+        raise ValueError(f"Volume size for '{unknown[0]}', which is no air body.")
+    volume_size = {b: body_size[b] for b in model.volumes} | {
+        name: settings.edge_m(size) for name, size in settings.volume_sizes.items()
+    }
     sizes = [*face_size.values(), *volume_size.values()] or [target]
     smallest, largest = min(sizes), max(sizes)
     option = gmsh.option.setNumber
@@ -1079,6 +1086,14 @@ def _apply_sizes(gmsh, model: _Model, settings: CadImportSettings, groups) -> No
     option("Mesh.MeshSizeFromCurvature", settings.curvature_elements_per_circle)
     if smallest == largest:
         return
+    coarsest_face = defaultdict(float)
+    for f, bodies in model.face_bodies.items():
+        for body in bodies:
+            coarsest_face[body] = max(coarsest_face[body], face_size[f])
+    if any(size > coarsest_face[body] for body, size in volume_size.items()):
+        # A volume coarser than all its faces never gets its size from them: sizes then extend from the faces
+        # into surfaces only, and interiors take theirs from the fields below. Otherwise meshes stay as before.
+        option("Mesh.MeshSizeExtendFromBoundary", -2)
     fields = gmsh.model.mesh.field
     region_of = {b: r.mesh_id for r in model.geometry.regions for b in r.bodies}
     mesh_volumes = defaultdict(list)

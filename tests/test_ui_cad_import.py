@@ -104,14 +104,27 @@ def children(item):
     return [item.child(i).text(0) for i in range(item.childCount())]
 
 
+def faces_row(body):
+    """The Faces row of a body row."""
+    return next(body.child(i) for i in range(body.childCount()) if body.child(i).text(0) == "Faces")
+
+
 def test_loaded_step_lists_bodies_and_faces_with_size_and_symmetry(cad_editor):
     editor, host = cad_editor
 
     assert host.snapshot().source["step_path"].endswith("box.step")
     bodies = body_items(editor)
     assert list(bodies) == ["Chamber", "Port", "Cabinet"]
-    assert "Driver" in children(bodies["Chamber"])  # STEP face name
-    assert all(name.startswith("Face ") for name in children(bodies["Cabinet"]))
+    assert children(bodies["Chamber"]) == ["Volume", "Faces"]
+    assert children(bodies["Cabinet"]) == ["Faces"]  # an exterior surface body has no volume
+    assert "Driver" in children(faces_row(bodies["Chamber"]))  # STEP face name
+    assert all(name.startswith("Face ") for name in children(faces_row(bodies["Cabinet"])))
+    assert {name: item.text(2) for name, item in bodies.items()} == {
+        "Chamber": "Air body",
+        "Port": "Air body",
+        "Cabinet": "Exterior surface",
+    }
+    assert not editor.kind_combos  # a dropdown only on closed shells
     assert "120.0 x 120.0 x 210.0 mm" in editor.info.text()
     assert "Symmetry Off" in editor.info.text()
     assert editor.visible_faces() == {face["id"] for face in editor.geometry["faces"]}
@@ -136,7 +149,7 @@ def test_tree_hides_bodies_and_faces_and_show_all_restores_them(cad_editor, qapp
     bodies["Cabinet"].setCheckState(0, Qt.CheckState.Unchecked)
     assert editor.visible_faces() == {f for f, face in faces.items() if "Cabinet" not in face["bodies"]}
     chamber = bodies["Chamber"]
-    driver = next(chamber.child(i) for i in range(chamber.childCount()) if chamber.child(i).text(0) == "Driver")
+    driver = next(item for item in children_items(faces_row(chamber)) if item.text(0) == "Driver")
     driver.setCheckState(0, Qt.CheckState.Unchecked)
     assert driver.data(0, Qt.ItemDataRole.UserRole) not in editor.visible_faces()
     assert chamber.checkState(0) == Qt.CheckState.PartiallyChecked
@@ -156,8 +169,8 @@ def test_a_face_shared_by_two_bodies_hides_under_both(cad_editor, qapp, tmp_path
     assert "covers a face" in editor.info.text()
     items = {}
     for body in body_items(editor).values():
-        for i in range(body.childCount()):
-            items.setdefault(body.child(i).data(0, Qt.ItemDataRole.UserRole), []).append(body.child(i))
+        for item in children_items(faces_row(body)):
+            items.setdefault(item_face(item), []).append(item)
     shared = next(face_items for face_items in items.values() if len(face_items) > 1)  # port mouth: Port + Cabinet
 
     shared[0].setCheckState(0, Qt.CheckState.Unchecked)
@@ -227,7 +240,7 @@ def test_clear_shows_everything_and_clears_the_selection(cad_editor):
     source = host.snapshot().source
     bodies = body_items(editor)
     bodies["Port"].setCheckState(0, Qt.CheckState.Unchecked)
-    bodies["Chamber"].child(0).setSelected(True)
+    faces_row(bodies["Chamber"]).child(0).setSelected(True)
     assert editor.tree.selectedItems()
 
     editor.clear_button.click()
@@ -333,10 +346,8 @@ def test_picking_into_a_group_moves_faces_and_groups_can_be_deleted(cad_editor):
 
     groups = {g["name"]: len(g["faces"]) for g in host.snapshot().source["face_groups"]}
     assert groups == {"A": 1, "B": 1}
-    editor.set_face_group_size("B", FINE)
     editor.delete_face_group("B")
     assert [g["name"] for g in host.snapshot().source["face_groups"]] == ["A"]
-    assert host.snapshot().source["face_group_sizes"] == {}
 
 
 def all_rows(editor):
@@ -501,64 +512,145 @@ def test_step_names_that_are_reserved_form_no_face_group(cad_editor, qapp, tmp_p
     assert group_rows(editor) == {"Driver": 1}
 
 
-def test_deleting_a_picked_group_keeps_the_size_of_a_step_named_group_of_that_name(cad_editor):
+def test_deleting_a_group_keeps_the_sizes_of_its_faces(cad_editor):
     editor, host = cad_editor
-    editor.pick_face(cabinet_faces(editor, lambda f: True)[0])
-    editor.group_selection("Driver")
-    editor.set_face_group_size("Driver", FINE)
+    face = cabinet_faces(editor, lambda f: True)[0]
+    editor.add_to_group("Sides", {face})
+    editor.set_face_group_size("Sides", FINE)
 
-    editor.delete_face_group("Driver")
+    editor.delete_face_group("Sides")
 
     assert host.snapshot().source["face_groups"] == []
-    assert host.snapshot().source["face_group_sizes"] == {"Driver": FINE}
-    assert group_rows(editor) == {"Driver": 1}
+    assert [e["elements_per_wavelength"] for e in host.snapshot().source["face_sizes"]] == [6]
+    assert size_combo(editor, face_item(editor, face)).currentText() == "Fine"
 
 
 FINE = {"elements_per_wavelength": 6}
+COARSE = {"elements_per_wavelength": 2}
+SIZE_ENTRIES = ["Global (Fine)", "Coarse", "Medium", "Fine", "Custom…"]
 
 
-def choose_size(view, index, text, qapp):
-    """Choose ``text`` in the Mesh size dropdown of cell ``index`` of ``view``, as a user does."""
-    view.edit(index)
-    combo = view.indexWidget(index)
-    assert [combo.itemText(i) for i in range(combo.count())] == ["", "Coarse", "Medium", "Fine", "Custom…"]
+def size_combo(editor, row):
+    """The Mesh size dropdown of a tree item, or of the face-group list row named ``row``."""
+    if isinstance(row, str):
+        return editor.groups_table.cellWidget(row_of(editor, row), 2)
+    return editor.tree.itemWidget(row, 1)
+
+
+def size_entries(combo):
+    return [combo.itemText(i) for i in range(combo.count())]
+
+
+def choose_size(combo, text, qapp):
+    """Choose ``text`` in a Mesh size dropdown, as a user does."""
+    assert size_entries(combo)[:5] == SIZE_ENTRIES
     combo.setCurrentIndex(combo.findText(text))
     combo.activated.emit(combo.currentIndex())
     qapp.processEvents()  # applied once the dropdown has closed
 
 
-def size_cell(editor, name):
-    """The Mesh size cell of body ``name`` in the tree, or of face group ``name`` in the list."""
-    bodies = body_items(editor)
-    if name in bodies:
-        return editor.tree, editor.tree.indexFromItem(bodies[name], 1)
-    return editor.groups_table, editor.groups_table.model().index(row_of(editor, name), 2)
+def child_row(body, text):
+    return next(item for item in children_items(body) if item.text(0) == text)
 
 
-def test_mesh_size_dropdowns_set_levels_and_custom_sizes_on_bodies_and_face_groups(cad_editor, monkeypatch, qapp):
+def tree_rows(editor):
+    """Every body, Volume, Faces and face row of the tree."""
+    rows = []
+    for body in body_items(editor).values():
+        rows.append(body)
+        for child in children_items(body):
+            rows += [child, *children_items(child)]
+    return rows
+
+
+def body_faces(editor, name):
+    return {f["id"] for f in editor.geometry["faces"] if name in f["bodies"]}
+
+
+def test_every_row_has_a_mesh_size_dropdown_showing_global_its_own_size_or_mixed(cad_editor, qapp):
     editor, host = cad_editor
+    rows = tree_rows(editor)
+
+    assert all(size_entries(size_combo(editor, row)) == SIZE_ENTRIES for row in rows)
+    assert {size_combo(editor, row).currentText() for row in rows} == {"Global (Fine)"}
+    assert {size_combo(editor, name).currentText() for name in all_rows(editor)} == {"Global (Fine)"}
+
+    side = cabinet_faces(editor, lambda f: True)[0]
+    editor.set_face_size({side}, COARSE)
+
+    cabinet = body_items(editor)["Cabinet"]
+    assert size_combo(editor, face_item(editor, side)).currentText() == "Coarse"
+    for row in (cabinet, faces_row(cabinet), "walls"):
+        combo = size_combo(editor, row)
+        assert combo.currentText() == "Mixed"
+        assert not combo.model().item(combo.currentIndex()).isEnabled()  # shown, never chosen
+    assert size_combo(editor, "Driver").currentText() == "Global (Fine)"
+
+
+def test_a_body_size_sets_its_volume_and_faces_and_a_volume_size_only_the_volume(cad_editor, monkeypatch, qapp):
+    editor, host = cad_editor
+    chamber = body_items(editor)["Chamber"]
+    volume, faces = child_row(chamber, "Volume"), faces_row(chamber)
+    assert volume.flags() & Qt.ItemFlag.ItemIsUserCheckable == Qt.ItemFlag.NoItemFlags  # a volume is not drawn
+
+    choose_size(size_combo(editor, chamber), "Medium", qapp)
+
+    source = host.snapshot().source
+    assert source["volume_sizes"] == {"Chamber": {"elements_per_wavelength": 4}}
+    assert len(source["face_sizes"]) == len(body_faces(editor, "Chamber"))
+    assert "body_sizes" not in source and "face_group_sizes" not in source
+    assert size_combo(editor, "Driver").currentText() == "Medium"  # a chamber face
+    assert size_combo(editor, "walls").currentText() == "Mixed"  # chamber and cabinet walls
+
+    choose_size(size_combo(editor, volume), "Coarse", qapp)
+    assert host.snapshot().source["volume_sizes"] == {"Chamber": COARSE}
+    assert size_combo(editor, chamber).currentText() == "Mixed"
+    assert size_combo(editor, faces).currentText() == "Medium"
+
     monkeypatch.setattr(editor, "ask_size_mm", lambda: 25.0)
-
-    choose_size(*size_cell(editor, "Driver"), "Medium", qapp)
-    choose_size(*size_cell(editor, "Chamber"), "Custom…", qapp)
-
-    source = host.snapshot().source
-    assert source["face_group_sizes"] == {"Driver": {"elements_per_wavelength": 4}}
-    assert source["body_sizes"] == {"Chamber": {"size_m": 0.025}}
-    assert editor.groups_table.item(row_of(editor, "Driver"), 2).text() == "Medium"
-    assert body_items(editor)["Chamber"].text(1) == "25 mm"
-
+    choose_size(size_combo(editor, faces), "Custom…", qapp)
+    assert {e["size_m"] for e in host.snapshot().source["face_sizes"]} == {0.025}
+    assert size_combo(editor, faces).currentText() == "25 mm"
     monkeypatch.setattr(editor, "ask_size_mm", lambda: None)  # cancelled
-    choose_size(*size_cell(editor, "Chamber"), "Custom…", qapp)
-    choose_size(*size_cell(editor, "Driver"), "", qapp)  # empty: inherited again
+    choose_size(size_combo(editor, chamber), "Custom…", qapp)
+    assert host.snapshot().source["volume_sizes"] == {"Chamber": COARSE}
+
+    choose_size(size_combo(editor, chamber), "Global (Fine)", qapp)
+    assert (host.snapshot().source["volume_sizes"], host.snapshot().source["face_sizes"]) == ({}, [])
+
+
+def test_face_group_sizes_are_written_to_their_faces_even_on_walls_and_interfaces(cad_editor, qapp):
+    editor, host = cad_editor
+    (interface,) = editor.geometry["interfaces"]
+
+    choose_size(size_combo(editor, "Interface 1 Port"), "Fine", qapp)
+    choose_size(size_combo(editor, "walls"), "Coarse", qapp)
+
     source = host.snapshot().source
-    assert source["face_group_sizes"] == {}
-    assert source["body_sizes"] == {"Chamber": {"size_m": 0.025}}
+    assert len(source["face_sizes"]) == len(interface["face_ids"]) + all_rows(editor)["walls"]
+    assert size_combo(editor, "Interface 1 Port").currentText() == "Fine"
+    assert size_combo(editor, "walls").currentText() == "Coarse"
+    assert "face_group_sizes" not in source
+
+
+def test_a_face_moved_into_a_group_keeps_its_own_size(cad_editor):
+    editor, host = cad_editor
+    first, second = cabinet_faces(editor, lambda f: abs(abs(f["normal"][0]) - 1) < 1e-9)
+    editor.set_face_size({first}, COARSE)
+
+    editor.add_to_group("Sides", {first, second})
+
+    assert size_combo(editor, face_item(editor, first)).currentText() == "Coarse"
+    assert size_combo(editor, face_item(editor, second)).currentText() == "Global (Fine)"
+    assert size_combo(editor, "Sides").currentText() == "Mixed"
 
 
 def face_item(editor, face_id):
     return next(
-        item for body in body_items(editor).values() for item in children_items(body) if item_face(item) == face_id
+        item
+        for body in body_items(editor).values()
+        for item in children_items(faces_row(body))
+        if item_face(item) == face_id
     )
 
 
@@ -570,24 +662,6 @@ def item_face(item):
     return item.data(0, Qt.ItemDataRole.UserRole)
 
 
-def test_face_rows_show_their_own_size_or_where_the_inherited_one_comes_from(cad_editor, main_window, qapp):
-    editor, _ = cad_editor
-    main_window.freq_max_spin.setValue(3430)
-    wait(qapp, lambda: "3430" in editor.target_label.text())
-    driver = next(f["id"] for f in editor.geometry["faces"] if f["step_name"] == "Driver")
-    side, other = cabinet_faces(editor, lambda f: True)[:2]
-
-    editor.set_face_group_size("Driver", {"elements_per_wavelength": 4})
-    editor.set_body_size("Cabinet", {"size_m": 0.03})
-    editor.set_face_size({side}, {"elements_per_wavelength": 2})
-
-    assert face_item(editor, side).text(1) == "Coarse"
-    assert face_item(editor, driver).text(1) == ""
-    assert face_item(editor, driver).toolTip(1) == "Inherits face group 'Driver': Medium (25 mm)"
-    assert face_item(editor, other).toolTip(1) == "Inherits body 'Cabinet': 30 mm"
-    assert body_items(editor)["Chamber"].toolTip(1) == "Inherits the mesh fineness: Fine (16.7 mm)"
-
-
 def test_mesh_size_from_the_face_menu_sets_a_face_override_on_the_selection(cad_editor, monkeypatch):
     editor, host = cad_editor
     first, second = cabinet_faces(editor, lambda f: abs(abs(f["normal"][0]) - 1) < 1e-9)
@@ -596,21 +670,21 @@ def test_mesh_size_from_the_face_menu_sets_a_face_override_on_the_selection(cad_
     editor.pick_face(second, add=True)
 
     menu = editor.face_menu(second)
-    assert list(menu_entries(menu)) == ['Add to "Driver"', "New group…", "Move to walls", "Mesh size"]
+    assert list(menu_entries(menu)) == ['Move to "Driver"', "New group…", "Mesh size"]  # both in walls
     sizes = menu_entries(menu_entries(menu)["Mesh size"].menu())
-    assert list(sizes) == ["Coarse", "Medium", "Fine", "Custom…", "Clear"]
+    assert list(sizes) == SIZE_ENTRIES
     sizes["Fine"].trigger()
 
     entries = host.snapshot().source["face_sizes"]
     assert [e["elements_per_wavelength"] for e in entries] == [6, 6]
     assert {round(abs(e["face"]["centre"][0]), 3) for e in entries} == {0.06}  # stored like face group faces
-    assert face_item(editor, first).text(1) == "Fine"
+    assert size_combo(editor, face_item(editor, first)).currentText() == "Fine"
 
     interface_entries = menu_entries(editor.face_menu(interface_face))
     assert list(interface_entries) == ["Rename interface…", "Mesh size"]
     menu_entries(interface_entries["Mesh size"].menu())["Coarse"].trigger()  # the face, outside the selection
     assert len(host.snapshot().source["face_sizes"]) == 3
-    menu_entries(menu_entries(editor.face_menu(first))["Mesh size"].menu())["Clear"].trigger()
+    menu_entries(menu_entries(editor.face_menu(first))["Mesh size"].menu())["Global (Fine)"].trigger()
     assert len(host.snapshot().source["face_sizes"]) == 1
 
 
@@ -627,26 +701,59 @@ def test_face_overrides_whose_faces_are_gone_are_dropped_with_a_note(cad_editor,
     assert "1 face size override dropped" in editor.status.text()
 
 
-def test_existing_designs_keep_their_mm_overrides_and_elements_per_wavelength(cad_editor, qapp):
+def test_designs_with_no_body_or_face_group_sizes_are_left_as_they_are(cad_editor, main_window, qapp):
     editor, host = cad_editor
-    legacy = {
-        "elements_per_wavelength": 5.0,
-        "body_sizes_m": {"Chamber": 0.04},
-        "face_group_sizes_m": {"Driver": 0.008},
-    }
-    snapshot = host.update_source(host.snapshot().source | legacy, expected_revision=host.snapshot().revision)
+    main_window.freq_max_spin.setValue(3430)
+    editor.spins["curvature_elements_per_circle"].setValue(13)  # an edit fetches the project context
+    wait(qapp, lambda: "3430" in editor.target_label.text())
+    empty = host.snapshot().source | {"body_sizes": {}, "face_group_sizes": {}}  # as earlier slices saved them
+    snapshot = host.update_source(empty, expected_revision=host.snapshot().revision)
+
     editor.apply_source(snapshot.source, snapshot.revision)
 
+    assert host.snapshot().revision == snapshot.revision
+    assert "sizes are now set" not in editor.status.text()
+
+
+def test_existing_designs_get_the_face_and_volume_sizes_that_applied_before(cad_editor, main_window, qapp, tmp_path):
+    from test_cad_import_provider import generate, make_project, median_edge, tet_count
+
+    editor, host = cad_editor
+    main_window.freq_max_spin.setValue(3430)
+    editor.spins["curvature_elements_per_circle"].setValue(13)  # an edit fetches the project context
+    wait(qapp, lambda: "3430" in editor.target_label.text())
+    legacy = {
+        "elements_per_wavelength": 5.0,  # 20 mm
+        "body_sizes_m": {"Chamber": 0.04},
+        "face_group_sizes_m": {"Driver": 0.008},
+        "body_sizes": {"Port": {"size_m": 0.03}},
+        "face_group_sizes": {},
+    }
+    old = {k: v for k, v in host.snapshot().source.items() if k not in ("face_sizes", "volume_sizes")} | legacy
+
+    snapshot = host.update_source(old, expected_revision=host.snapshot().revision)
+    editor.apply_source(snapshot.source, snapshot.revision)
+
+    new = host.snapshot().source
+    assert not {"body_sizes", "face_group_sizes", "body_sizes_m", "face_group_sizes_m"} & new.keys()
+    assert new["volume_sizes"] == {"Chamber": {"size_m": 0.04}, "Port": {"size_m": 0.03}}
+    driver = next(f["id"] for f in editor.geometry["faces"] if f["step_name"] == "Driver")
+    assert size_combo(editor, face_item(editor, driver)).currentText() == "8 mm"
+    chamber = body_faces(editor, "Chamber") - {driver}
+    assert {size_combo(editor, face_item(editor, f)).currentText() for f in chamber} == {"40 mm"}
+    port = body_faces(editor, "Port")  # its interface face too: no face group size
+    assert {size_combo(editor, face_item(editor, f)).currentText() for f in port} == {"30 mm"}
+    cabinet = body_faces(editor, "Cabinet")
+    assert {size_combo(editor, face_item(editor, f)).currentText() for f in cabinet} == {"Global (5 per wavelength)"}
     assert editor.fineness.currentText() == "Custom" and not editor.spins["elements_per_wavelength"].isHidden()
-    assert body_items(editor)["Chamber"].text(1) == "40 mm"
-    assert editor.groups_table.item(row_of(editor, "Driver"), 2).text() == "8 mm"
 
-    editor.set_body_size("Port", FINE)
-
-    source = host.snapshot().source
-    assert source["body_sizes"] == {"Chamber": {"size_m": 0.04}, "Port": FINE}
-    assert "body_sizes_m" not in source
-    assert source["face_group_sizes_m"] == {"Driver": 0.008}  # untouched until a face group size changes
+    catalog = catalog_module._catalog
+    step = Path(new["step_path"])
+    _, before = generate(catalog.factory(PROVIDER, "backend")(), make_project(catalog, step, **old), tmp_path / "a")
+    _, after = generate(catalog.factory(PROVIDER, "backend")(), make_project(catalog, step, **new), tmp_path / "b")
+    assert tet_count(after) == pytest.approx(tet_count(before), rel=0.02)
+    for mesh_id, group in (("chamber", "Driver"), ("chamber", "walls"), ("exterior", "walls")):
+        assert median_edge(after, mesh_id, group) == pytest.approx(median_edge(before, mesh_id, group), rel=0.02)
 
 
 def test_mesh_fineness_levels_set_elements_per_wavelength_and_name_the_frequency_they_hold(
@@ -832,9 +939,6 @@ def test_walls_row_comes_first_then_the_interface_rows_then_the_face_groups(cad_
     assert editor.selected_faces() == set(interface["face_ids"])
     assert editor.group_name.text() == "walls"  # an interface group is never the current group
     assert not editor.groups_table.item(row, 0).flags() & Qt.ItemFlag.ItemIsEditable
-    choose_size(*size_cell(editor, "Interface 1 Port"), "Fine", qapp)
-    choose_size(*size_cell(editor, "walls"), "Coarse", qapp)
-    assert editor.source["face_group_sizes"] == {"Interface 1 Port": FINE, "walls": {"elements_per_wavelength": 2}}
 
 
 def test_single_faces_are_added_to_the_current_group_and_removed_back_to_walls(cad_editor):
@@ -923,13 +1027,14 @@ def hover(widget, position):
     QApplication.sendEvent(widget, event)
 
 
-def test_clicking_a_body_row_selects_all_its_faces(cad_editor):
+@pytest.mark.parametrize("row", ["body", "Volume", "Faces"])
+def test_clicking_a_body_volume_or_faces_row_selects_all_the_body_faces(cad_editor, row):
     editor, _ = cad_editor
     chamber = body_items(editor)["Chamber"]
 
-    editor.tree.itemClicked.emit(chamber, 0)
+    editor.tree.itemClicked.emit(chamber if row == "body" else child_row(chamber, row), 0)
 
-    assert editor.selected_faces() == {face["id"] for face in editor.geometry["faces"] if "Chamber" in face["bodies"]}
+    assert editor.selected_faces() == body_faces(editor, "Chamber")
 
 
 def test_placement_change_updates_the_interfaces_and_their_face_groups(cad_editor, qapp, tmp_path):
@@ -951,14 +1056,15 @@ def menu_entries(menu):
     return {action.text(): action for action in menu.actions()}
 
 
-def test_right_click_menu_adds_a_face_to_a_group_and_removes_it(cad_editor, monkeypatch):
+def test_right_click_menu_moves_a_face_to_a_group_and_back_to_walls(cad_editor, monkeypatch):
     editor, host = cad_editor
     first, second = cabinet_faces(editor, lambda f: abs(abs(f["normal"][0]) - 1) < 1e-9)
 
     entries = menu_entries(editor.face_menu(first))
-    assert list(entries) == ['Add to "Driver"', "New group…", "Move to walls", "Mesh size"]  # no interface group
-    entries['Add to "Driver"'].trigger()
+    assert list(entries) == ['Move to "Driver"', "New group…", "Mesh size"]  # in walls; no interface group
+    entries['Move to "Driver"'].trigger()
     assert [(g["name"], len(g["faces"])) for g in host.snapshot().source["face_groups"]] == [("Driver", 1)]
+    assert list(menu_entries(editor.face_menu(first))) == ["New group…", "Move to walls", "Mesh size"]
 
     monkeypatch.setattr(editor, "ask_group_name", lambda: None)  # cancelled
     status = editor.status.text()
@@ -974,9 +1080,12 @@ def test_right_click_menu_adds_a_face_to_a_group_and_removes_it(cad_editor, monk
     menu_entries(editor.face_menu(first))["Move to walls"].trigger()  # first is not: acts on the face
     assert group_rows(editor) == {"Driver": 1}
 
+    editor.add_to_group("Driver", {first})
     editor.pick_face(first)
     editor.pick_face(second, add=True)
-    menu_entries(editor.face_menu(second))['Add to "Driver"'].trigger()
+    entries = menu_entries(editor.face_menu(second))  # one in Driver, one in walls: every move does something
+    assert list(entries) == ['Move to "Driver"', "New group…", "Move to walls", "Mesh size"]
+    entries['Move to "Driver"'].trigger()
     assert group_rows(editor) == {"Driver": 3}
 
 
@@ -1029,8 +1138,8 @@ def test_an_interface_is_renamed_from_its_face_menu_and_keeps_its_size(cad_edito
     rename("Port mouth")
     source = host.snapshot().source
     assert source["interface_names"] == {"Interface 1 Port": "Port mouth"}
-    assert source["face_group_sizes"] == {"Port mouth": FINE}
     assert "Port mouth" in all_rows(editor) and "Interface 1 Port" not in all_rows(editor)
+    assert size_combo(editor, "Port mouth").currentText() == "Fine"  # the size is on its faces
 
     rename("Driver")
     assert "'Driver' is taken" in editor.status.text()
@@ -1080,11 +1189,77 @@ def test_picking_and_grouping_keep_the_camera(cad_editor, faces_under_mouse, qap
 
     mouse(plotter, Qt.MouseButton.LeftButton, (20, 30))
     qapp.processEvents()
-    menu_entries(editor.face_menu(face))['Add to "Driver"'].trigger()
+    menu_entries(editor.face_menu(face))['Move to "Driver"'].trigger()
+    qapp.processEvents()
+    editor.rotation_spins[1].setValue(90)  # placement changes keep the camera too
     qapp.processEvents()
 
     assert "add_mesh" in plotter.calls
-    assert not {"reset_camera", "add_mesh_resetting_camera"} & set(plotter.calls)
+    assert not {"reset_camera", "view_xy", "add_mesh_resetting_camera"} & set(plotter.calls)
+
+
+def test_the_view_opens_looking_along_minus_z_and_resets_on_loading_a_file(cad_editor, qapp, tmp_path):
+    editor, _ = cad_editor
+    plotter = editor.viewport.plotter
+    assert "view_xy" in plotter.calls  # Z towards the viewer, Y up, X to the right
+    plotter.calls.clear()
+
+    editor.set_step_path(str(vented_box(tmp_path / "other.step", depth=150)))
+    wait(qapp, lambda: not editor.loading)
+
+    assert "view_xy" in plotter.calls
+
+
+@pytest.fixture
+def menus(cad_editor, monkeypatch):
+    """The entries of each menu opened."""
+    shown = []
+    patch_menu_exec(cad_editor[0], monkeypatch, lambda menu: shown.append(list(menu_entries(menu))))
+    return shown
+
+
+def patch_menu_exec(editor, monkeypatch, opened):
+    """Call ``opened(menu)`` instead of showing each menu the editor opens."""
+    monkeypatch.setattr(sys.modules[type(editor).__module__], "_exec", lambda menu, _pos: opened(menu))
+
+
+def test_right_clicking_a_face_faces_or_face_group_row_opens_the_face_menu_on_its_faces(cad_editor, menus):
+    editor, _ = cad_editor
+    first, second = cabinet_faces(editor, lambda f: abs(abs(f["normal"][0]) - 1) < 1e-9)
+    editor.pick_face(first)
+    editor.pick_face(second, add=True)
+
+    editor.show_row_menu(face_item(editor, second), QPoint())  # in the selection: it stays
+    assert editor.selected_faces() == {first, second}
+    editor.show_row_menu(faces_row(body_items(editor)["Port"]), QPoint())
+    assert editor.selected_faces() == body_faces(editor, "Port")
+    editor.show_group_menu(row_of(editor, "Driver"), QPoint())
+    driver = next(f["id"] for f in editor.geometry["faces"] if f["step_name"] == "Driver")
+    assert editor.selected_faces() == {driver}
+    editor.show_group_menu(row_of(editor, "Interface 1 Port"), QPoint())
+    editor.show_row_menu(child_row(body_items(editor)["Chamber"], "Volume"), QPoint())
+    editor.show_row_menu(body_items(editor)["Chamber"], QPoint())  # a body row has no menu
+
+    assert menus == [
+        ['Move to "Driver"', "New group…", "Mesh size"],
+        ['Move to "Driver"', "New group…", "Mesh size"],  # its interface face is skipped, the rest are walls
+        ["New group…", "Move to walls", "Mesh size"],
+        ["Rename interface…", "Mesh size"],
+        ["Mesh size"],
+    ]
+
+
+def test_volume_row_menu_sizes_the_volume(cad_editor, monkeypatch):
+    editor, host = cad_editor
+
+    def choose_coarse(menu):
+        menu_entries(menu_entries(menu)["Mesh size"].menu())["Coarse"].trigger()
+
+    patch_menu_exec(editor, monkeypatch, choose_coarse)
+    editor.show_row_menu(child_row(body_items(editor)["Port"], "Volume"), QPoint())
+
+    assert host.snapshot().source["volume_sizes"] == {"Port": COARSE}
+    assert host.snapshot().source["face_sizes"] == []
 
 
 def test_open_step_starts_in_the_folder_last_used(blank_cad_editor, monkeypatch, qapp, tmp_path):

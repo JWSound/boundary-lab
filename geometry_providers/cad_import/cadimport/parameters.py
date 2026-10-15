@@ -60,6 +60,7 @@ def settings(source, configuration):
             body_sizes=body_sizes,
             face_group_sizes=face_group_sizes,
             face_sizes=tuple((entry["face"], {k: v for k, v in entry.items() if k != "face"}) for entry in face_sizes),
+            volume_sizes=dict(source.get("volume_sizes", {})),
             curvature_elements_per_circle=float(source["curvature_elements_per_circle"]),
             growth_rate=float(source["growth_rate"]),
             symmetry=configuration.get("symmetry_config", {}).get("mode", "off"),

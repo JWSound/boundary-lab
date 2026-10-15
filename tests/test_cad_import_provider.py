@@ -429,7 +429,7 @@ def test_existing_designs_keep_their_elements_per_wavelength_and_mm_overrides(pl
     catalog, backend = plugin
     legacy = dict(elements_per_wavelength=5.0, face_group_sizes_m={"Driver": 0.008}, body_sizes_m={"Port": 0.01})
     project = make_project(catalog, box_step, **legacy)
-    for key in ("body_sizes", "face_group_sizes", "face_sizes"):  # saved before these existed
+    for key in ("face_sizes", "volume_sizes"):  # saved before these existed
         del project.generator_documents[0].source[key]
 
     _, response = generate(backend, project, tmp_path)
@@ -456,12 +456,37 @@ def test_size_overrides_from_the_source_take_levels_and_single_faces(plugin, box
     assert median_edge(response, face=sides[0].id) < 0.008 < median_edge(response, face=sides[1].id)
 
 
+def test_volume_size_from_the_source_sizes_the_interior_only(plugin, box_step, tmp_path):
+    catalog, backend = plugin
+    _, plain = generate(backend, make_project(catalog, box_step), tmp_path / "plain")
+    project = make_project(catalog, box_step, volume_sizes={"Chamber": {"elements_per_wavelength": 2}})
+
+    _, coarse = generate(backend, project, tmp_path / "coarse")
+
+    assert median_edge(coarse, "chamber", "walls") == pytest.approx(median_edge(plain, "chamber", "walls"), rel=0.1)
+    assert tet_count(coarse) < 0.85 * tet_count(plain)
+
+
+def tet_count(response, mesh_id="chamber"):
+    mesh = meshio.read(next(m.mesh_path for m in response.geometry.meshes if m.id == mesh_id))
+    return len(mesh.cells_dict["tetra"])
+
+
+@pytest.mark.parametrize("name", ["Nope", "Cabinet"])
+def test_volume_size_for_no_air_body_is_rejected(plugin, box_step, tmp_path, name):
+    catalog, backend = plugin
+    project = make_project(catalog, box_step, volume_sizes={name: {"size_m": 0.01}})
+
+    with pytest.raises(ValueError, match=f"Volume size for '{name}', which is no air body"):
+        generate(backend, project, tmp_path)
+
+
 def test_new_designs_are_fine():
     catalog = ProviderCatalog([ROOT], enabled=[PROVIDER])
     catalog.scan()
     source = catalog.source_defaults(PROVIDER)
     assert source["elements_per_wavelength"] == 6
-    assert (source["body_sizes"], source["face_group_sizes"], source["face_sizes"]) == ({}, {}, [])
+    assert (source["face_sizes"], source["volume_sizes"]) == ([], {})
 
 
 def test_saved_project_reopens_with_meshes_without_the_plugin(plugin, box_step, tmp_path):

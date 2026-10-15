@@ -221,6 +221,20 @@ def test_body_override_coarsens_one_air_body_only(vented, tmp_path):
     assert 0.016 < np.median(edge_lengths(read(result, "exterior"), group="walls")) < 0.022
 
 
+def test_volume_size_coarsens_the_interior_only(vented, tmp_path):
+    settings = replace(SETTINGS, volume_sizes={"Chamber": CadSizeOverride(elements_per_wavelength=2)})  # 50 mm
+    result = mesh_step(vented_box(tmp_path / "box.step"), settings, tmp_path / "out")
+
+    def chamber_edges(result, cell_type, group):
+        return edge_lengths(read(result, "chamber"), cell_type, group=group)
+
+    # The growth limit keeps the 100 mm wide interior well below 50 mm, but it holds fewer elements.
+    assert len(chamber_edges(result, "tetra", "Chamber")) < 0.85 * len(chamber_edges(vented, "tetra", "Chamber"))
+    # Its faces keep the target size.
+    walls = np.median(chamber_edges(vented, "triangle", "walls"))
+    assert np.median(chamber_edges(result, "triangle", "walls")) == pytest.approx(walls, rel=0.1)
+
+
 def face_edge_median(mesh, face_id):
     """Median edge length (m) of the triangles meshing CAD face ``face_id``."""
     cells = mesh.cells_dict["triangle"][mesh.cell_data_dict["gmsh:geometrical"]["triangle"] == face_id]
@@ -371,6 +385,8 @@ def test_placement_must_be_three_finite_numbers(changes, message):
     ("changes", "message"),
     [
         (lambda g: {"body_sizes": {"Nope": {"size_m": 0.01}}}, "Size override for unknown body 'Nope'"),
+        (lambda g: {"volume_sizes": {"Nope": {"size_m": 0.01}}}, "Volume size for 'Nope', which is no air body"),
+        (lambda g: {"volume_sizes": {"Cabinet": {"size_m": 0.01}}}, "Volume size for 'Cabinet', which is no air body"),
         (lambda g: {"face_sizes": ((9999, {"size_m": 0.01}),)}, "Size override for unknown face 9999"),
         (lambda g: {"face_groups": {"Lid": (9999,)}}, "Face group 'Lid' refers to unknown face 9999"),
         (lambda g: {"face_groups": {"walls": ()}}, "Face group name 'walls' is reserved"),

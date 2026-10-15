@@ -31,7 +31,6 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSplitter,
-    QStyledItemDelegate,
     QTableWidget,
     QTableWidgetItem,
     QTreeWidget,
@@ -56,10 +55,13 @@ from .parameters import DEFAULT_SOUND_SPEED_M_PER_S, size_overrides
 
 SYMMETRY_LABELS = {"off": "Off", "x": "X", "xy": "XY"}
 FACE_ROLE = Qt.ItemDataRole.UserRole
+ROW_ROLE = Qt.ItemDataRole.UserRole + 1  # ("body" | "volume" | "faces", body name) of the rows above the faces
 LEVELS = {"Coarse": 2, "Medium": 4, "Fine": 6}  # mesh fineness: elements per wavelength at the maximum frequency
 LEVEL_NAMES = {n: name for name, n in LEVELS.items()}
 CUSTOM = "custom"  # the Mesh size choice that asks an edge length
-SIZE_CHOICES = (("", None), *LEVELS.items(), ("Custom…", CUSTOM))  # "": inherited
+SIZE_CHOICES = (*LEVELS.items(), ("Custom…", CUSTOM))  # after Global, which clears
+MIXED = "mixed"  # the shown size of a row whose members differ
+LEGACY_SIZES = ("body_sizes", "face_group_sizes", "body_sizes_m", "face_group_sizes_m")  # converted on load
 SIZING = (
     ("curvature_elements_per_circle", "Curvature elements per circle", 3.0, 100.0, 0, ""),
     ("growth_rate", "Growth rate", 1.05, 3.0, 2, "×"),
@@ -78,29 +80,6 @@ GROUP_COLOURS = (
 
 class _Relay(QObject):
     loaded = Signal(object, object, object)  # key, preview or None, error or None
-
-
-class _SizeDelegate(QStyledItemDelegate):
-    """A Mesh size cell's dropdown: inherited (empty), a level or a custom edge length. ``chosen(index, choice)``
-    receives the choice of :data:`SIZE_CHOICES`; the cell's text follows the source, not the dropdown."""
-
-    def __init__(self, parent, chosen):
-        super().__init__(parent)
-        self.chosen = chosen
-
-    def createEditor(self, parent, option, index):
-        combo = QComboBox(parent)
-        for label, choice in SIZE_CHOICES:
-            combo.addItem(label, choice)
-        combo.activated.connect(lambda _: (self.commitData.emit(combo), self.closeEditor.emit(combo)))
-        return combo
-
-    def setEditorData(self, editor, index):
-        found = editor.findText(index.data() or "")  # an edge length or a number per wavelength is Custom
-        editor.setCurrentIndex(found if found >= 0 else editor.findData(CUSTOM))
-
-    def setModelData(self, editor, model, index):
-        self.chosen(index, editor.currentData())
 
 
 def _actor_key(actor):
@@ -206,7 +185,7 @@ class Viewport(QWidget):
             if guides is not None:
                 self._show_guides(guides)
             if reset_camera:
-                self.plotter.reset_camera()
+                self.plotter.view_xy()  # along -Z: Z towards the viewer, Y up, X to the right
         self.plotter.render()
 
     def _show_guides(self, bbox_m):
@@ -358,9 +337,11 @@ class CadImportEditor:
         self.tree.setColumnCount(3)
         self.tree.setHeaderLabels(["Body / face", "Mesh size", "Kind"])
         self.tree.headerItem().setToolTip(
-            1, "Size override of a body or face (double-click); empty inherits, as the tooltip says from where."
+            1,
+            "Mesh size of a face or volume; Global follows the mesh fineness. A body or Faces row sets it on its "
+            "members and shows their shared size or Mixed.",
         )
-        self.tree.headerItem().setToolTip(2, "Whether a closed shell of surfaces is an air body or exterior surface.")
+        self.tree.headerItem().setToolTip(2, "Air body or exterior surface; a closed shell of surfaces can be either.")
         header = self.tree.header()
         header.setStretchLastSection(False)
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
@@ -369,11 +350,14 @@ class CadImportEditor:
         self.kind_combos = {}  # closed shell name -> its Kind dropdown
         self.tree.setSelectionMode(QTreeWidget.SelectionMode.ExtendedSelection)
         self.tree.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.tree.setItemDelegateForColumn(1, _SizeDelegate(self.tree, self._tree_size_chosen))
         self.tree.setAccessibleName("Bodies and faces")
         self.tree.itemChanged.connect(self._item_changed)
-        self.tree.itemDoubleClicked.connect(self._tree_double_clicked)
         self.tree.itemClicked.connect(self._tree_clicked)
+        self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(
+            lambda pos: self.show_row_menu(self.tree.itemAt(pos), self.tree.viewport().mapToGlobal(pos))
+        )
+        self._size_rows = []  # (Mesh size dropdown, face ids, air-body volumes) of each tree row
         self.tree.itemSelectionChanged.connect(self._selection_changed)
         tree_layout.addWidget(self.tree)
         buttons = QHBoxLayout()
@@ -419,9 +403,11 @@ class CadImportEditor:
         self.groups_table.setHorizontalHeaderLabels(["Face group", "Faces", "Mesh size"])
         self.groups_table.verticalHeader().hide()
         self.groups_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.groups_table.setItemDelegateForColumn(2, _SizeDelegate(self.groups_table, self._group_size_chosen))
+        self.groups_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.groups_table.setAccessibleName("Face groups")
         self.groups_table.itemSelectionChanged.connect(self._group_selected)
+        self.groups_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.groups_table.customContextMenuRequested.connect(self._group_menu_requested)
         groups_layout.addWidget(self.groups_table)
         layout.addWidget(self.groups_box)
 
@@ -612,7 +598,7 @@ class CadImportEditor:
             self.info.setText(error)
             return
         self._read = preview
-        self._place()
+        self._place(reset_camera=True)
 
     @staticmethod
     def _placement_of(source):
@@ -621,7 +607,7 @@ class CadImportEditor:
             translation_m=tuple(v / 1000 for v in source.get("translation_mm", (0.0, 0.0, 0.0))),
         )
 
-    def _place(self):
+    def _place(self, *, reset_camera=False):
         """Show the read preview with the source's placement, moved without reading the STEP file again."""
         if self._read is None:
             if not self.loading and self._key is not None and self._key[0]:
@@ -634,7 +620,7 @@ class CadImportEditor:
             self.info.setText(str(exc))
             return
         self._placement = placement
-        self._show_preview(_view(placed) | {"geometry": asdict(placed.geometry)})
+        self._show_preview(_view(placed) | {"geometry": asdict(placed.geometry)}, reset_camera=reset_camera)
 
     def _application_state_changed(self, state):
         """Back in the application with a changed STEP file: offer to re-mesh, never regenerate unasked."""
@@ -663,7 +649,7 @@ class CadImportEditor:
     def _set_role(self, name, role):
         self.edited({"closed_shells": self.source.get("closed_shells", {}) | {name: role}})
 
-    def _show_preview(self, preview):
+    def _show_preview(self, preview, *, reset_camera=False):
         self._preview = preview
         self.geometry = None if preview is None else preview["geometry"]
         self._faces = None
@@ -671,6 +657,7 @@ class CadImportEditor:
         self._hover = None
         self._face_items = {}
         self._body_items = {}
+        self._size_rows = []
         self.kind_combos = {}
         self._syncing = True
         self.tree.clear()
@@ -678,33 +665,48 @@ class CadImportEditor:
             faces = {face["id"]: face for face in self.geometry["faces"]}
             self._faces = {face_id: CadFace(**face) for face_id, face in faces.items()}
             roles = {shell["name"]: shell["role"] for shell in self.geometry["closed_shells"]}
+            checkable = Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable
             for body in self.geometry["bodies"]:
-                item = QTreeWidgetItem([body["name"]])
-                item.setFlags(
-                    Qt.ItemFlag.ItemIsEnabled
-                    | Qt.ItemFlag.ItemIsUserCheckable
-                    | Qt.ItemFlag.ItemIsAutoTristate
-                    | Qt.ItemFlag.ItemIsEditable
-                )
+                name, air = body["name"], body["kind"] == "air"
+                body_faces, volumes = set(body["face_ids"]), (name,) if air else ()
+                item = QTreeWidgetItem([name])
+                item.setFlags(checkable)  # not tristate: it follows its Faces row, the Volume row has no checkbox
                 item.setCheckState(0, Qt.CheckState.Checked)
-                item.setToolTip(0, "Air body" if body["kind"] == "air" else "Exterior surface body")
+                item.setData(0, ROW_ROLE, ("body", name))
+                item.setToolTip(0, "Air body" if air else "Exterior surface body")
                 self.tree.addTopLevelItem(item)
-                self._body_items[body["name"]] = item
-                if body["name"] in roles:
-                    self._add_kind_combo(item, body["name"], roles[body["name"]])
+                self._body_items[name] = item
+                if name in roles:
+                    self._add_kind_combo(item, name, roles[name])
+                else:
+                    item.setText(2, "Air body" if air else "Exterior surface")
+                rows = [(item, body_faces, volumes)]
+                if air:
+                    volume = QTreeWidgetItem(["Volume"])
+                    volume.setFlags(Qt.ItemFlag.ItemIsEnabled)  # not drawn: no checkbox
+                    volume.setData(0, ROW_ROLE, ("volume", name))
+                    volume.setToolTip(0, "The interior of the air body")
+                    item.addChild(volume)
+                    rows.append((volume, set(), volumes))
+                faces_item = QTreeWidgetItem(["Faces"])
+                faces_item.setFlags(checkable | Qt.ItemFlag.ItemIsAutoTristate)
+                faces_item.setCheckState(0, Qt.CheckState.Checked)
+                faces_item.setData(0, ROW_ROLE, ("faces", name))
+                item.addChild(faces_item)
+                rows.append((faces_item, body_faces, ()))
                 for face_id in body["face_ids"]:
                     face = faces[face_id]
                     child = QTreeWidgetItem([face["step_name"] or f"Face {face_id}"])
-                    child.setFlags(
-                        Qt.ItemFlag.ItemIsEnabled
-                        | Qt.ItemFlag.ItemIsUserCheckable
-                        | Qt.ItemFlag.ItemIsSelectable
-                        | Qt.ItemFlag.ItemIsEditable  # the Mesh size column only: the tree edits nothing else
-                    )
+                    child.setFlags(checkable | Qt.ItemFlag.ItemIsSelectable)
                     child.setData(0, FACE_ROLE, face_id)
                     child.setCheckState(0, Qt.CheckState.Checked)
-                    item.addChild(child)
+                    faces_item.addChild(child)
                     self._face_items.setdefault(face_id, []).append(child)
+                    rows.append((child, {face_id}, ()))
+                for row, row_faces, row_volumes in rows:
+                    combo = self._size_combo(row_faces, row_volumes)
+                    self.tree.setItemWidget(row, 1, combo)
+                    self._size_rows.append((combo, row_faces, row_volumes))
             low, high = self.geometry["bbox_m"]
             size = " x ".join(f"{(b - a) * 1000:.1f}" for a, b in zip(low, high, strict=True))
             lines = [f"Size {size} mm · Symmetry {SYMMETRY_LABELS[self.geometry['symmetry']]} suggested"]
@@ -712,9 +714,9 @@ class CadImportEditor:
             self.info.setText("\n".join(lines))
         self._syncing = False
         self._show_overrides()
-        self._render(reset_camera=True)
+        self._render(reset_camera=reset_camera)
         if self.geometry is not None:
-            self._drop_lost_face_sizes()
+            self._drop_lost_sizes()
             self._drop_interface_faces()
 
     def _add_kind_combo(self, item, name, role):
@@ -778,11 +780,41 @@ class CadImportEditor:
             self.select_faces({face_id})  # the menu never acts on faces not pointed at
         self.mark_face(face_id)
         self._render()
-        menu = self.face_menu(face_id)
-        try:
-            menu.exec(global_pos)
-        finally:
-            menu.deleteLater()
+        _exec(self.face_menu(face_id), global_pos)
+
+    def show_row_menu(self, item, global_pos):
+        """The menu of a tree row: the face menu on a face or Faces row's faces, Mesh size on a Volume row; a body
+        row has none."""
+        if item is None or self._faces is None:
+            return
+        face_id = item.data(0, FACE_ROLE)
+        kind, name = item.data(0, ROW_ROLE) or ("face", None)
+        if face_id is not None:
+            self._show_menu_on({face_id}, self._interface_of().get(face_id), global_pos)
+        elif kind == "faces":
+            self._show_menu_on(set(self._body(name)["face_ids"]), None, global_pos)
+        elif kind == "volume":
+            menu = QMenu(self.widget)
+            self._add_size_menu(menu, partial(self.set_volume_size, name))
+            _exec(menu, global_pos)
+
+    def show_group_menu(self, row, global_pos):
+        """The face menu on the faces of face-group list ``row``."""
+        name, faces, kind = self.rows()[row]
+        if faces:
+            self._show_menu_on(set(faces), name if kind == "interface" else None, global_pos)
+
+    def _group_menu_requested(self, pos):
+        row = self.groups_table.rowAt(pos.y())
+        if row >= 0:
+            self.show_group_menu(row, self.groups_table.viewport().mapToGlobal(pos))
+
+    def _show_menu_on(self, face_ids, interface, global_pos):
+        """The face menu on the selection, which ``face_ids`` become unless they are in it."""
+        if not face_ids <= self.selected_faces():
+            self.select_faces(face_ids)
+        self._render()
+        _exec(self._face_menu(self.selected_faces(), interface), global_pos)
 
     def mark_face(self, face_id):
         """Name ``face_id`` and its face group in the status line and point at the group's row."""
@@ -796,24 +828,34 @@ class CadImportEditor:
     def face_menu(self, face_id):
         """The right-click menu of ``face_id``, acting on the selection when the face is in it, else on the face.
         On an interface face it renames the interface and sizes faces."""
-        menu = QMenu(self.widget)
         if self._faces is None:
-            return menu
+            return QMenu(self.widget)
         selected = self.selected_faces()
-        faces = selected if face_id in selected else {face_id}
-        interface = self._interface_of().get(face_id)
+        return self._face_menu(selected if face_id in selected else {face_id}, self._interface_of().get(face_id))
+
+    def _face_menu(self, face_ids, interface):
+        """The menu acting on ``face_ids``: moves between groups, leaving out those that would do nothing, or, for
+        ``interface``, its renaming; and Mesh size."""
+        menu = QMenu(self.widget)
         if interface is not None:
             menu.addAction("Rename interface…", lambda: self._rename_interface_asked(interface))
-        else:
-            for name, _, kind in self.rows():
-                if kind == "group":
-                    menu.addAction(f'Add to "{name}"', lambda n=name: self.add_to_group(n, faces))
-            menu.addAction("New group…", lambda: self._add_to_new_group(faces))
-            menu.addAction("Move to walls", lambda: self.remove_from_group(faces))
-        sizes = menu.addMenu("Mesh size")
-        for label, choice in (*SIZE_CHOICES[1:], ("Clear", None)):
-            sizes.addAction(label, lambda c=choice: self._size_chosen(c, lambda size: self.set_face_size(faces, size)))
+        elif movable := face_ids - self._interface_of().keys():  # interface faces stay in their interface
+            rows = self.rows()
+            held = {name for name, faces, _ in rows if faces & movable}
+            for name, _, kind in rows:
+                if kind == "group" and held != {name}:
+                    menu.addAction(f'Move to "{name}"', lambda n=name: self.add_to_group(n, face_ids))
+            menu.addAction("New group…", lambda: self._add_to_new_group(face_ids))
+            if held != {WALLS}:
+                menu.addAction("Move to walls", lambda: self.remove_from_group(face_ids))
+        self._add_size_menu(menu, partial(self.set_face_size, face_ids))
         return menu
+
+    def _add_size_menu(self, menu, apply):
+        """A Mesh size submenu of ``menu`` that ``apply``-s the chosen override (``None``: Global)."""
+        sizes = menu.addMenu("Mesh size")
+        for label, choice in ((self._global_text(), None), *SIZE_CHOICES):
+            sizes.addAction(label, lambda c=choice: self._size_chosen(c, apply))
 
     def _rename_interface_asked(self, name):
         new_name = self.ask_interface_name(name)
@@ -840,10 +882,7 @@ class CadImportEditor:
         names = {d: s for d, s in self.source.get("interface_names", {}).items() if d != detected}
         if new_name != detected:
             names[detected] = new_name
-        sizes = size_overrides(self.source)[1]
-        if name in sizes:
-            sizes[new_name] = sizes.pop(name)
-        self.edited({"interface_names": names, "face_group_sizes": sizes}, drop=("face_group_sizes_m",))
+        self.edited({"interface_names": names})
 
     def _add_to_new_group(self, face_ids):
         name = self.ask_group_name()
@@ -858,32 +897,50 @@ class CadImportEditor:
     def _item_changed(self, item, column):
         if self._syncing:
             return
-        face_id = item.data(0, FACE_ROLE)
-        if face_id is None:
-            return  # Bodies only propagate their state to their faces.
+        row = item.data(0, ROW_ROLE)
+        if row is not None:  # a body row sets its Faces row, which sets its faces, and shows its state
+            body = self._body_items[row[1]]
+            faces_item = body.child(body.childCount() - 1)
+            if row[0] == "faces":
+                self._show_body_check(faces_item)
+            elif row[0] == "body" and item.checkState(0) != Qt.CheckState.PartiallyChecked:
+                faces_item.setCheckState(0, item.checkState(0))
+            return
         visible = item.checkState(0) == Qt.CheckState.Checked
+        face_id = item.data(0, FACE_ROLE)
         (self._hidden.discard if visible else self._hidden.add)(face_id)
         self._syncing = True
         for other in self._face_items[face_id]:
             if other is not item:
                 other.setCheckState(0, item.checkState(0))
+                self._show_body_check(other.parent())
         self._syncing = False
         self._render_timer.start(0)
 
-    def _tree_clicked(self, item, column):
-        """A body row selects all its faces."""
-        if item.parent() is None and column == 0:
-            self.select_faces(item.child(i).data(0, FACE_ROLE) for i in range(item.childCount()))
+    def _show_body_check(self, faces_item):
+        syncing, self._syncing = self._syncing, True
+        faces_item.parent().setCheckState(0, faces_item.checkState(0))
+        self._syncing = syncing
 
-    def _tree_double_clicked(self, item, column):
-        if column == 1:
-            self.tree.editItem(item, 1)
+    def _tree_clicked(self, item, column):
+        """A body, Volume or Faces row selects all the body's faces (those around its volume)."""
+        row = item.data(0, ROW_ROLE)
+        if row is not None and column == 0:
+            self.select_faces(self._body(row[1])["face_ids"])
+
+    def _body(self, name):
+        return next(body for body in self.geometry["bodies"] if body["name"] == name)
+
+    def _air_bodies(self):
+        return {body["name"] for body in self.geometry["bodies"] if body["kind"] == "air"}
 
     def show_all(self):
         self._syncing = True
         for items in self._face_items.values():
             for item in items:
                 item.setCheckState(0, Qt.CheckState.Checked)
+        for body in self._body_items.values():
+            body.setCheckState(0, Qt.CheckState.Checked)
         self._syncing = False
         self._hidden.clear()
         self._render()
@@ -1061,55 +1118,107 @@ class CadImportEditor:
         self._edit_groups([g for g in self.source.get("face_groups", []) if g["name"] != name])
 
     def _edit_groups(self, groups):
-        """Store ``groups``; size overrides of face groups no longer listed are dropped."""
-        listed = self.face_groups(groups).keys() | {g["name"] for g in groups} | {WALLS, *self._interface_of().values()}
-        sizes = {k: v for k, v in size_overrides(self.source)[1].items() if k in listed}
-        self.edited({"face_groups": groups, "face_group_sizes": sizes}, drop=("face_group_sizes_m",))
+        """Store ``groups``; sizes stay on the faces."""
+        self.edited({"face_groups": groups})
 
     def _delete_selected_group(self):
         rows = {item.row() for item in self.groups_table.selectedItems()}
         for row in sorted(rows):
             self.delete_face_group(self.groups_table.item(row, 0).text())
 
-    # -- size overrides -----------------------------------------------------------------------
-    # An override is {"elements_per_wavelength": N} (a level) or {"size_m": x}; None clears it.
-
-    def set_face_group_size(self, name, size):
-        """Override the size of face group ``name``."""
-        sizes = _with_size(size_overrides(self.source)[1], name, size)
-        self.edited({"face_group_sizes": sizes}, drop=("face_group_sizes_m",))
-
-    def set_body_size(self, name, size):
-        """Override the size of body ``name``."""
-        sizes = _with_size(size_overrides(self.source)[0], name, size)
-        self.edited({"body_sizes": sizes}, drop=("body_sizes_m",))
+    # -- mesh sizes ---------------------------------------------------------------------------
+    # Only faces and air-body volumes carry a size: {"elements_per_wavelength": N} (a level) or {"size_m": x};
+    # None is Global (the mesh fineness). A body, Faces or face-group row writes to its members.
 
     def set_face_size(self, face_ids, size):
-        """Override the size of each of ``face_ids``, stored like face group faces."""
+        """Set the size of each of ``face_ids``, stored like face group faces."""
+        self._set_sizes(size, face_ids)
+
+    def set_volume_size(self, name, size):
+        """Set the size of air body ``name``'s volume (its interior)."""
+        self._set_sizes(size, volumes=(name,))
+
+    def set_face_group_size(self, name, size):
+        """Set the size of the faces of face-group list row ``name``."""
+        self._set_sizes(size, next(faces for n, faces, _ in self.rows() if n == name))
+
+    def _set_sizes(self, size, face_ids=(), volumes=()):
         if self._faces is None:
             return
         face_ids = set(face_ids)
-        entries = size_overrides(self.source)[2]
+        entries = self.source.get("face_sizes", [])
         kept = [e for e, f in zip(entries, self._face_size_ids(entries), strict=True) if f not in face_ids]
         added = [] if size is None else [{"face": self._ref(f)} | size for f in sorted(face_ids)]
-        self.edited({"face_sizes": kept + added})
+        sizes = self.source.get("volume_sizes", {})
+        for name in volumes:
+            sizes = _with_size(sizes, name, size)
+        self.edited({"face_sizes": kept + added, "volume_sizes": sizes})
+
+    def _sizes(self):
+        """``({face id: size}, {air body: size})`` stored for the loaded geometry."""
+        entries = self.source.get("face_sizes", [])
+        faces = {f: _size_of(e) for e, f in zip(entries, self._face_size_ids(entries), strict=True) if f is not None}
+        return faces, dict(self.source.get("volume_sizes", {}))
 
     def _face_size_ids(self, entries):
-        """The face each stored face override stands for in the loaded geometry, or ``None``."""
+        """The face each stored face size stands for in the loaded geometry, or ``None``."""
         bbox = self.geometry["bbox_m"]
         return [match_face_ref(CadFaceRef(**e["face"]), self._faces.values(), bbox, **self._placement) for e in entries]
 
-    def _drop_lost_face_sizes(self):
-        """Drop the face overrides whose faces the loaded STEP file no longer has, saying so."""
-        entries = size_overrides(self.source)[2]
+    def _drop_lost_sizes(self):
+        """Drop the face sizes whose faces the loaded STEP file no longer has, and volume sizes of bodies that are no
+        air bodies, saying so."""
+        entries = self.source.get("face_sizes", [])
         found = self._face_size_ids(entries)
         lost = found.count(None)
+        air = self._air_bodies()
+        volumes = self.source.get("volume_sizes", {})
+        gone = sorted(set(volumes) - air)
+        if not lost and not gone:
+            return
+        self.edited(
+            {
+                "face_sizes": [e for e, f in zip(entries, found, strict=True) if f is not None],
+                "volume_sizes": {name: size for name, size in volumes.items() if name in air},
+            }
+        )
+        notes = []
         if lost:
-            self.edited({"face_sizes": [e for e, f in zip(entries, found, strict=True) if f is not None]})
-            self.status.setText(
+            notes.append(
                 f"{lost} face size override{'' if lost == 1 else 's'} dropped: "
                 "{} face{} no longer in the STEP file.".format(*(("its", " is") if lost == 1 else ("their", "s are")))
             )
+        if gone:
+            notes.append(f"Volume size of {', '.join(gone)} dropped: no air body.")
+        self.status.setText(" ".join(notes))
+
+    def _migrate_sizes(self):
+        """Turn an older design's body and face group sizes into the face and volume sizes meshing gave them (face,
+        face group, then the finest body; an air body's own size for its volume); ``True`` when it did. Waits for the
+        maximum frequency, which compares levels with edge lengths. Empty ones, as every earlier design has, stay."""
+        if self._faces is None or self._fmax_hz is None or not any(self.source.get(k) for k in LEGACY_SIZES):
+            return False
+        bodies, groups, entries = size_overrides(self.source)
+        own, volumes = self._sizes()
+        group_of = {f: name for name, faces, _ in self.rows() for f in faces}
+        target = self._edge_m(self._fineness())
+        added = []
+        for face_id, face in self._faces.items():
+            if face_id in own:
+                continue
+            size = groups.get(group_of[face_id])
+            if size is None:
+                sized = [bodies[b] for b in face.bodies if b in bodies]
+                finest = min(sized, key=self._edge_m, default=None)
+                # A body without a size meshes at the target size.
+                if finest is not None and (len(sized) == len(face.bodies) or self._edge_m(finest) < target):
+                    size = finest
+            if size is not None:
+                added.append({"face": self._ref(face_id)} | size)
+        volumes = {name: size for name, size in bodies.items() if name in self._air_bodies()} | volumes
+        self.edited({"face_sizes": entries + added, "volume_sizes": volumes}, drop=LEGACY_SIZES)
+        self.status.setText("Body and face group sizes are now set on their faces and volumes.")
+        return True
 
     def ask_size_mm(self):
         """Ask a custom edge length in mm; ``None`` when cancelled."""
@@ -1117,33 +1226,71 @@ class CadImportEditor:
         return size if ok else None
 
     def _size_chosen(self, choice, apply):
-        """``apply`` the override of a Mesh size ``choice`` (see :data:`SIZE_CHOICES`); Custom… asks the size."""
+        """``apply`` the size of a Mesh size ``choice``: ``None`` (Global), a level's N or Custom…, which asks the
+        edge length; ``False`` when that is cancelled."""
         if choice == CUSTOM:
             size_mm = self.ask_size_mm()
             if size_mm is None:
-                return
+                return False
             apply({"size_m": size_mm / 1000})
         else:
             apply(None if choice is None else {"elements_per_wavelength": choice})
+        return True
 
-    def _tree_size_chosen(self, index, choice):
-        item = self.tree.itemFromIndex(index)
-        face_id = item.data(0, FACE_ROLE)
-        if face_id is None:
-            apply = partial(self.set_body_size, item.text(0))
+    def _size_combo(self, face_ids, volumes):
+        """A Mesh size dropdown writing to ``face_ids`` and air-body ``volumes``."""
+        combo = QComboBox()
+        combo.setAccessibleName("Mesh size")
+        combo.addItem("", None)  # Global, named when shown
+        for label, choice in SIZE_CHOICES:
+            combo.addItem(label, choice)
+        apply = partial(self._set_sizes, face_ids=face_ids, volumes=volumes)
+
+        def chosen(index):
+            choice = combo.itemData(index)
+
+            def apply_choice():
+                if not self._size_chosen(choice, apply):
+                    self._show_overrides()  # Custom… cancelled: back to the stored size
+
+            # Once the dropdown has closed: the change rewrites the dropdowns, and Custom… asks first.
+            QTimer.singleShot(0, apply_choice)
+
+        combo.activated.connect(chosen)
+        return combo
+
+    def _show_size(self, combo, size):
+        """Show ``size`` (``None``: Global, or :data:`MIXED`) in ``combo``; one no entry names gets an entry of its
+        own, shown but never chosen."""
+        blocked = combo.blockSignals(True)
+        fixed = 1 + len(SIZE_CHOICES)
+        while combo.count() > fixed:
+            combo.removeItem(fixed)
+        combo.setItemText(0, self._global_text())
+        n = None if size in (None, MIXED) else size.get("elements_per_wavelength")
+        if size is None:
+            index = 0
+        elif n in LEVEL_NAMES:
+            index = 1 + list(LEVELS.values()).index(n)
         else:
-            apply = partial(self.set_face_size, {face_id})
-        # Once the dropdown has closed: the change rewrites the cells, and Custom… asks first.
-        QTimer.singleShot(0, lambda: self._size_chosen(choice, apply))
+            combo.addItem("Mixed" if size == MIXED else self._size_text(size))
+            combo.model().item(fixed).setEnabled(False)
+            index = fixed
+        combo.setCurrentIndex(index)
+        if size is None:
+            combo.setToolTip(f"The mesh fineness: {self._size_text(self._fineness(), edge=True)}")
+        else:
+            combo.setToolTip("Its members have different sizes." if size == MIXED else self._size_text(size, edge=True))
+        combo.blockSignals(blocked)
 
-    def _group_size_chosen(self, index, choice):
-        name = self.groups_table.item(index.row(), 0).text()
-        QTimer.singleShot(0, lambda: self._size_chosen(choice, partial(self.set_face_group_size, name)))
+    def _fineness(self):
+        return {"elements_per_wavelength": float(self.source["elements_per_wavelength"])}
+
+    def _global_text(self):
+        return f"Global ({self._size_text(self._fineness())})"
 
     def _size_text(self, size, *, edge=False):
-        """A Mesh size cell's text of override ``size``; ``edge`` adds a level's edge length when it is known."""
-        if size is None:
-            return ""
+        """The text of ``size``; ``edge`` adds a level's edge length when it is known."""
         if "size_m" in size:
             return f"{size['size_m'] * 1000:.3g} mm"
         n = size["elements_per_wavelength"]
@@ -1152,23 +1299,8 @@ class CadImportEditor:
             text += f" ({DEFAULT_SOUND_SPEED_M_PER_S / self._fmax_hz / n * 1000:.3g} mm)"
         return text
 
-    def _inherited(self, face_id=None):
-        """Where a body's (``face_id`` ``None``) or face's inherited size comes from, as its tooltip says it."""
-        bodies, groups, _ = size_overrides(self.source)
-        fineness = {"elements_per_wavelength": float(self.source["elements_per_wavelength"])}
-        if face_id is not None:
-            group = self.group_of(face_id)[0]
-            if group in groups:
-                return f"Inherits face group '{group}': {self._size_text(groups[group], edge=True)}"
-            # As meshing does: the finest of the face's bodies, a body without an override at the target size.
-            sizes = {b: self._edge_m(bodies.get(b, fineness)) for b in self._faces[face_id].bodies}
-            finest = min(sizes, key=sizes.get)
-            if finest in bodies:
-                return f"Inherits body '{finest}': {self._size_text(bodies[finest], edge=True)}"
-        return f"Inherits the mesh fineness: {self._size_text(fineness, edge=True)}"
-
     def _edge_m(self, size):
-        """The edge length of override ``size`` (levels at the project's maximum frequency, else 1 kHz)."""
+        """The edge length of ``size`` (levels at the project's maximum frequency, else 1 kHz)."""
         if "size_m" in size:
             return size["size_m"]
         return DEFAULT_SOUND_SPEED_M_PER_S / (self._fmax_hz or 1000.0) / size["elements_per_wavelength"]
@@ -1183,10 +1315,9 @@ class CadImportEditor:
         if len(selected) == 1 and rows[selected[0]][2] != "interface":
             self.set_current_group(rows[selected[0]][0])
 
-    def _show_groups(self):
+    def _show_groups(self, face_sizes):
         self._syncing = True
         stored = {g["name"] for g in self.source.get("face_groups", [])}
-        sizes = size_overrides(self.source)[1]
         rows = self.rows()
         review = set(self.groups_needing_review())
         colours = self.group_colours()
@@ -1197,44 +1328,31 @@ class CadImportEditor:
         self.groups_table.setRowCount(len(rows))
         for row, (name, faces, kind) in enumerate(rows):
             count = f"{len(faces)} (needs review)" if name in review else str(len(faces))
-            cells = [
-                QTableWidgetItem(name),
-                QTableWidgetItem(count),
-                QTableWidgetItem(self._size_text(sizes.get(name))),
-            ]
-            for cell in cells[:2]:
+            cells = [QTableWidgetItem(name), QTableWidgetItem(count)]
+            for cell in cells:
                 cell.setFlags(cell.flags() & ~Qt.ItemFlag.ItemIsEditable)
             cells[0].setToolTip(tips.get(kind) or ("Picked face group" if name in stored else "Named in the STEP file"))
             cells[0].setData(Qt.ItemDataRole.DecorationRole, QColor(colours[name]))
             if name in review:
                 cells[1].setToolTip("Some faces of this group are not in the STEP file: re-pick or delete the group.")
-            cells[2].setToolTip(
-                "Size override (double-click); empty inherits the body sizes or the mesh fineness."
-                if name not in sizes
-                else self._size_text(sizes[name], edge=True)
-            )
             for column, cell in enumerate(cells):
                 self.groups_table.setItem(row, column, cell)
+            combo = self._size_combo(faces, ())
+            self._show_size(combo, _shared([face_sizes.get(f) for f in faces]))
+            self.groups_table.setCellWidget(row, 2, combo)
         self._syncing = False
         self._group_name_changed(self.group_name.text())
         self._render_timer.start(0)  # group colours
 
     def _show_overrides(self):
-        """Size overrides, or where an inherited size comes from, in the tree; face groups in the table."""
-        self._syncing = True
-        bodies, _, entries = size_overrides(self.source)
-        for name, item in self._body_items.items():
-            item.setText(1, self._size_text(bodies.get(name)))
-            item.setToolTip(1, self._size_text(bodies[name], edge=True) if name in bodies else self._inherited())
-        own = dict(zip(self._face_size_ids(entries), entries, strict=True)) if self._faces is not None else {}
-        for face_id, items in self._face_items.items():
-            text = self._size_text(own.get(face_id))
-            tip = self._size_text(own[face_id], edge=True) if face_id in own else self._inherited(face_id)
-            for item in items:
-                item.setText(1, text)
-                item.setToolTip(1, tip)
-        self._syncing = False
-        self._show_groups()
+        """Each row's size in its Mesh size dropdown: a face's or volume's own or Global, a body's, Faces' or face
+        group's the one its members share or Mixed. An older design's sizes are converted first."""
+        if self._migrate_sizes():
+            return
+        faces, volumes = self._sizes() if self._faces is not None else ({}, {})
+        for combo, row_faces, row_volumes in self._size_rows:
+            self._show_size(combo, _shared([faces.get(f) for f in row_faces] + [volumes.get(v) for v in row_volumes]))
+        self._show_groups(faces)
 
     # -- sizing and meshing -------------------------------------------------------------------
 
@@ -1315,6 +1433,23 @@ def _in_interfaces(face_ids, interface_of):
 def _with_size(sizes, name, size):
     sizes = {k: v for k, v in sizes.items() if k != name}
     return sizes if size is None else sizes | {name: size}
+
+
+def _size_of(entry):
+    """The size of a stored face size entry."""
+    return {k: v for k, v in entry.items() if k != "face"}
+
+
+def _shared(sizes):
+    """The size all of ``sizes`` are, else :data:`MIXED`; none is Global."""
+    return sizes[0] if sizes and all(size == sizes[0] for size in sizes) else (MIXED if sizes else None)
+
+
+def _exec(menu, global_pos):
+    try:
+        menu.exec(global_pos)
+    finally:
+        menu.deleteLater()
 
 
 def create_editor(parent, document_host):
