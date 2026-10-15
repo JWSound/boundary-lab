@@ -10,10 +10,15 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
+from typing import TYPE_CHECKING
 
 from blab.defaults import DEFAULT_SOUND_SPEED_M_PER_S
 
-from .face_refs import CadFaceRef, face_ref, match_face_ref
+from .face_refs import ZERO, CadFaceRef, face_ref, match_face_ref
+
+if TYPE_CHECKING:
+    from .design import CadFaceGroups
+    from .pipeline import CadGeometry
 
 LEVELS = {"Coarse": 2, "Medium": 4, "Fine": 6}  # mesh fineness: elements per wavelength at the maximum frequency
 LEVEL_NAMES = {n: name for name, n in LEVELS.items()}
@@ -127,12 +132,12 @@ class CadSizes:
 
     def __init__(
         self,
-        geometry,
+        geometry: CadGeometry,
         face_sizes: Sequence[Mapping],
         volume_sizes: Mapping[str, Mapping],
         *,
-        rotation_deg=(0.0, 0.0, 0.0),
-        translation_m=(0.0, 0.0, 0.0),
+        rotation_deg: Sequence[float] = ZERO,
+        translation_m: Sequence[float] = ZERO,
     ) -> None:
         self.geometry = geometry
         self._placement = dict(rotation_deg=rotation_deg, translation_m=translation_m)
@@ -202,7 +207,7 @@ def legacy_sizes(source: Mapping) -> tuple[dict[str, CadSizeOverride], dict[str,
     return result[0], result[1]
 
 
-def migrated(source: Mapping, groups, sizes: CadSizes, sizing: CadSizing) -> dict | None:
+def migrated(source: Mapping, groups: CadFaceGroups, sizes: CadSizes, sizing: CadSizing) -> dict | None:
     """``source`` with its body and face-group sizes turned into the face and volume sizes that mesh the same, or
     ``None`` when it has none (ADR 0001).
 

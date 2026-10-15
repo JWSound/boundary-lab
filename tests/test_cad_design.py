@@ -21,6 +21,11 @@ def x_sides(geometry):
     return sorted(sides, key=lambda f: f.centre[0])
 
 
+def row(groups, name):
+    """The row named ``name``, else ``None``."""
+    return next((row for row in groups.rows if row.name == name), None)
+
+
 def rows(groups):
     return [(row.name, len(row.faces), row.kind) for row in groups.rows]
 
@@ -36,7 +41,7 @@ def test_walls_come_first_then_the_interfaces_then_the_step_named_groups(box):
         ("Driver", 1, "group"),
     ]
     assert groups.group_of(driver).name == "Driver"
-    assert groups.row("walls").faces == {f.id for f in box.faces} - {driver, *interface.face_ids}
+    assert row(groups, "walls").faces == {f.id for f in box.faces} - {driver, *interface.face_ids}
     assert groups.needs_review == ()
     groups.check()
 
@@ -48,8 +53,8 @@ def test_stored_groups_come_before_step_named_ones_and_take_their_faces(box):
     groups = CadFaceGroups(box, {"Sides": [asdict(face_ref(left)), face_ref(right)], "Cone": [driver.id]})
 
     assert [row.name for row in groups.rows] == ["walls", "Interface 1 Port", "Sides", "Cone"]
-    assert groups.row("Sides").faces == {left.id, right.id}
-    assert groups.row("Driver") is None  # its only face is in Cone
+    assert row(groups, "Sides").faces == {left.id, right.id}
+    assert row(groups, "Driver") is None  # its only face is in Cone
 
 
 def test_faces_sharing_a_step_name_split_between_a_stored_group_and_their_name(tmp_path):
@@ -58,7 +63,11 @@ def test_faces_sharing_a_step_name_split_between_a_stored_group_and_their_name(t
 
     groups = CadFaceGroups(geometry, {"Left": [face_ref(left)]})
 
-    assert {row.name: len(row.faces) for row in groups.rows if row.kind == "group"} == {"Left": 1, "Side": 3, "Driver": 1}
+    assert {row.name: len(row.faces) for row in groups.rows if row.kind == "group"} == {
+        "Left": 1,
+        "Side": 3,
+        "Driver": 1,
+    }
 
 
 def test_a_group_with_a_stored_face_not_found_needs_review_and_cannot_generate(box):
@@ -89,9 +98,9 @@ def test_interface_faces_stay_in_their_renamed_interface_face_group(box):
     )
 
     assert groups.interface_names == {"Interface 1 Port": "Port mouth"}
-    assert groups.row("Port mouth").faces == set(interface.face_ids)
-    assert groups.row("Mouth").faces == set()  # holds interface faces only: listed, so it can be deleted
-    assert groups.row("Mixed").faces == {left.id}
+    assert row(groups, "Port mouth").faces == set(interface.face_ids)
+    assert row(groups, "Mouth").faces == set()  # holds interface faces only: listed, so it can be deleted
+    assert row(groups, "Mixed").faces == {left.id}
     assert groups.held_by_interfaces == set(interface.face_ids)
     assert groups.group_of(interface.face_ids[0]).kind == "interface"
     groups.check()
@@ -132,7 +141,7 @@ def test_stored_faces_resolve_in_cad_axes_under_the_placement(tmp_path):
 
     groups = CadFaceGroups(placed, {"Left": [face_ref(left)]}, **placement)
 
-    (face,) = groups.row("Left").faces
+    (face,) = row(groups, "Left").faces
     assert next(f for f in placed.faces if f.id == face).normal == pytest.approx((0.0, 0.0, 1.0), abs=1e-9)
 
 
@@ -159,7 +168,7 @@ def stored(source):
 
 def edited(groups, edit, source=None):
     """The design after ``edit``: its source and its face groups."""
-    source = (source or {"face_groups": groups.stored(), "interface_names": {}}) | edit.changes
+    source = (source or {"face_groups": [], "interface_names": {}}) | edit.changes
     return source, CadFaceGroups(groups.geometry, stored(source), interface_names=source["interface_names"])
 
 
@@ -172,12 +181,12 @@ def test_moving_faces_into_a_new_then_an_existing_group_takes_them_out_of_any_ot
     groups = CadFaceGroups(box, {})
 
     source, groups = edited(groups, groups.moved_to(" A ", {left.id, right.id}))
-    assert group_faces(groups) == {"A": {left.id, right.id}, "Driver": {next(iter(groups.row("Driver").faces))}}
+    assert group_faces(groups) == {"A": {left.id, right.id}, "Driver": {next(iter(row(groups, "Driver").faces))}}
     source, groups = edited(groups, groups.moved_to("B", {right.id}), source)
 
     assert [(g["name"], len(g["faces"])) for g in source["face_groups"]] == [("A", 1), ("B", 1)]
     assert source["face_groups"][1]["faces"] == [asdict(face_ref(right))]  # stored in CAD axes
-    assert groups.row("B").faces == {right.id}
+    assert row(groups, "B").faces == {right.id}
     source, groups = edited(groups, groups.moved_to("B", {left.id}), source)
     assert [g["name"] for g in source["face_groups"]] == ["B"]  # A emptied, so gone
 
@@ -248,11 +257,11 @@ def test_deleting_a_picked_group_keeps_the_others(box):
 def test_an_interface_is_renamed_unless_the_name_is_taken_and_an_empty_name_gives_back_the_detected_one(box):
     groups = CadFaceGroups(box, {"A": []}, interface_names={"Interface 9 Gone": "Old"})
 
-    source = {"face_groups": groups.stored(), "interface_names": {"Interface 9 Gone": "Old"}}
+    source = {"face_groups": [{"name": "A", "faces": []}], "interface_names": {"Interface 9 Gone": "Old"}}
     source, renamed = edited(groups, groups.renamed_interface("Interface 1 Port", " Mouth "), source)
 
     assert source["interface_names"] == {"Interface 9 Gone": "Old", "Interface 1 Port": "Mouth"}
-    assert renamed.row("Mouth").kind == "interface"
+    assert row(renamed, "Mouth").kind == "interface"
     for taken in ("walls", "Driver", "A"):
         with pytest.raises(ValueError, match=f"Face group name '{taken}' is taken"):
             renamed.renamed_interface("Mouth", taken)

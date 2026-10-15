@@ -298,7 +298,6 @@ class CadImportEditor:
         self._hover = None  # the face under the mouse
         self._face_items = {}
         self._body_items = {}
-        self._faces = None  # face id -> CadFace of the loaded preview, for matching stored face groups
         self._geometry = None  # the CadGeometry shown
         self._groups = self._sizes = None  # its CadFaceGroups and CadSizes under the source
         self._size_error = ""  # why the source's sizes cannot be read
@@ -654,7 +653,6 @@ class CadImportEditor:
     def _show_preview(self, preview, *, reset_camera=False):
         self._preview = preview
         self.geometry = None if preview is None else preview["geometry"]
-        self._faces = None if preview is None else {face.id: face for face in self._geometry.faces}
         self._resolve()
         self._hidden.clear()
         self._hover = None
@@ -782,7 +780,7 @@ class CadImportEditor:
         return self._hover
 
     def _show_face_menu(self, face_id, global_pos):
-        if self._faces is None:
+        if self._groups is None:
             return
         if face_id not in self.selected_faces():
             self.select_faces({face_id})  # the menu never acts on faces not pointed at
@@ -793,12 +791,12 @@ class CadImportEditor:
     def show_row_menu(self, item, global_pos):
         """The menu of a tree row: the face menu on a face or Faces row's faces, Mesh size on a Volume row; a body
         row has none."""
-        if item is None or self._faces is None:
+        if item is None or self._groups is None:
             return
         face_id = item.data(0, FACE_ROLE)
         kind, name = item.data(0, ROW_ROLE) or ("face", None)
         if face_id is not None:
-            self._show_menu_on({face_id}, self._interface_of().get(face_id), global_pos)
+            self._show_menu_on({face_id}, self._groups.interface_of.get(face_id), global_pos)
         elif kind == "faces":
             self._show_menu_on(set(self._body(name)["face_ids"]), None, global_pos)
         elif kind == "volume":
@@ -826,7 +824,7 @@ class CadImportEditor:
 
     def mark_face(self, face_id):
         """Name ``face_id`` and its face group in the status line and point at the group's row."""
-        name, _ = self.group_of(face_id)
+        name = self._groups.group_of(face_id).name
         self.status.setText(f"Face {face_id} · Group '{name}'")
         row = next(r for r, (n, _, _) in enumerate(self.rows()) if n == name)
         self._syncing = True  # the row only points: the face selection stays
@@ -836,10 +834,10 @@ class CadImportEditor:
     def face_menu(self, face_id):
         """The right-click menu of ``face_id``, acting on the selection when the face is in it, else on the face.
         On an interface face it renames the interface and sizes faces."""
-        if self._faces is None:
+        if self._groups is None:
             return QMenu(self.widget)
         selected = self.selected_faces()
-        return self._face_menu(selected if face_id in selected else {face_id}, self._interface_of().get(face_id))
+        return self._face_menu(selected if face_id in selected else {face_id}, self._groups.interface_of.get(face_id))
 
     def _face_menu(self, face_ids, interface):
         """The menu acting on ``face_ids``: moves between groups, leaving out those that would do nothing, or, for
@@ -847,7 +845,7 @@ class CadImportEditor:
         menu = QMenu(self.widget)
         if interface is not None:
             menu.addAction("Rename interface…", lambda: self._rename_interface_asked(interface))
-        elif movable := face_ids - self._interface_of().keys():  # interface faces stay in their interface
+        elif movable := face_ids - self._groups.interface_of.keys():  # interface faces stay in their interface
             rows = self.rows()
             held = {name for name, faces, _ in rows if faces & movable}
             for name, _, kind in rows:
@@ -996,9 +994,6 @@ class CadImportEditor:
             self._size_error = str(exc)
             self.status.setText(self._size_error)
 
-    def _interface_of(self):
-        return self._groups.interface_of
-
     def groups_needing_review(self):
         """Stored face groups with faces the loaded STEP file no longer has; Generate rejects them."""
         return [] if self._groups is None else list(self._groups.needs_review)
@@ -1019,11 +1014,6 @@ class CadImportEditor:
     def remove_from_group(self, face_ids):
         """Move ``face_ids`` out of their face groups, back to walls."""
         self._edit_groups(CadFaceGroups.moved_to_walls, face_ids)
-
-    def group_of(self, face_id):
-        """``(name, kind)`` of the row holding ``face_id``."""
-        row = self._groups.group_of(face_id)
-        return row.name, row.kind
 
     def set_current_group(self, name):
         """Make ``name`` the group the selection is added to."""

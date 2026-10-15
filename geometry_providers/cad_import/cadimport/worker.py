@@ -8,6 +8,8 @@ import json
 import sys
 from pathlib import Path
 
+RESULT, ERROR = "result.json", "error.json"  # what the worker writes in the output folder
+
 
 def main(job_path):
     job = json.loads(Path(job_path).read_text(encoding="utf-8"))
@@ -22,9 +24,9 @@ def main(job_path):
         else:
             result = result_to_json(mesh_step(job["step_path"], CadImportSettings(**job["settings"]), output))
     except ValueError as exc:
-        (output / "error.json").write_text(json.dumps({"message": str(exc)}), encoding="utf-8")
+        (output / ERROR).write_text(json.dumps({"message": str(exc)}), encoding="utf-8")
         return 1
-    (output / "result.json").write_text(json.dumps(result), encoding="utf-8")
+    (output / RESULT).write_text(json.dumps(result), encoding="utf-8")
     return 0
 
 

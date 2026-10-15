@@ -13,8 +13,9 @@ import blab
 from blab.cad_import import CadImportResult, CadImportSettings, CadPreview, preview_from_json, result_from_json
 from blab.generators.base import GenerationCancelledError
 
+from .worker import ERROR, RESULT
+
 BLAB_PATH = str(Path(blab.__file__).resolve().parents[1])
-RESULT, ERROR = "result.json", "error.json"  # what the worker writes in the output folder
 
 
 def preview_in_worker(step_path, output, *, rotation_deg, translation_m, closed_shells, cancelled) -> CadPreview:

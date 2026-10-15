@@ -100,9 +100,6 @@ class CadFaceGroups:
         """Faces a stored group holds that stay in their interface face group."""
         return frozenset(f for found in self.found.values() for _, f in found if f in self.interface_of)
 
-    def row(self, name: str) -> FaceGroupRow | None:
-        return next((row for row in self.rows if row.name == name), None)
-
     def group_of(self, face: int) -> FaceGroupRow:
         """The row holding ``face``."""
         return self._row_of[face]
@@ -165,7 +162,10 @@ class CadFaceGroups:
         """Delete stored group ``name``; its faces go back to walls (or their STEP-named group)."""
         if name not in self.found:
             raise ValueError(f"'{name}' is no picked face group.")
-        return FaceGroupEdit({"face_groups": [g for g in self.stored() if g["name"] != name]}, "")
+        kept = [
+            {"name": n, "faces": [_stored(ref) for ref, _ in found]} for n, found in self.found.items() if n != name
+        ]
+        return FaceGroupEdit({"face_groups": kept}, "")
 
     def renamed_interface(self, name: str, new_name: str) -> FaceGroupEdit:
         """Rename interface face group ``name``; an empty ``new_name`` gives back the detected name."""
@@ -193,10 +193,6 @@ class CadFaceGroups:
         if not faces:
             return ""
         return "; ".join(f"Face {f} stays in interface '{self.interface_of[f]}'" for f in sorted(faces)) + "."
-
-    def stored(self) -> list[dict]:
-        """The stored groups as the design source keeps them: ``[{"name", "faces": [CadFaceRef fields]}]``."""
-        return [{"name": name, "faces": [_stored(ref) for ref, _ in found]} for name, found in self.found.items()]
 
     def _regrouped(self, faces: set[int], name: str | None = None) -> dict:
         """The stored groups with ``faces`` moved into group ``name`` (``None``: into none), refs taken afresh."""
