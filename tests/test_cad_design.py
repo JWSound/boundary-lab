@@ -71,6 +71,7 @@ def test_a_group_with_a_stored_face_not_found_needs_review_and_cannot_generate(b
     assert {row.name: len(row.faces) for row in groups.rows if row.kind == "group"} == {
         "Lid": 0,  # listed so it can be repaired or deleted
         "Half": 1,
+        "Fine": 0,  # its face is Half's, which holds it first
         "Driver": 1,
     }
     with pytest.raises(ValueError, match=r"Face groups need review .*: 'Lid', 'Half'\. Re-pick or delete them"):
@@ -89,7 +90,7 @@ def test_interface_faces_stay_in_their_renamed_interface_face_group(box):
 
     assert groups.interface_names == {"Interface 1 Port": "Port mouth"}
     assert groups.row("Port mouth").faces == set(interface.face_ids)
-    assert groups.row("Mouth") is None  # holds interface faces only
+    assert groups.row("Mouth").faces == set()  # holds interface faces only: listed, so it can be deleted
     assert groups.row("Mixed").faces == {left.id}
     assert groups.held_by_interfaces == set(interface.face_ids)
     assert groups.group_of(interface.face_ids[0]).kind == "interface"

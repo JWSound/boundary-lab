@@ -79,11 +79,8 @@ class CadFaceGroups:
         self.rows = (
             [FaceGroupRow(WALLS, frozenset(walls), "walls")]
             + [FaceGroupRow(name, frozenset(faces), "interface") for name, faces in interfaces.items()]
-            + [
-                FaceGroupRow(name, frozenset(faces), "group")
-                for name, faces in groups.items()
-                if faces or name in self.needs_review
-            ]
+            # A stored group is listed even without faces (all in interfaces, or not found), so it can be deleted.
+            + [FaceGroupRow(name, frozenset(faces), "group") for name, faces in groups.items()]
         )
         self._row_of = {face: row for row in self.rows for face in row.faces}
 
@@ -102,9 +99,8 @@ class CadFaceGroups:
     def check(self) -> None:
         """Reject what generation cannot mesh: reserved or empty names, stored faces not found, unknown face ids and
         faces in two stored groups."""
-        reserved = {WALLS, *self.interface_names.values()}
         for name in self.found:
-            if not name or name in reserved:
+            if not name or name in self._reserved:
                 raise ValueError(f"Face group name '{name}' is reserved.")
         # A group missing any stored face would silently lose it to walls: the user reviews it.
         if self.needs_review:

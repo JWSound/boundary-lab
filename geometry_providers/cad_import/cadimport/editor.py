@@ -49,7 +49,7 @@ from blab.cad_import import (
     CadSizing,
     place_preview,
 )
-from blab.cad_import.sizing import LEGACY_SIZES, migrated, size_override
+from blab.cad_import.sizing import migrated, size_override
 from blab.generators.configuration import DEFAULT_SOUND_SPEED_M_PER_S
 from blab.ui.file_dialogs import FileDialogService
 
@@ -873,7 +873,7 @@ class CadImportEditor:
 
     def rename_interface(self, name, new_name):
         """Rename interface face group ``name``; an empty ``new_name`` gives back the detected name."""
-        self._edit_groups("renamed_interface", name, new_name)
+        self._edit_groups(CadFaceGroups.renamed_interface, name, new_name)
 
     def _add_to_new_group(self, face_ids):
         name = self.ask_group_name()
@@ -999,11 +999,11 @@ class CadImportEditor:
     def add_to_group(self, name, face_ids):
         """Put ``face_ids`` into face group ``name`` (new or existing), out of any other; walls removes them.
         Interface faces stay in their interface's face group."""
-        self._edit_groups("moved_to", name, face_ids)
+        self._edit_groups(CadFaceGroups.moved_to, name, face_ids)
 
     def remove_from_group(self, face_ids):
         """Move ``face_ids`` out of their face groups, back to walls."""
-        self._edit_groups("moved_to_walls", face_ids)
+        self._edit_groups(CadFaceGroups.moved_to_walls, face_ids)
 
     def group_of(self, face_id):
         """``(name, kind)`` of the row holding ``face_id``."""
@@ -1020,7 +1020,7 @@ class CadImportEditor:
         self.group_button.setText(f'Add to "{text}"' if text in names else "New group")
 
     def delete_face_group(self, name):
-        self._edit_groups("deleted", name)
+        self._edit_groups(CadFaceGroups.deleted, name)
 
     def _edit_groups(self, operation, *args):
         """Store what the face-group ``operation`` (a :class:`CadFaceGroups` edit) changes, with its note, or show
@@ -1029,7 +1029,7 @@ class CadImportEditor:
             self.status.setText("Select faces first.")
             return
         try:
-            edit = getattr(self._groups, operation)(*args)
+            edit = operation(self._groups, *args)
         except ValueError as exc:
             self.status.setText(str(exc))
             return
@@ -1085,7 +1085,7 @@ class CadImportEditor:
             return
         source = migrated(self.source, self._groups, self._sizes, self._sizing())
         if source is not None:
-            self.edited(source, drop=LEGACY_SIZES)
+            self.edited(source, drop=self.source)  # the whole new source
             self.status.setText("Body and face group sizes are now set on their faces and volumes.")
 
     def ask_size_mm(self):
@@ -1189,7 +1189,7 @@ class CadImportEditor:
             for column, cell in enumerate(cells):
                 self.groups_table.setItem(row, column, cell)
             combo = self._size_combo(faces, ())
-            self._show_size(combo, MIXED if self._sizes is None else self._sizes.shared(faces))
+            self._show_size(combo, self._sizes.shared(faces))
             self.groups_table.setCellWidget(row, 2, combo)
         self._syncing = False
         self._group_name_changed(self.group_name.text())

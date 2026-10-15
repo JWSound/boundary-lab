@@ -1165,7 +1165,7 @@ def test_faces_grouped_before_they_became_interface_faces_stay_in_the_interface_
 
     (interface,) = editor.geometry["interfaces"]
     assert interface["name"] == "Interface 1 Closed shell 1"
-    assert "Interface" not in group_rows(editor)  # its only face is in the interface
+    assert group_rows(editor)["Interface"] == 0  # its only face is in the interface
     assert f"stays in interface '{interface['name']}'" in editor.status.text()
     assert [g["name"] for g in host.snapshot().source["face_groups"]] == ["Interface"]  # stored as picked
 
