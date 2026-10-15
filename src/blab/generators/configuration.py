@@ -38,6 +38,7 @@ ENTITY_SECTIONS = {
     "component_assignments": ("components", PhysicalComponent),
     "excitation_ports": ("excitation_ports", ExcitationPort),
 }
+DEFAULT_SOUND_SPEED_M_PER_S = 343.0
 PATCH_SECTIONS = frozenset(ENTITY_SECTIONS) | {
     "component_parameters",
     "channel_config",
@@ -67,6 +68,15 @@ def configuration_snapshot(project: ProjectDocument) -> dict[str, Any]:
             "tolerance_mm": preferences.stitch_tolerance_mm,
         },
     }
+
+
+def exterior_sound_speed(configuration: Mapping[str, Any]) -> float:
+    """Sound speed (m/s) of the exterior air region of a configuration snapshot, else the default."""
+    system = configuration.get("physical_system") or {}
+    for region in system.get("regions", []):
+        if region.get("kind") == "unbounded_air":
+            return float(region.get("sound_speed_m_per_s", DEFAULT_SOUND_SPEED_M_PER_S))
+    return DEFAULT_SOUND_SPEED_M_PER_S
 
 
 def project_revision(project: ProjectDocument) -> str:

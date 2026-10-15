@@ -3,17 +3,7 @@
 from pathlib import Path
 
 from blab.cad_import import CadImportSettings
-
-DEFAULT_SOUND_SPEED_M_PER_S = 343.0
-
-
-def sound_speed(configuration):
-    """Sound speed of the project's exterior air region, else the default."""
-    system = configuration.get("physical_system") or {}
-    for region in system.get("regions", []):
-        if region.get("kind") == "unbounded_air":
-            return float(region.get("sound_speed_m_per_s", DEFAULT_SOUND_SPEED_M_PER_S))
-    return DEFAULT_SOUND_SPEED_M_PER_S
+from blab.generators.configuration import exterior_sound_speed
 
 
 def face_groups(source):
@@ -55,7 +45,7 @@ def settings(source, configuration):
         return CadImportSettings(
             face_groups=face_groups(source),
             fmax_hz=float(configuration["frequency"]["freq_max_hz"]),
-            sound_speed_m_per_s=sound_speed(configuration),
+            sound_speed_m_per_s=exterior_sound_speed(configuration),
             elements_per_wavelength=float(source["elements_per_wavelength"]),
             body_sizes=body_sizes,
             face_group_sizes=face_group_sizes,

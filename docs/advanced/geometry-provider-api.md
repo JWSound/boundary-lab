@@ -563,7 +563,7 @@ Subscriber exceptions are logged without stopping the host.
 
 | Method | Future result | Meaning |
 | --- | --- | --- |
-| `context()` | `ProviderContext` | Document/provider IDs, revision, host frequency minimum/maximum/count |
+| `context()` | `ProviderContext` | Document/provider IDs, revision, host frequency minimum/maximum/count, sound speed (m/s) of the exterior air region (343 when there is none) |
 | `solve(SolveCommand(...))` | `SolveJob` | Queue a solve for that exact revision |
 | `status(job_id)` | `SolveJob` | State, progress counts, request ID, revision, result run ID |
 | `cancel(job_id)` | `SolveJob` | Cancel this document's pending/preparing/running job |

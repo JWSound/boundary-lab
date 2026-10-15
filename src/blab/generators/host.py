@@ -35,6 +35,7 @@ class ProviderContext:
     freq_min_hz: float
     freq_max_hz: float
     freq_count: int
+    sound_speed_m_per_s: float = 343.0  # of the exterior air region, else the default
     schema_version: int = API_VERSION
 
 

@@ -197,6 +197,26 @@ def test_sizing_settings_edit_the_source_and_show_the_target_size(cad_editor, ma
     assert editor.step_path.isEnabled() and editor.spins["growth_rate"].isEnabled()
 
 
+def test_shown_sizes_use_the_project_sound_speed(cad_editor, main_window, qapp):
+    from blab.physical_model import AcousticRegion, AcousticRegionKind, PhysicalSystem
+
+    editor, _ = cad_editor
+    main_window.freq_max_spin.setValue(3430)
+    exterior = AcousticRegion("air", "Exterior air", AcousticRegionKind.UNBOUNDED_AIR, (), sound_speed_m_per_s=686.0)
+    main_window.project.physical_system = PhysicalSystem("system", "System", (), (exterior,), ())
+    editor.spins["elements_per_wavelength"].setValue(10)  # an edit fetches the project context
+    wait(qapp, lambda: "c = 686 m/s" in editor.target_label.text())
+
+    assert "Target element size 20.0 mm = c / 3430 Hz" in editor.target_label.text()
+    walls = size_combo(editor, "walls")
+    assert walls.currentText() == "Global (10 per wavelength)" and "(20 mm)" in walls.toolTip()
+
+    main_window.project.physical_system = None  # no exterior region: the default
+    editor.spins["elements_per_wavelength"].setValue(5)
+    wait(qapp, lambda: "c = 343 m/s" in editor.target_label.text())
+    assert "Target element size 20.0 mm" in editor.target_label.text()
+
+
 def test_host_generate_accepts_locked_meshes_and_system_entries(cad_editor, main_window, monkeypatch, qapp, tmp_path):
     from blab.ui.main_window import geometry_workflow
 

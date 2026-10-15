@@ -48,10 +48,11 @@ from blab.cad_import import (
     place_preview,
     preview_from_json,
 )
+from blab.generators.configuration import DEFAULT_SOUND_SPEED_M_PER_S
 from blab.ui.file_dialogs import FileDialogService
 
 from .backend import run_worker
-from .parameters import DEFAULT_SOUND_SPEED_M_PER_S, size_overrides
+from .parameters import size_overrides
 
 SYMMETRY_LABELS = {"off": "Off", "x": "X", "xy": "XY"}
 FACE_ROLE = Qt.ItemDataRole.UserRole
@@ -303,6 +304,7 @@ class CadImportEditor:
         self._faces = None  # face id -> CadFace of the loaded preview, for matching stored face groups
         self._syncing = False
         self._fmax_hz = None
+        self._sound_speed = DEFAULT_SOUND_SPEED_M_PER_S  # the project's, once its context arrives
         self._disposed = False
         self._cancel_preview = threading.Event()
         self._relay = _Relay()
@@ -1296,14 +1298,14 @@ class CadImportEditor:
         n = size["elements_per_wavelength"]
         text = LEVEL_NAMES.get(n, f"{n:g} per wavelength")
         if edge and self._fmax_hz is not None:
-            text += f" ({DEFAULT_SOUND_SPEED_M_PER_S / self._fmax_hz / n * 1000:.3g} mm)"
+            text += f" ({self._sound_speed / self._fmax_hz / n * 1000:.3g} mm)"
         return text
 
     def _edge_m(self, size):
         """The edge length of ``size`` (levels at the project's maximum frequency, else 1 kHz)."""
         if "size_m" in size:
             return size["size_m"]
-        return DEFAULT_SOUND_SPEED_M_PER_S / (self._fmax_hz or 1000.0) / size["elements_per_wavelength"]
+        return self._sound_speed / (self._fmax_hz or 1000.0) / size["elements_per_wavelength"]
 
     def _group_selected(self):
         """A clicked row selects its faces; a single row other than an interface becomes the current group."""
@@ -1362,7 +1364,8 @@ class CadImportEditor:
 
         def done(result):
             if not self._disposed and not result.cancelled() and result.exception() is None:
-                self._fmax_hz = result.result().freq_max_hz
+                context = result.result()
+                self._fmax_hz, self._sound_speed = context.freq_max_hz, context.sound_speed_m_per_s
                 self._show_target_size()
                 self._show_overrides()  # levels' edge lengths in the tooltips
 
@@ -1373,10 +1376,10 @@ class CadImportEditor:
             self.target_label.setText("Target element size: waiting for the project frequency range.")
             return
         n = float(self.source["elements_per_wavelength"])
-        size = DEFAULT_SOUND_SPEED_M_PER_S / self._fmax_hz / n
+        size = self._sound_speed / self._fmax_hz / n
         self.target_label.setText(
             f"Target element size {size * 1000:.1f} mm = c / {self._fmax_hz:g} Hz / {n:g} "
-            f"(c = {DEFAULT_SOUND_SPEED_M_PER_S:g} m/s unless the exterior region sets another)"
+            f"(c = {self._sound_speed:g} m/s)"
         )
         for index, level in enumerate(LEVELS.values()):
             self.fineness.setItemData(
