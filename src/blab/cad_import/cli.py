@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 from collections.abc import Sequence
 
+from blab.defaults import DEFAULT_SOUND_SPEED_M_PER_S
+
 from .pipeline import SYMMETRY_LABELS, CadImportSettings, mesh_step
 
 
@@ -22,7 +24,10 @@ def _build_arg_parser(prog: str | None = None) -> argparse.ArgumentParser:
     )
     parser.add_argument("--output", required=True, help="Output folder for <mesh id>.msh files (metres)")
     parser.add_argument(
-        "--sound-speed", type=float, default=343.0, help="Sound speed in m/s for the target size (default: 343)"
+        "--sound-speed",
+        type=float,
+        default=DEFAULT_SOUND_SPEED_M_PER_S,
+        help=f"Sound speed in m/s for the target size (default: {DEFAULT_SOUND_SPEED_M_PER_S:g})",
     )
     parser.add_argument(
         "--rotate",

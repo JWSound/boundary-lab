@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from blab.config import ChannelConfig, CrossoverConfig, normalize_symmetry
+from blab.defaults import DEFAULT_SOUND_SPEED_M_PER_S
 from blab.mesh_data import MeshData
 from blab.physical_model import (
     AcousticInterface,
@@ -38,7 +39,6 @@ ENTITY_SECTIONS = {
     "component_assignments": ("components", PhysicalComponent),
     "excitation_ports": ("excitation_ports", ExcitationPort),
 }
-DEFAULT_SOUND_SPEED_M_PER_S = 343.0
 PATCH_SECTIONS = frozenset(ENTITY_SECTIONS) | {
     "component_parameters",
     "channel_config",

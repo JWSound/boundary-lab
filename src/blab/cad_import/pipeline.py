@@ -21,6 +21,8 @@ from pathlib import Path
 import meshio
 import numpy as np
 
+from blab.defaults import DEFAULT_SOUND_SPEED_M_PER_S
+
 from .design import WALLS, CadFaceGroups
 from .face_refs import ZERO, CadFace, CadFaceRef, match_face_ref
 from .face_refs import moved as _moved
@@ -55,7 +57,7 @@ class CadImportSettings:
     """
 
     fmax_hz: float
-    sound_speed_m_per_s: float = 343.0
+    sound_speed_m_per_s: float = DEFAULT_SOUND_SPEED_M_PER_S
     elements_per_wavelength: float = 6.0
     face_groups: Mapping[str, tuple[int | CadFaceRef, ...]] = field(default_factory=dict)
     body_sizes: Mapping[str, CadSizeOverride] = field(default_factory=dict)

@@ -11,6 +11,8 @@ import math
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 
+from blab.defaults import DEFAULT_SOUND_SPEED_M_PER_S
+
 from .face_refs import CadFaceRef, face_ref, match_face_ref
 
 LEVELS = {"Coarse": 2, "Medium": 4, "Fine": 6}  # mesh fineness: elements per wavelength at the maximum frequency
@@ -47,7 +49,7 @@ class CadSizing:
     """Edge lengths from the sound speed and the maximum frequency (``None`` while unknown) at a mesh fineness."""
 
     fmax_hz: float | None
-    sound_speed_m_per_s: float = 343.0
+    sound_speed_m_per_s: float = DEFAULT_SOUND_SPEED_M_PER_S
     elements_per_wavelength: float = 6.0
 
     @property
