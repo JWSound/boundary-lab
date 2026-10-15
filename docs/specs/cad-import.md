@@ -184,7 +184,7 @@ Re-importing an edited STEP file keeps every assignment whose faces can still be
 - **Primary seam: the provider through the public generator contract.**
   - Load the plugin through the provider catalog, generate from a STEP fixture and design source, stage the result, then compile the physical system or prepare a solve.
   - Prior art: the vented-enclosure generator tests.
-  - Covers sizing (through the edge lengths of generated meshes), interface detection, axis mapping, symmetry detection, System entries, and re-import matching (regenerating from a modified fixture).
+  - Covers sizing (through the edge lengths of generated meshes), interface detection, placement, symmetry detection, System entries, and re-import matching (regenerating from a modified fixture).
 - **Slice 0** uses the same contract with the existing test assembly fixture: an already-reduced variant accepted under X and XY symmetry, a resource outside the positive region rejected atomically, and unreduced assemblies still rejected. Prior art: the generator assembly tests.
 - **UI seam:** the main window with the CAD Import dock. Generate from the dock, check the visibility tree and Show all / Clear, and drive face picking through the editor's API rather than mouse clicks. Prior art: the vented-enclosure UI tests.
 - **CLI:** a thin end-to-end run on a fixture. Prior art: the CLI tests.

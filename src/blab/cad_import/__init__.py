@@ -5,7 +5,6 @@ provider, so both produce identical meshes for identical inputs.
 """
 
 from .pipeline import (
-    AXES,
     WALLS,
     CadBody,
     CadClosedShell,
@@ -30,7 +29,6 @@ from .pipeline import (
 )
 
 __all__ = [
-    "AXES",
     "WALLS",
     "CadBody",
     "CadClosedShell",

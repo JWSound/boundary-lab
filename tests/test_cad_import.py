@@ -33,6 +33,8 @@ from cad_fixtures import named_sides, strip_names, two_chambers, vented_box, wav
 
 # Target element size 343 / 3430 / 5 = 20 mm.
 SETTINGS = CadImportSettings(fmax_hz=3430.0, sound_speed_m_per_s=343.0)
+# Rotation taking a model written with its front along CAD -Y and CAD +Z up onto +Z on axis and +Y vertical.
+FRONT_ON_AXIS = (-90.0, 0.0, 0.0)
 
 
 def groups(path):
@@ -131,14 +133,14 @@ def test_placeholder_step_face_names_are_ignored(tmp_path):
     assert all(face.step_name is None for face in geometry.faces)
 
 
-def test_face_group_stored_in_cad_axes_survives_an_axis_mapping_change(tmp_path):
+def test_face_group_stored_in_cad_axes_survives_a_rotation_change(tmp_path):
     step = vented_box(tmp_path / "box.step", cad_axes=("-Y", "+Z"))
     as_written = inspect_step(step)
     # Picked as written: the cabinet front with the port hole lies on CAD Y=0.
     front = next(f for f in as_written.faces if f.bodies == ("Cabinet",) and abs(f.centre[1]) < 1e-6)
-    ref = face_ref(front, forward="+Z", up="+Y")
+    ref = face_ref(front)
 
-    settings = replace(SETTINGS, forward="-Y", up="+Z", face_groups={"Baffle": (ref,)})
+    settings = replace(SETTINGS, rotation_deg=FRONT_ON_AXIS, face_groups={"Baffle": (ref,)})
     result = mesh_step(step, settings, tmp_path / "out")
 
     assert [m.surface_groups for m in result.meshes] == [
@@ -240,12 +242,12 @@ def test_symmetry_mismatch_rejects_generation(tmp_path):
     assert not (tmp_path / "out").exists()
 
 
-def test_axis_mapping_turns_cad_forward_and_up_into_plus_z_and_plus_y(tmp_path):
+def test_rotation_turns_a_cad_front_and_up_onto_on_axis_and_vertical(tmp_path):
     # Written with the front facing CAD -Y and CAD +Z up, as many CAD tools do.
     step = vented_box(tmp_path / "box.step", cad_axes=("-Y", "+Z"))
 
     assert np.allclose(inspect_step(step).bbox_m, [(-0.06, 0, -0.06), (0.06, 0.21, 0.06)], atol=1e-6)
-    geometry = inspect_step(step, forward="-Y", up="+Z")
+    geometry = inspect_step(step, rotation_deg=FRONT_ON_AXIS)
     assert np.allclose(geometry.bbox_m, [(-0.06, -0.06, -0.21), (0.06, 0.06, 0)], atol=1e-6)
     (opening,) = geometry.interfaces
     (mouth,) = [face for face in geometry.faces if face.id in opening.face_ids]
@@ -361,11 +363,6 @@ def test_interface_faces_stay_in_their_renamed_interface_face_group(vented, tmp_
 def test_missing_step_file_is_rejected(tmp_path):
     with pytest.raises(ValueError, match="STEP file not found"):
         mesh_step(tmp_path / "missing.step", SETTINGS, tmp_path / "out")
-
-
-def test_axes_must_be_perpendicular():
-    with pytest.raises(ValueError, match=r"Forward axis \+Z and up axis -Z must be perpendicular"):
-        replace(SETTINGS, up="-Z")
 
 
 def test_faces_carry_step_names_and_fingerprints(vented):
@@ -604,15 +601,14 @@ def test_closed_shell_without_a_choice_opens_as_a_quick_scan_only(surface_model)
 
 
 # Placements that keep the cabinet front, which the port mouth opens in, off X=0 and Y=0.
-@pytest.mark.parametrize("axes", [("-Z", "+X"), ("+Z", "-Y")])
-def test_placing_a_preview_reports_what_reading_it_with_the_placement_does(tmp_path, axes):
+@pytest.mark.parametrize("rotation", [(180.0, 0.0, 90.0), (0.0, 0.0, 180.0)])
+def test_placing_a_preview_reports_what_reading_it_with_the_placement_does(tmp_path, rotation):
     step = vented_box(tmp_path / "box.step", open_back=True)
-    forward, up = axes
 
-    placed = place_preview(open_step(step), forward=forward, up=up)
-    read = open_step(step, forward=forward, up=up)
+    placed = place_preview(open_step(step), rotation_deg=rotation)
+    read = open_step(step, rotation_deg=rotation)
 
-    assert placed.axes == read.axes == axes
+    assert placed.rotation_deg == read.rotation_deg == rotation
     # Placed: the faces' extent; read: OpenCASCADE's box, padded by its 1e-7 m tolerance.
     assert np.allclose(placed.geometry.bbox_m, read.geometry.bbox_m, atol=1e-6)
     assert np.allclose(placed.points.min(axis=0), read.points.min(axis=0), atol=1e-9)
@@ -628,16 +624,12 @@ def test_placing_a_preview_reports_what_reading_it_with_the_placement_does(tmp_p
 
 def test_placing_a_preview_with_rotation_and_translation_reports_what_reading_it_does(tmp_path):
     step = vented_box(tmp_path / "box.step", open_back=True)
-    placement = dict(forward="-Z", up="+X", rotation_deg=(10.0, -20.0, 30.0), translation_m=(0.05, -0.02, 0.1))
+    placement = dict(rotation_deg=(190.0, -20.0, 120.0), translation_m=(0.05, -0.02, 0.1))
 
     placed = place_preview(open_step(step, rotation_deg=(0.0, 0.0, 45.0)), **placement)
     read = open_step(step, **placement)
 
-    assert (placed.axes, placed.rotation_deg, placed.translation_m) == (
-        read.axes,
-        read.rotation_deg,
-        read.translation_m,
-    )
+    assert (placed.rotation_deg, placed.translation_m) == (read.rotation_deg, read.translation_m)
     assert np.allclose(placed.points.min(axis=0), read.points.min(axis=0), atol=1e-9)
     assert np.allclose(placed.geometry.bbox_m, read.geometry.bbox_m, atol=1e-6)  # not a turned box around it
     assert placed.geometry.symmetry == read.geometry.symmetry == "off"
@@ -662,14 +654,14 @@ def test_placement_moves_the_symmetry_planes_the_open_edges_suggest(tmp_path):
     preview = open_step(vented_box(tmp_path / "box.step", symmetry="x"))
     assert preview.geometry.symmetry == "x"
 
-    turned = place_preview(preview, forward="+Z", up="+X")  # CAD X=0 becomes Y=0, no symmetry alone
+    turned = place_preview(preview, rotation_deg=(0.0, 0.0, 90.0))  # CAD X=0 becomes Y=0, no symmetry alone
 
     assert turned.geometry.symmetry == "off"
     assert turned.geometry.warnings[0].startswith("Exterior surface is not closed")
-    back = place_preview(turned, forward="+Z", up="+Y")
+    back = place_preview(turned)
     assert back.geometry.symmetry == "x" and back.geometry.warnings == ()
-    with pytest.raises(ValueError, match="perpendicular"):
-        place_preview(preview, forward="+Z", up="-Z")
+    with pytest.raises(ValueError, match="Rotation must be three finite numbers"):
+        place_preview(preview, rotation_deg=(0.0, 0.0))
 
 
 def test_previews_survive_their_json_form(surface_model):

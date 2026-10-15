@@ -199,10 +199,10 @@ def test_regeneration_keeps_mesh_ids_and_user_edits(plugin, box_step, tmp_path):
     assert {r.density_kg_per_m3 for r in regenerated.physical_system.regions} == {1.19}
 
 
-def stored_group(name, step, predicate, *, forward="+Z", up="+Y"):
+def stored_group(name, step, predicate):
     """A face group as the editor stores it: the faces of ``step`` matching ``predicate``."""
-    faces = [f for f in inspect_step(step, forward=forward, up=up).faces if predicate(f)]
-    return {"name": name, "faces": [asdict(face_ref(f, forward=forward, up=up)) for f in faces]}
+    faces = [f for f in inspect_step(step).faces if predicate(f)]
+    return {"name": name, "faces": [asdict(face_ref(f)) for f in faces]}
 
 
 def front_faces(face):

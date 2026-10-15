@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from collections.abc import Sequence
 
-from .pipeline import AXES, SYMMETRY_LABELS, CadImportSettings, mesh_step
+from .pipeline import SYMMETRY_LABELS, CadImportSettings, mesh_step
 
 
 def _build_arg_parser(prog: str | None = None) -> argparse.ArgumentParser:
@@ -23,13 +23,11 @@ def _build_arg_parser(prog: str | None = None) -> argparse.ArgumentParser:
     parser.add_argument(
         "--sound-speed", type=float, default=343.0, help="Sound speed in m/s for the target size (default: 343)"
     )
-    parser.add_argument("--forward", choices=tuple(AXES), default="+Z", help="CAD axis mapped to +Z (default: +Z)")
-    parser.add_argument("--up", choices=tuple(AXES), default="+Y", help="CAD axis mapped to +Y (default: +Y)")
     parser.add_argument(
         "--rotate",
         default="0,0,0",
         metavar="X,Y,Z",
-        help="Then rotate by these degrees about the X, Y and Z axes, in that order (write --rotate=-90,0,0)",
+        help="Rotate by these degrees about the X, Y and Z axes, in that order (write --rotate=-90,0,0)",
     )
     parser.add_argument(
         "--translate",
@@ -75,8 +73,6 @@ def main(argv: Sequence[str] | None = None, prog: str | None = None) -> None:
             fmax_hz=args.fmax,
             sound_speed_m_per_s=args.sound_speed,
             elements_per_wavelength=args.elements_per_wavelength,
-            forward=args.forward,
-            up=args.up,
             closed_shells=_closed_shells(parser, args.closed_shell),
             rotation_deg=_triple(parser, "--rotate", args.rotate),
             translation_m=tuple(v / 1000 for v in _triple(parser, "--translate", args.translate)),
