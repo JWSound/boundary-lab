@@ -52,6 +52,20 @@ class PreferencesMixin:
     Mixed into :class:`~blab.ui.main_window.window.MainWindow`.
     """
 
+    @Slot()
+    def open_ath_setup(self) -> None:
+        import sys
+
+        if sys.platform != "darwin" or self.generator_plugins_busy():
+            return
+        from blab.ui.ath_setup import AthSetupDialog
+
+        dialog = AthSetupDialog(self.settings, self)
+        try:
+            dialog.exec()
+        finally:
+            dialog.deleteLater()
+
     def _load_preferences(self) -> GuiPreferences:
         return load_gui_preferences(self.settings)
 

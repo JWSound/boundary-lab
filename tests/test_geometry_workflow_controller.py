@@ -105,7 +105,19 @@ def _geometry() -> GeneratedGeometry:
 
 
 @pytest.fixture
-def controller(qapp):
+def controller(qapp, monkeypatch, tmp_path):
+    from PySide6.QtCore import QSettings
+
+    from blab.ath_setup import ATH_PATH_KEY, WINE_PATH_KEY
+
+    settings = QSettings(str(tmp_path / "controller.ini"), QSettings.IniFormat)
+    ath, wine = tmp_path / "ath.exe", tmp_path / "wine"
+    ath.touch()
+    wine.touch()
+    wine.chmod(0o700)
+    settings.setValue(ATH_PATH_KEY, str(ath))
+    settings.setValue(WINE_PATH_KEY, str(wine))
+    monkeypatch.setattr("blab.ui.settings.application_settings", lambda: settings)
     view, plots, inputs = FakeView(), FakePlots(), FakeInputs()
     geometry, solve = FakeOperation(), FakeOperation()
     built = GeometryWorkflowController(
@@ -235,3 +247,31 @@ def test_rejected_configuration_does_not_trigger_preview_refresh(controller):
     assert controller.inputs.recorded == []
     assert refreshed == []
     assert controller.view.errors == [("Geometry generation failed", "Invalid boundary assignment")]
+
+
+def test_macos_ath_requires_explicit_paths_and_passes_them_to_generator(controller, monkeypatch, tmp_path):
+    from PySide6.QtCore import QSettings
+
+    from blab.ath_setup import ATH_PATH_KEY, WINE_PATH_KEY
+    from blab.generators.base import GeneratorDocument
+
+    monkeypatch.setattr("blab.ui.main_window.geometry_workflow.sys.platform", "darwin")
+    settings = QSettings(str(tmp_path / "settings.ini"), QSettings.IniFormat)
+    monkeypatch.setattr("blab.ui.settings.application_settings", lambda: settings)
+    controller.inputs._document = GeneratorDocument(
+        id="probe", provider_schema_version=1, provider_id="ath", name="Probe", source={"format": "ath_cfg", "text": ""}
+    )
+    controller.generate_geometry()
+    assert not controller.geometry.started
+    assert controller.view.status[-1] == "Ath setup required"
+    ath, wine = tmp_path / "Ath tool.exe", tmp_path / "wine"
+    ath.touch()
+    wine.touch()
+    wine.chmod(0o700)
+    settings.setValue(ATH_PATH_KEY, str(ath))
+    settings.setValue(WINE_PATH_KEY, str(wine))
+    controller.generate_geometry()
+    options = controller.geometry.started[-1].provider_options
+    assert options["ath_exe"] == str(ath)
+    assert options["wine_exe"] == str(wine)
+    assert "ath-wine" in options["wine_prefix"]

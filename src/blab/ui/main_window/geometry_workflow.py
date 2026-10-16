@@ -9,11 +9,13 @@ Follows the shape of :mod:`blab.ui.main_window.backend_health`.
 
 from __future__ import annotations
 
+import sys
 from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QTimer, Signal, Slot
 
+from blab.ath_setup import AthSetupError
 from blab.generators.ath import ATH_PROVIDER_ID
 from blab.generators.base import GenerationCompleted, GenerationRequest
 from blab.generators.registry import generator_info
@@ -96,9 +98,19 @@ class GeometryWorkflowController(QObject):
             if document.provider_schema_version != provider.source_schema_version:
                 raise ValueError("Provider source schema is incompatible; automatic source migration is not supported.")
             if document.provider_id == ATH_PROVIDER_ID:
-                provider_options["ath_exe"] = str(self._find_ath_exe())
+                if sys.platform == "darwin":
+                    from blab.ath_setup import ATH_PATH_KEY, WINE_PATH_KEY, validate_paths, wine_prefix
+                    from blab.ui.settings import application_settings
+
+                    settings = application_settings()
+                    ath, wine = validate_paths(
+                        str(settings.value(ATH_PATH_KEY, "")), str(settings.value(WINE_PATH_KEY, ""))
+                    )
+                    provider_options.update(ath_exe=str(ath), wine_exe=str(wine), wine_prefix=str(wine_prefix()))
+                else:
+                    provider_options["ath_exe"] = str(self._find_ath_exe())
         except Exception as exc:
-            self._view.show_status("Generate failed")
+            self._view.show_status("Ath setup required" if isinstance(exc, AthSetupError) else "Generate failed")
             self._view.show_error("Geometry generation failed", str(exc))
             return
 

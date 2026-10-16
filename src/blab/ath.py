@@ -133,11 +133,11 @@ def ath_mirror_axes_from_config_text(config_text: str) -> tuple[str, ...]:
     )
 
 
-def _ath_process_command(ath_exe: Path, config_path: Path) -> list[str]:
+def _ath_process_command(ath_exe: Path, config_path: Path, wine_exe: str | None = None) -> list[str]:
     if sys.platform not in WINE_PLATFORMS:
         return [str(ath_exe), str(config_path), "-b"]
 
-    wine_exe = shutil.which("wine")
+    wine_exe = wine_exe or shutil.which("wine")
     if wine_exe is None:
         raise RuntimeError(
             "Ath.exe execution on Linux/macOS requires Wine, but no 'wine' executable was found on PATH."
@@ -171,7 +171,9 @@ class AthRunResult:
 
 
 class AthProcessRunner:
-    def __init__(self) -> None:
+    def __init__(self, *, wine_exe: str | None = None, wine_prefix: str | None = None) -> None:
+        self.wine_exe = wine_exe
+        self.wine_prefix = wine_prefix
         self._process: subprocess.Popen[str] | None = None
         self._cancel_requested = False
 
@@ -208,8 +210,15 @@ class AthProcessRunner:
             creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 
         self._cancel_requested = False
+        if self.wine_prefix and sys.platform in WINE_PLATFORMS:
+            Path(self.wine_prefix).parent.mkdir(parents=True, exist_ok=True)
         self._process = subprocess.Popen(
-            _ath_process_command(ath_exe, config_path),
+            _ath_process_command(ath_exe, config_path, self.wine_exe),
+            **(
+                {"env": dict(os.environ, WINEPREFIX=self.wine_prefix)}
+                if self.wine_prefix and sys.platform in WINE_PLATFORMS
+                else {}
+            ),
             cwd=output_dir,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

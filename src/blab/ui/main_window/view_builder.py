@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 from PySide6.QtCore import QSignalBlocker, Qt
@@ -173,6 +174,10 @@ class ViewBuilderMixin:
         self.generator_plugins_action = QAction("Generator Plugins...", self)
         self.generator_plugins_action.triggered.connect(self.open_generator_plugins)
         edit_menu.addAction(self.generator_plugins_action)
+        if sys.platform == "darwin":
+            ath_setup_action = QAction("Ath Setup…", self)
+            ath_setup_action.triggered.connect(self.open_ath_setup)
+            edit_menu.addAction(ath_setup_action)
         edit_menu.addSeparator()
         preferences_action = QAction("Preferences", self)
         preferences_action.triggered.connect(self.open_preferences)

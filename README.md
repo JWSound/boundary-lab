@@ -2,13 +2,13 @@
 
 <img src="assets/mainwindow.png" alt="Boundary Lab main window" width="700">
 
-Boundary Lab is a GUI-based multiphysics acoustic simulation tool for loudspeaker design. It generates or imports loudspeaker meshes, infers exterior BEM, interior FEM, or coupled FEM-BEM-LEM solving from a configured physical system, and presents acoustic and electroacoustic results in a desktop application. Ath is bundled as a Generator Plugin with permission from Marcel Batik.
+Boundary Lab is a GUI-based multiphysics acoustic simulation tool for loudspeaker design. It generates or imports loudspeaker meshes, infers exterior BEM, interior FEM, or coupled FEM-BEM-LEM solving from a configured physical system, and presents acoustic and electroacoustic results in a desktop application. Ath is bundled for the existing Windows distribution with permission from Marcel Batik. On macOS, Ath generation uses separately installed Ath and Wine; see [macOS Ath setup](docs/macos-ath-setup.md).
 
 ### [Follow the official development thread on DIYAudio](https://www.diyaudio.com/community/threads/boundary-lab.440847/)
 
 ## Features
 
-- Waveguide design editor with one-click geometry generation through the bundled [Ath4](https://at-horns.eu/) generator
+- Waveguide design editor with one-click geometry generation through the [Ath4](https://at-horns.eu/) generator (separate Ath/Wine setup on macOS)
 - 3D mesh viewport for generated geometry and imported `.msh` files
 - Physical-system editor for exterior BEM, interior FEM, and coupled FEM-BEM-LEM models
 - Prescribed-velocity and linear electrodynamic transducer components
