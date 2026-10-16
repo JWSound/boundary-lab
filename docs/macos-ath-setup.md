@@ -1,5 +1,6 @@
 # Optional Ath generation on macOS
 
+feat/macos-installer
 Boundary Lab's macOS distribution excludes both Ath and Wine.
 Mesh import, project editing, and solving do not require either tool. Ath design
 source remains available in projects even when generation is not configured.
