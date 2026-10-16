@@ -7,7 +7,6 @@ from PySide6.QtCore import QProcess, QProcessEnvironment, Qt, QTimer
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
-    QFileDialog,
     QFormLayout,
     QHBoxLayout,
     QLabel,
@@ -18,6 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from blab.ath_setup import ATH_PATH_KEY, TEST_CONFIG, WINE_PATH_KEY, discover_wine, validate_paths, wine_prefix
+from blab.ui.file_dialogs import FileDialogService
 
 
 class AthSetupDialog(QDialog):
@@ -96,9 +96,9 @@ class AthSetupDialog(QDialog):
             field.textChanged.connect(lambda: self.status.setText("Paths changed — test to verify generation."))
 
     def _browse(self, field, pattern):
-        path, _ = QFileDialog.getOpenFileName(self, "Select executable", field.text(), pattern)
+        path = FileDialogService(self.settings).open_file(self, "Select executable", pattern, field.text())
         if path:
-            field.setText(path)
+            field.setText(str(path))
 
     def _detect(self):
         path = discover_wine()
