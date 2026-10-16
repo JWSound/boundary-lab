@@ -49,3 +49,17 @@ def test_nested_helper_is_sealed_before_framework_binary(tmp_path, packaging_too
     assert set(native) == {helper_binary, framework_binary}
     assert order.index(helper_binary) < order.index(helper)
     assert order.index(helper) < order.index(framework_binary) < order.index(framework)
+
+
+def test_staging_omits_qt_linker_objects_but_keeps_runtime_libraries(tmp_path, packaging_tools):
+    from build_macos_runtime import remove_qt_build_objects
+
+    qt = tmp_path / "runtime/python/lib/python3.13/site-packages/PySide6/Qt"
+    qt.mkdir(parents=True)
+    linker_input = qt / "plugin.cpp.o"
+    library = qt / "plugin.dylib"
+    for path in (linker_input, library):
+        path.write_bytes(b"contents")
+    remove_qt_build_objects(tmp_path)
+    assert not linker_input.exists()
+    assert library.read_bytes() == b"contents"

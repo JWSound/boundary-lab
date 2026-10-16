@@ -27,6 +27,14 @@ def extract(archive, destination):
         source.extractall(destination, filter=safe)
 
 
+def remove_qt_build_objects(resources):
+    """Qt wheels include linker inputs that are not needed to run the app."""
+    qt = resources / "runtime/python/lib/python3.13/site-packages/PySide6/Qt"
+    for path in qt.rglob("*.o"):
+        if path.is_file() and not path.is_symlink():
+            path.unlink()
+
+
 def inventory(root):
     files, links = {}, {}
     for path in sorted(root.rglob("*")):
@@ -162,6 +170,7 @@ def main():
         NSHighResolutionCapable=True,
     )
     (contents / "Info.plist").write_bytes(plistlib.dumps(metadata))
+    remove_qt_build_objects(resources)
     files, links = inventory(resources)
     identity = hashlib.sha256(json.dumps([files, links], sort_keys=True).encode()).hexdigest()[:16]
     manifest = dict(

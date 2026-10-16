@@ -32,6 +32,8 @@ Outputs must be new directories. The build downloads checksum-pinned standalone
 Python and Julia, uses pinned native Python wheels, and stages Julia packages in
 an isolated build depot. The resource whitelist omits `ath/` and Wine. The app
 contains a native launcher, icons, bundled plugins, examples, and documentation.
+Unused Qt linker object files from the wheel are excluded before signing because
+Apple rejects these unsigned build artifacts during notarization.
 
 Signing copies the staged app, verifies its resource inventory, signs native
 executables/libraries and nested frameworks/apps from the inside out, inventories the signed

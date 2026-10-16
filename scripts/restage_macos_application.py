@@ -8,7 +8,7 @@ import tomllib
 from pathlib import Path
 
 from build_macos_installer import verify_resources
-from build_macos_runtime import inventory
+from build_macos_runtime import inventory, remove_qt_build_objects
 from build_windows_runtime import ROOT, copy_tracked, digest, run
 
 
@@ -55,6 +55,7 @@ def main():
         copy_tracked(folder, resources / "resources" / folder)
     shutil.rmtree(resources / "user-files/documentation")
     copy_tracked("docs", resources / "user-files/documentation")
+    remove_qt_build_objects(resources)
     files, links = inventory(resources)
     manifest.update(files=files, symlinks=links)
     manifest["wheels"][wheel.name] = digest(wheel)
