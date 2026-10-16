@@ -66,3 +66,28 @@ def test_cpu_package_never_probes_cuda_and_rejects_unbundled_backend(monkeypatch
     assert GuiPreferences(solve_backend="beat_remote").solve_backend == "beat_remote"
     with pytest.raises(ValueError, match="not included"):
         resolve_headless_backend("beat_cuda")
+
+
+def test_macos_runtime_uses_native_paths_and_space_free_scratch(tmp_path, monkeypatch):
+    import sys
+
+    import pytest
+
+    if sys.platform == "win32":
+        pytest.skip("macOS uses POSIX temporary paths")
+    monkeypatch.setattr(os, "environ", os.environ.copy())
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DYLD_LIBRARY_PATH", "/wrong")
+    root = tmp_path / "Boundary Lab.app/Contents/Resources"
+    root.mkdir(parents=True)
+    (root / "runtime-manifest.json").write_text(
+        json.dumps({"platform": "darwin", "runtime_id": "test", "backends": ["cpu"]})
+    )
+    configure_runtime(root, documents=tmp_path / "Documents", local_data=tmp_path / "Application Support")
+    assert os.environ["BLAB_JULIA_EXE"].endswith("/bin/julia")
+    assert os.environ["JULIA_LOAD_PATH"] == "@:@stdlib"
+    assert os.environ["JULIA_DEPOT_PATH"].endswith(":")
+    assert "DYLD_LIBRARY_PATH" not in os.environ
+    assert " " not in os.environ["TMPDIR"]
+    assert os.environ["PATH"] == "/usr/bin:/bin:/usr/sbin:/sbin"
+    assert not (root / "resources/ath").exists()

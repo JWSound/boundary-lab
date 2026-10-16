@@ -10,5 +10,17 @@
     "sha256": "a63d991976e6893f508c512e3dc7bca1836c1a1f6ad1f3e4aedec159b6733e89"
   },
   "beat_requirement": "beat-engine @ git+https://github.com/JWSound/BEAT_Engine.git@96cb77e5eb5b8c15c6bbf50b73c4737028ab6cea",
-  "cuda_runtime": "13.3"
+  "cuda_runtime": "13.3",
+  "macos_arm64": {
+    "python": {
+      "version": "3.13.16",
+      "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261003/cpython-3.13.16%2B20261003-aarch64-apple-darwin-install_only_stripped.tar.gz",
+      "sha256": "9e01f63bbb08576cd9c8bc2d0564d098cb30c8453a0cd4bcf6aef458f6d2a147"
+    },
+    "julia": {
+      "version": "1.12.6",
+      "url": "https://julialang-s3.julialang.org/bin/mac/aarch64/1.12/julia-1.12.6-macaarch64.tar.gz",
+      "sha256": "277d82fbd2eda99d0963b3e41f3dc979d7486f181399f8430fb637318ccd6a31"
+    }
+  }
 }

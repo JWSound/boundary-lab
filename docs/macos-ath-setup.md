@@ -1,10 +1,10 @@
 # Optional Ath generation on macOS
 
-Boundary Lab's macOS distribution is intended to exclude both Ath and Wine.
+Boundary Lab's macOS distribution excludes both Ath and Wine.
 Mesh import, project editing, and solving do not require either tool. Ath design
 source remains available in projects even when generation is not configured.
-The macOS installer pipeline is not yet implemented; its resource inventory must
-exclude the repository's `ath/` directory and any Wine distribution. The Python
+The [macOS installer pipeline](macos-installer.md) excludes the repository's
+`ath/` directory and any Wine distribution from its resource inventory. The Python
 wheel includes only `src/blab`, not the repository's Ath executable. Windows
 bundling and Linux command-line Wine discovery are unchanged.
 
