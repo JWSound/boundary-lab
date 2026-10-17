@@ -91,3 +91,13 @@ def test_macos_runtime_uses_native_paths_and_space_free_scratch(tmp_path, monkey
     assert " " not in os.environ["TMPDIR"]
     assert os.environ["PATH"] == "/usr/bin:/bin:/usr/sbin:/sbin"
     assert not (root / "resources/ath").exists()
+
+
+def test_cpu_metal_package_exposes_both_but_keeps_cpu_default(monkeypatch):
+    from blab.solvers.registry import available_backend_infos
+    from blab.ui.settings import GuiPreferences
+
+    monkeypatch.setenv("BLAB_PACKAGED_BACKENDS", "cpu,metal")
+    assert {info.backend_id for info in available_backend_infos()} == {"beat_cpu", "beat_metal", "beat_remote"}
+    assert GuiPreferences().solve_backend == "beat_cpu"
+    assert GuiPreferences(solve_backend="beat_metal").solve_backend == "beat_metal"

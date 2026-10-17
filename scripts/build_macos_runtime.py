@@ -1,4 +1,4 @@
-"""Build an Apple Silicon CPU app, excluding external Ath and Wine."""
+"""Build an Apple Silicon CPU + Metal app, excluding external Ath and Wine."""
 
 from __future__ import annotations
 
@@ -117,6 +117,7 @@ def main():
         runtime / "julia-depot",
         "0.0",
         site / "beat_engine/julia_local",
+        site / "beat_engine/julia_metal",
         env=env,
     )
     # Deliberately whitelist resources: no ath/ executable or Wine distribution.
@@ -178,7 +179,7 @@ def main():
         platform="darwin",
         arch="arm64",
         runtime_id="mac-arm64-" + identity,
-        backends=["cpu"],
+        backends=["cpu", "metal"],
         version=project["version"],
         components=lock,
         files=files,

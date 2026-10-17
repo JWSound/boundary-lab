@@ -235,6 +235,7 @@ class PreferencesMixin:
         elif preferences_require_visualization_refresh(previous_preferences, self.preferences):
             self.visualization_settings_changed.emit("preferences_changed")
         self.status_label.setText("Preferences updated")
+        self.backend_health.check_selected_backend()
 
     def generator_plugins_busy(self) -> bool:
         return self.geometry_controller.active or self.solve_controller.active or self.preparations.active
