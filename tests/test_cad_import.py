@@ -650,6 +650,14 @@ def test_local_surface_model_reports_its_two_unmeshable_tori():
     assert [u.id for u in inspect_step(MESH_IMPORT).unmeshable] == [47, 50]
 
 
+@pytest.mark.skipif(not MESH_IMPORT.is_file(), reason="local-only fixture")
+def test_generate_names_both_unmeshable_tori_of_the_local_surface_model(tmp_path):
+    with pytest.raises(
+        ValueError, match=r"^Faces 47 \(Torus, .+\), 50 \(Torus, .+\) cannot be meshed: face 47: .+; face 50: "
+    ):
+        mesh_step(MESH_IMPORT, replace(SETTINGS, fmax_hz=1000.0), tmp_path / "out")
+
+
 @pytest.fixture(scope="module")
 def bored_ball_step(tmp_path_factory):
     """A ball whose one torus face Gmsh cannot mesh, inside a cabinet."""
@@ -677,6 +685,19 @@ def test_unmeshable_faces_follow_placement_and_survive_json(bored_ball_step, ven
     assert preview_from_json(json.loads(json.dumps(preview_to_json(preview)))).geometry.unmeshable == unmeshable
     result = replace(vented, geometry=preview.geometry)
     assert result_from_json(json.loads(json.dumps(result_to_json(result)))) == result
+
+
+def test_generate_rejects_an_unmeshable_face_by_name_and_writes_no_meshes(bored_ball_step, tmp_path):
+    (torus,) = [f for f in inspect_step(bored_ball_step).faces if f.surface_type == "Torus"]
+
+    with pytest.raises(ValueError) as error:
+        mesh_step(bored_ball_step, SETTINGS, tmp_path / "out")
+
+    assert str(error.value) == (
+        f"Face {torus.id} (Torus, Ball) cannot be meshed: "
+        f"Impossible to mesh periodic surface {torus.id}; area reads as negative"
+    )
+    assert not list((tmp_path / "out").glob("*.msh"))
 
 
 def test_a_good_file_has_no_unmeshable_faces_and_every_face_is_tessellated(tmp_path):
@@ -771,6 +792,16 @@ def test_cli_reports_rejections_as_usage_errors(tmp_path, capsys):
     with pytest.raises(SystemExit):
         cad_cli.main([str(tmp_path / "missing.step"), "--fmax", "1000", "--output", str(tmp_path)])
     assert "STEP file not found" in capsys.readouterr().err
+
+
+def test_cli_names_an_unmeshable_face(bored_ball_step, tmp_path, capsys):
+    with pytest.raises(SystemExit) as exit_:
+        cad_cli.main([str(bored_ball_step), "--fmax", "1000", "--output", str(tmp_path)])
+
+    assert exit_.value.code != 0
+    err = capsys.readouterr().err
+    assert "(Torus, Ball) cannot be meshed: Impossible to mesh periodic surface" in err
+    assert "Traceback" not in err
 
 
 def signed_volume(mesh):

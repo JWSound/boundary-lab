@@ -444,6 +444,15 @@ def _mesh_surfaces(gmsh, faces: Sequence[CadFace]) -> tuple[CadUnmeshableFace, .
     return tuple(unmeshable)
 
 
+def _unmeshable_message(geometry: CadGeometry, unmeshable: Sequence[CadUnmeshableFace]) -> str:
+    """Names each unmeshable face with its surface type and bodies, then the reasons Gmsh gave."""
+    faces = {f.id: f for f in geometry.faces}
+    labels = ", ".join(f"{u.id} ({faces[u.id].surface_type}, {' and '.join(faces[u.id].bodies)})" for u in unmeshable)
+    if len(unmeshable) == 1:
+        return f"Face {labels} cannot be meshed: {unmeshable[0].reason}"
+    return f"Faces {labels} cannot be meshed: " + "; ".join(f"face {u.id}: {u.reason}" for u in unmeshable)
+
+
 def _show(gmsh, entities, faces) -> None:
     """Make only ``faces`` and their boundaries visible."""
     gmsh.model.setVisibility(entities, 0)
@@ -479,7 +488,13 @@ def mesh_step(step_path: str | Path, settings: CadImportSettings, output_dir: st
             )
         groups = face_groups.surface_groups(model.mesh_faces)
         _apply_sizes(gmsh, model, settings, groups)
-        gmsh.model.mesh.generate(3)
+        try:
+            gmsh.model.mesh.generate(3)
+        except Exception:  # Gmsh raises plain Exceptions; name the faces if the 2D mesher is to blame
+            gmsh.model.mesh.clear()
+            if unmeshable := _mesh_surfaces(gmsh, geometry.faces):
+                raise ValueError(_unmeshable_message(geometry, unmeshable)) from None
+            raise
         output_dir.mkdir(parents=True, exist_ok=True)
         meshes = []
         for region in geometry.regions:

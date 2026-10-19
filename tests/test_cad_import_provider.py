@@ -31,7 +31,7 @@ from blab.project.model import (
     new_generator_document,
 )
 from blab.system_solve import prepare_system_solve
-from cad_fixtures import strip_names, vented_box, waveguide
+from cad_fixtures import bored_ball, strip_names, vented_box, waveguide
 
 ROOT = Path(__file__).resolve().parents[1] / "geometry_providers"
 PROVIDER = "blab.cad_import"
@@ -396,6 +396,21 @@ def test_rejected_regeneration_keeps_the_previous_meshes_and_system(plugin, tmp_
 
     strip_names(vented_box(tmp_path / "named.step", depth=230), step)
     with pytest.raises(ValueError, match="Face groups need review .*: 'Back'"):
+        generate(backend, project, tmp_path / "runs")
+
+    assert project == before
+    assert all(Path(path).is_file() for path in meshes)
+
+
+def test_unmeshable_face_rejects_regeneration_by_name_and_keeps_the_previous_meshes_and_system(plugin, tmp_path):
+    catalog, backend = plugin
+    step = vented_box(tmp_path / "box.step")
+    project, _ = generate(backend, make_project(catalog, step), tmp_path / "runs")
+    before = deepcopy(project)
+    meshes = [m.mesh_path for m in project.generator_documents[0].artifact.meshes]
+
+    bored_ball(step)
+    with pytest.raises(ValueError, match=r"^Face \d+ \(Torus, Ball\) cannot be meshed: Impossible to mesh periodic"):
         generate(backend, project, tmp_path / "runs")
 
     assert project == before
