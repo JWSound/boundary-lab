@@ -402,7 +402,7 @@ class CadImportEditor:
         unmeshable_layout = QVBoxLayout(self.unmeshable_box)
         self.unmeshable_list = QListWidget()
         self.unmeshable_list.setAccessibleName("Unmeshable faces")
-        self.unmeshable_list.setToolTip("Click a face to show only its bodies, select it and frame it.")
+        self.unmeshable_list.setToolTip("Click a face to show it in context, select it and frame it.")
         self.unmeshable_list.itemClicked.connect(lambda item: self.show_unmeshable(item.data(FACE_ROLE)))
         unmeshable_layout.addWidget(self.unmeshable_list)
         self.unmeshable_box.hide()
