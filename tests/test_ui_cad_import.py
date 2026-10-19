@@ -1429,6 +1429,41 @@ def test_clicking_an_unmeshable_faces_row_shows_its_face(ball_editor):
     assert editor.status.text() == f"Face {torus} · Group 'walls'"
 
 
+def unmeshable_outlines(editor):
+    """The orange outlines drawn for selected faces without triangles."""
+    return [mesh for mesh, kwargs in editor.viewport.plotter.meshes if mesh.n_lines and kwargs.get("line_width") == 4]
+
+
+MESH_IMPORT = Path(__file__).parent / "fixtures" / "cad_import" / "blab Mesh import.STEP"
+
+
+@pytest.mark.skipif(not MESH_IMPORT.is_file(), reason="local-only fixture")
+def test_the_local_surface_model_opens_with_both_unmeshable_tori_outlined(blank_cad_editor, qapp):
+    # Torus 47 is bounded only by seams: it has no curves an opening could run along, but must still be drawn.
+    editor, _ = blank_cad_editor
+
+    editor.set_step_path(str(MESH_IMPORT))
+    wait(qapp, lambda: not editor.loading, timeout=120)
+    editor.groups_table.selectRow(row_of(editor, "walls"))
+    qapp.processEvents()  # the render timer
+
+    assert {47, 50} <= editor.selected_faces()
+    assert len(unmeshable_outlines(editor)) == 2
+    editor.show_unmeshable(47)
+    assert len(unmeshable_outlines(editor)) == 1
+
+
+def test_showing_an_unmeshable_face_without_curves_neither_outlines_nor_frames_it(ball_editor, monkeypatch):
+    editor, _ = ball_editor
+    torus = torus_face(editor)
+    editor._preview["edges"][torus] = np.empty((0, 9, 3))
+    monkeypatch.setattr(editor.viewport, "frame", lambda points: pytest.fail("framed nothing"))
+
+    editor.show_unmeshable(torus)
+
+    assert editor.selected_faces() == {torus} and unmeshable_outlines(editor) == []
+
+
 @pytest.fixture
 def menus(cad_editor, monkeypatch):
     """The entries of each menu opened."""

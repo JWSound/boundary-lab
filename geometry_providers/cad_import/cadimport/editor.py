@@ -1007,7 +1007,8 @@ class CadImportEditor:
         self.select_faces({face_id})
         self.mark_face(face_id)
         self._render()
-        self.viewport.frame(self._preview["edges"][face_id])
+        if len(self._preview["edges"][face_id]):  # a face without curves leaves the camera
+            self.viewport.frame(self._preview["edges"][face_id])
 
     def clear(self):
         """Show everything and clear the selection."""
@@ -1024,7 +1025,7 @@ class CadImportEditor:
             self.visible_faces(),
             self.selected_faces(),
             face_colours,
-            outlines=[self._preview["edges"][face] for face in outlined],
+            outlines=[self._preview["edges"][face] for face in outlined if len(self._preview["edges"][face])],
             hovered=self._hover,
             guides=self.geometry["bbox_m"] if self.geometry is not None and self.guides_check.isChecked() else None,
             reset_camera=reset_camera,
@@ -1349,10 +1350,12 @@ class CadImportEditor:
 
 
 def _view(preview):
-    """What the viewport draws of a scan or preview; ``edges`` are each face's sampled boundary edges (m)."""
+    """What the viewport draws of a scan or preview; ``edges`` are each face's sampled boundary curves (m)."""
     openings = preview.openings
     points = dict(zip(openings.edges, openings.edge_points, strict=True))
-    edges = {face: np.array([points[e] for e in face_edges]) for face, face_edges in openings.face_edges.items()}
+    edges = {
+        face: np.array([points[c] for c in curves]).reshape(-1, 9, 3) for face, curves in openings.face_curves.items()
+    }
     return {"points": preview.points, "triangles": preview.triangles, "face_ids": preview.face_ids, "edges": edges}
 
 

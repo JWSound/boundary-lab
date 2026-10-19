@@ -218,6 +218,7 @@ class _Openings:
     """
 
     face_edges: Mapping[int, tuple[int, ...]]  # boundary curves of the outer air and exterior faces
+    face_curves: Mapping[int, tuple[int, ...]]  # those and their seams: what draws each face
     edges: tuple[int, ...]
     edge_points: np.ndarray  # nine sampled points (m) per edge of ``edges``
     air_body: Mapping[int, str]  # outer air face -> the air body it bounds
@@ -309,6 +310,7 @@ def preview_to_json(preview: CadPreview) -> dict:
     openings = preview.openings
     data["openings"] = dict(
         face_edges=[[f, list(e)] for f, e in openings.face_edges.items()],
+        face_curves=[[f, list(c)] for f, c in openings.face_curves.items()],
         edges=list(openings.edges),
         edge_points=openings.edge_points.tolist(),
         air_body=[[f, b] for f, b in openings.air_body.items()],
@@ -342,6 +344,7 @@ def preview_from_json(data: Mapping) -> CadPreview:
     o = data["openings"]
     openings = _Openings(
         {f: tuple(e) for f, e in o["face_edges"]},
+        {f: tuple(c) for f, c in o["face_curves"]},
         tuple(o["edges"]),
         np.asarray(o["edge_points"], dtype=float).reshape(-1, 9, 3),
         dict(o["air_body"]),
@@ -672,9 +675,11 @@ def _analyse(gmsh, path: Path, placement: tuple[np.ndarray, np.ndarray], closed_
         owners = tuple(body_of_volume[v] for v in face_volumes[f])
         face_bodies[f] = owners + ((exterior_name[f],) if f in exterior_name else ())
         faces.append(_face(gmsh, f, face_bodies[f], step_names.get(f)))
-    curves = sorted({e for f in face_bodies for e in edges[f]})
+    face_curves = {f: tuple(sorted(set(_curves(gmsh, f)))) for f in face_bodies}
+    curves = sorted({c for f in face_bodies for c in face_curves[f]})
     openings = _Openings(
         {f: tuple(sorted(edges[f])) for f in face_bodies},
+        face_curves,
         tuple(curves),
         _sample_edges(gmsh, curves),
         {f: body_of_volume[face_volumes[f][0]] for f in outer_air},
@@ -834,9 +839,14 @@ def _exterior_bodies(names, children, edges) -> dict[str, list[int]]:
     return bodies
 
 
+def _curves(gmsh, face) -> list[int]:
+    """Boundary curves of a face, seams (which bound the face on both sides) twice."""
+    return [abs(t) for _, t in gmsh.model.getBoundary([(2, face)], combined=False, oriented=True)]
+
+
 def _edges(gmsh, face) -> set[int]:
-    """Boundary curves of a face, without seams (which bound the face on both sides)."""
-    tags = [abs(t) for _, t in gmsh.model.getBoundary([(2, face)], combined=False, oriented=True)]
+    """Boundary curves of a face, without seams."""
+    tags = _curves(gmsh, face)
     return {t for t in tags if tags.count(t) == 1}
 
 

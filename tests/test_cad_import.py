@@ -651,6 +651,17 @@ def test_local_surface_model_reports_its_two_unmeshable_tori():
 
 
 @pytest.mark.skipif(not MESH_IMPORT.is_file(), reason="local-only fixture")
+def test_a_face_bounded_only_by_seams_still_has_curves_to_draw():
+    preview = open_step(MESH_IMPORT)
+    openings = preview.openings
+
+    assert openings.face_edges[47] == ()  # torus 47's curves all bound it on both sides: no openings run along it
+    assert all(openings.face_curves[f] for f in openings.face_edges)
+    assert set().union(*openings.face_curves.values()) <= set(openings.edges)  # sampled, so drawable
+    assert preview_from_json(json.loads(json.dumps(preview_to_json(preview)))).openings.face_curves == openings.face_curves
+
+
+@pytest.mark.skipif(not MESH_IMPORT.is_file(), reason="local-only fixture")
 def test_generate_names_both_unmeshable_tori_of_the_local_surface_model(tmp_path):
     with pytest.raises(
         ValueError, match=r"^Faces 47 \(Torus, .+\), 50 \(Torus, .+\) cannot be meshed: face 47: .+; face 50: "
