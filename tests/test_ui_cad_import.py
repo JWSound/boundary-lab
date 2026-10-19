@@ -12,9 +12,9 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
-from PySide6.QtGui import QMouseEvent
+from PySide6.QtGui import QMouseEvent, QPalette
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QDockWidget, QHeaderView
+from PySide6.QtWidgets import QApplication, QDockWidget, QHeaderView, QScrollArea, QSplitter
 
 from blab.cad_import import inspect_step
 from blab.generators import catalog as catalog_module
@@ -166,7 +166,8 @@ def test_a_face_shared_by_two_bodies_hides_under_both(cad_editor, qapp, tmp_path
     # A cabinet front without a hole covers the port mouth, so Port and Cabinet share that face.
     editor.set_step_path(str(vented_box(tmp_path / "covered.step", covered=True)))
     wait(qapp, lambda: not editor.loading)
-    assert "covers a face" in editor.info.text()
+    assert "Warning: " in editor.warnings.text() and "covers a face" in editor.warnings.text()
+    assert "covers a face" not in editor.info.text()  # the info line holds only Size / Symmetry
     items = {}
     for body in body_items(editor).values():
         for item in children_items(faces_row(body)):
@@ -1304,7 +1305,7 @@ def test_a_good_file_shows_no_unmeshable_faces_list(cad_editor):
     editor, _ = cad_editor
 
     assert editor.unmeshable_box.isHidden() and unmeshable_rows(editor) == []
-    assert "cannot be meshed" not in editor.info.text()
+    assert editor.warnings.isHidden()
 
 
 def test_unmeshable_faces_are_listed_with_their_name_type_body_position_and_reason(ball_editor):
@@ -1319,7 +1320,9 @@ def test_unmeshable_faces_are_listed_with_their_name_type_body_position_and_reas
     centre = next(f["centre"] for f in editor.geometry["faces"] if f["id"] == torus)
     assert np.all(np.abs(listed_position(editor)) <= 12)
     assert np.allclose(listed_position(editor), np.array(centre) * 1000, atol=0.5)
-    assert "1 face cannot be meshed; see the list." in editor.info.text()
+    assert not editor.warnings.isHidden()
+    assert "1 face cannot be meshed; see the list." in editor.warnings.text()
+    assert "cannot be meshed" not in editor.info.text()
     item = face_item(editor, torus)
     assert item.toolTip(0) == f"Cannot be meshed: {reason}" and not item.icon(0).isNull()
     other = face_item(editor, cabinet_faces(editor, lambda f: True)[0])
@@ -1340,11 +1343,65 @@ def test_the_listed_position_follows_placement_without_reading(ball_editor, monk
 def test_re_reading_a_fixed_file_empties_and_hides_the_list(ball_editor, qapp, tmp_path):
     editor, _ = ball_editor
 
+    status = editor.status.text(), editor.status.palette().color(QPalette.ColorRole.WindowText)
     editor.set_step_path(str(vented_box(tmp_path / "fixed.step")))
     wait(qapp, lambda: not editor.loading)
 
     assert editor.unmeshable_box.isHidden() and unmeshable_rows(editor) == []
-    assert "cannot be meshed" not in editor.info.text()
+    assert editor.warnings.isHidden()
+    assert (editor.status.text(), editor.status.palette().color(QPalette.ColorRole.WindowText)) == status
+
+
+def laid_out(widget):
+    """The widgets of ``widget``'s layout, sub-layouts included, top to bottom and left to right."""
+
+    def walk(layout):
+        for i in range(layout.count()):
+            item = layout.itemAt(i)
+            if item.widget() is not None:
+                yield item.widget()
+            elif item.layout() is not None:
+                yield from walk(item.layout())
+
+    return list(walk(widget.layout()))
+
+
+def in_order(widgets, expected):
+    return [w for w in widgets if any(w is e for e in expected)] == expected
+
+
+def test_the_view_comes_first_then_warnings_unmeshable_faces_placement_and_the_tree_below_its_splitter(ball_editor):
+    editor, _ = ball_editor
+    splitter = editor.viewport.parentWidget()
+
+    assert isinstance(splitter, QSplitter) and splitter.widget(0) is editor.viewport
+    assert in_order(
+        laid_out(editor.widget),
+        [editor.step_path, editor.info, splitter, editor.groups_box, editor.fineness, editor.status],
+    )
+    panel = splitter.widget(1)
+    assert isinstance(panel, QScrollArea) and panel.widgetResizable()  # scrolls as a whole when it no longer fits
+    assert in_order(
+        laid_out(panel.widget()),
+        [editor.warnings, editor.unmeshable_box, editor.placement_box, editor.tree, editor.show_all_button],
+    )
+
+
+def test_warnings_are_red_in_both_themes_and_the_status_line_is_not(ball_editor, qapp):
+    from blab.ui.theme import apply_application_theme
+
+    editor, _ = ball_editor
+    try:
+        for theme in ("light", "dark"):
+            apply_application_theme(theme)
+            background = qapp.palette().color(QPalette.ColorRole.Window)
+            red = editor.warnings.palette().color(QPalette.ColorRole.WindowText)
+            text = editor.status.palette().color(QPalette.ColorRole.WindowText)
+            assert red.red() > 2 * max(red.green(), red.blue()), f"{theme}: {red.name()} is not red"
+            assert abs(red.lightness() - background.lightness()) > 80, f"{theme}: {red.name()} is not legible"
+            assert abs(text.red() - text.blue()) < 40, f"{theme}: the status line is {text.name()}"
+    finally:
+        apply_application_theme("system")
 
 
 def test_other_faces_are_grouped_and_sized_while_unmeshable_faces_are_listed(ball_editor):

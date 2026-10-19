@@ -14,13 +14,14 @@ from pathlib import Path
 
 import numpy as np
 from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QGuiApplication
+from PySide6.QtGui import QColor, QGuiApplication, QPalette
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -32,6 +33,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSplitter,
     QStyle,
     QTableWidget,
@@ -73,6 +75,7 @@ SELECTED_COLOUR, HOVER_COLOUR, HOVER_SELECTED_COLOUR = "#e8a33d", "#f6cf98", "#b
 AXIS_COLOURS = ("#d62728", "#2ca02c", "#1f77b4")  # X, Y, Z
 AXIS_LABELS = ("X · Horizontal", "Y · Vertical", "Z · On Axis")  # as the balloon and mesh views name them
 PLANE_COLOUR, PLANE_OPACITY = "#98df8a", 0.15  # the symmetry planes X=0 and Y=0, a lighter green than the Y axis
+WARNING_COLOURS = ("#c62828", "#ff6b6b")  # on a light, a dark background
 GROUP_COLOURS = (
     "#4e79a7", "#59a14f", "#e15759", "#76b7b2", "#b07aa1",
     "#9c755f", "#edc948", "#ff9da7", "#2f6f4f", "#8c6bb1",
@@ -81,6 +84,27 @@ GROUP_COLOURS = (
 
 class _Relay(QObject):
     loaded = Signal(object, object, object)  # key, preview or None, error or None
+
+
+class _WarningLabel(QLabel):
+    """Red text: dark red on a light background, light red on a dark one, following theme changes."""
+
+    def __init__(self):
+        super().__init__()
+        self.setWordWrap(True)
+        self._recolour()
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.PaletteChange:
+            self._recolour()
+
+    def _recolour(self):
+        palette = self.palette()
+        red = QColor(WARNING_COLOURS[palette.color(QPalette.ColorRole.Window).lightness() < 128])
+        if palette.color(QPalette.ColorRole.WindowText) != red:  # else setting it changes the palette again
+            palette.setColor(QPalette.ColorRole.WindowText, red)
+            self.setPalette(palette)
 
 
 def _actor_key(actor):
@@ -354,6 +378,18 @@ class CadImportEditor:
         self.info = QLabel("Open a STEP file: solids become air bodies, surface bodies the exterior.")
         self.info.setWordWrap(True)
         layout.addWidget(self.info)
+
+        # The view on top of the splitter; below it what explains and changes what it shows, then the tree.
+        splitter = QSplitter(Qt.Orientation.Vertical)
+        self.viewport = Viewport(picked=self._viewport_picked, menu=self._show_face_menu, hovered=self._hovered)
+        splitter.addWidget(self.viewport)
+        tree_panel = QWidget()
+        tree_layout = QVBoxLayout(tree_panel)
+        tree_layout.setContentsMargins(0, 0, 0, 0)
+        self.warnings = _WarningLabel()
+        self.warnings.setAccessibleName("Warnings")
+        self.warnings.hide()
+        tree_layout.addWidget(self.warnings)
         self.unmeshable_box = QGroupBox("Unmeshable faces")
         self.unmeshable_box.setToolTip("Faces Gmsh cannot mesh: fix them in the CAD tool, then read the file again.")
         unmeshable_layout = QVBoxLayout(self.unmeshable_box)
@@ -363,14 +399,32 @@ class CadImportEditor:
         self.unmeshable_list.itemClicked.connect(lambda item: self.show_unmeshable(item.data(FACE_ROLE)))
         unmeshable_layout.addWidget(self.unmeshable_list)
         self.unmeshable_box.hide()
-        layout.addWidget(self.unmeshable_box)
-
-        splitter = QSplitter(Qt.Orientation.Vertical)
-        self.viewport = Viewport(picked=self._viewport_picked, menu=self._show_face_menu, hovered=self._hovered)
-        splitter.addWidget(self.viewport)
-        tree_panel = QWidget()
-        tree_layout = QVBoxLayout(tree_panel)
-        tree_layout.setContentsMargins(0, 0, 0, 0)
+        tree_layout.addWidget(self.unmeshable_box)
+        self.placement_box = QGroupBox("Placement")
+        self.placement_box.setToolTip(
+            "Rotate about the Boundary Lab X (horizontal), Y (vertical) and Z (on axis) axes, in that order, "
+            "then translate."
+        )
+        placement_form = QFormLayout(self.placement_box)
+        self.rotation_spins, self.translation_spins = [], []
+        for label, key, spins, limit, suffix in (
+            ("Rotate", "rotation_deg", self.rotation_spins, 360.0, "°"),
+            ("Translate", "translation_mm", self.translation_spins, 100000.0, " mm"),
+        ):
+            row = QHBoxLayout()
+            for axis in "XYZ":
+                spin = QDoubleSpinBox()
+                spin.setRange(-limit, limit)
+                spin.setDecimals(3)
+                spin.setSuffix(suffix)
+                spin.setKeyboardTracking(False)
+                spin.setAccessibleName(f"{label} {axis}")
+                spin.valueChanged.connect(lambda _, k=key, s=spins: self.edited({k: [x.value() for x in s]}))
+                row.addWidget(QLabel(axis))
+                row.addWidget(spin, 1)
+                spins.append(spin)
+            placement_form.addRow(label, row)
+        tree_layout.addWidget(self.placement_box)
         self.hint = QLabel()
         self.hint.setWordWrap(True)
         tree_layout.addWidget(self.hint)
@@ -416,7 +470,11 @@ class CadImportEditor:
         buttons.addStretch()
         buttons.addWidget(self.guides_check)
         tree_layout.addLayout(buttons)
-        splitter.addWidget(tree_panel)
+        scroll = QScrollArea()  # scrolls as a whole rather than squeezing its lists
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidget(tree_panel)
+        splitter.addWidget(scroll)
         layout.addWidget(splitter, 1)
 
         self.groups_box = QGroupBox("Face groups")
@@ -453,31 +511,6 @@ class CadImportEditor:
         layout.addWidget(self.groups_box)
 
         form = QFormLayout()
-        self.placement_box = QGroupBox("Placement")
-        self.placement_box.setToolTip(
-            "Rotate about the Boundary Lab X (horizontal), Y (vertical) and Z (on axis) axes, in that order, "
-            "then translate."
-        )
-        placement_form = QFormLayout(self.placement_box)
-        self.rotation_spins, self.translation_spins = [], []
-        for label, key, spins, limit, suffix in (
-            ("Rotate", "rotation_deg", self.rotation_spins, 360.0, "°"),
-            ("Translate", "translation_mm", self.translation_spins, 100000.0, " mm"),
-        ):
-            row = QHBoxLayout()
-            for axis in "XYZ":
-                spin = QDoubleSpinBox()
-                spin.setRange(-limit, limit)
-                spin.setDecimals(3)
-                spin.setSuffix(suffix)
-                spin.setKeyboardTracking(False)
-                spin.setAccessibleName(f"{label} {axis}")
-                spin.valueChanged.connect(lambda _, k=key, s=spins: self.edited({k: [x.value() for x in s]}))
-                row.addWidget(QLabel(axis))
-                row.addWidget(spin, 1)
-                spins.append(spin)
-            placement_form.addRow(label, row)
-        form.addRow(self.placement_box)
         self.fineness = QComboBox()
         for name, n in LEVELS.items():
             self.fineness.addItem(name, n)
@@ -764,12 +797,13 @@ class CadImportEditor:
                     self._size_rows.append((combo, row_faces, row_volumes))
             low, high = self.geometry["bbox_m"]
             size = " x ".join(f"{(b - a) * 1000:.1f}" for a, b in zip(low, high, strict=True))
-            lines = [f"Size {size} mm · Symmetry {SYMMETRY_LABELS[self.geometry['symmetry']]} suggested"]
-            lines += [f"Warning: {warning}" for warning in self.geometry["warnings"]]
+            self.info.setText(f"Size {size} mm · Symmetry {SYMMETRY_LABELS[self.geometry['symmetry']]} suggested")
+            warnings = [f"Warning: {warning}" for warning in self.geometry["warnings"]]
             if unmeshable:
                 count = len(unmeshable)
-                lines.append(f"{count} face{'' if count == 1 else 's'} cannot be meshed; see the list.")
-            self.info.setText("\n".join(lines))
+                warnings.append(f"{count} face{'' if count == 1 else 's'} cannot be meshed; see the list.")
+            self.warnings.setText("\n".join(warnings))
+        self.warnings.setHidden(self.geometry is None or not self.warnings.text())
         self._syncing = False
         self._show_overrides()
         self._render(reset_camera=reset_camera)
