@@ -1427,21 +1427,43 @@ def checked_faces(editor):
     return {face for face, checks in rows.items() if all(checks)}
 
 
-def test_showing_an_unmeshable_face_shows_only_its_body_and_selects_and_marks_it(ball_editor):
+def drawn_faces(editor):
+    """``(faces, opacity)`` of each face mesh drawn, its faces read back from its triangles."""
+    preview = editor._preview
+    face_of = {tuple(t): f for t, f in zip(preview["triangles"].tolist(), preview["face_ids"].tolist(), strict=True)}
+    return [
+        ({face_of[tuple(t)] for t in mesh.faces.reshape(-1, 4)[:, 1:].tolist()}, kwargs.get("opacity", 1.0))
+        for mesh, kwargs in editor.viewport.plotter.meshes
+        if not mesh.n_lines and "name" not in kwargs
+    ]
+
+
+def grey_faces(editor):
+    """The faces drawn translucent: the context of a shown face."""
+    return set().union(*(faces for faces, opacity in drawn_faces(editor) if opacity < 1))
+
+
+def opaque_faces(editor):
+    return set().union(*(faces for faces, opacity in drawn_faces(editor) if opacity == 1))
+
+
+def test_showing_an_unmeshable_face_greys_the_other_bodies_and_selects_and_marks_it(ball_editor):
     editor, _ = ball_editor
+    every = {f["id"] for f in editor.geometry["faces"]}
     torus = torus_face(editor)
 
     editor.show_unmeshable(torus)
 
-    assert editor.visible_faces() == body_faces(editor, "Ball") == checked_faces(editor)
-    assert body_items(editor)["Cabinet"].checkState(0) == Qt.CheckState.Unchecked
-    assert body_items(editor)["Ball"].checkState(0) == Qt.CheckState.Checked
+    assert editor.visible_faces() == every == checked_faces(editor)
+    assert grey_faces(editor) == body_faces(editor, "Cabinet") - body_faces(editor, "Ball")
+    assert opaque_faces(editor) == body_faces(editor, "Ball") - {torus}  # the torus has no triangles
+    assert len(unmeshable_outlines(editor)) == 1
     assert editor.selected_faces() == {torus}
     assert editor.status.text() == f"Face {torus} · Group 'walls'"
     assert {i.row() for i in editor.groups_table.selectedItems()} == {row_of(editor, "walls")}
 
 
-def test_showing_a_face_shared_by_an_air_body_and_the_exterior_shows_both_bodies(cad_editor, qapp, tmp_path):
+def test_showing_a_face_shared_by_an_air_body_and_the_exterior_greys_only_the_other_bodies(cad_editor, qapp, tmp_path):
     editor, _ = cad_editor
     editor.set_step_path(str(vented_box(tmp_path / "covered.step", covered=True)))
     wait(qapp, lambda: not editor.loading)
@@ -1449,29 +1471,56 @@ def test_showing_a_face_shared_by_an_air_body_and_the_exterior_shows_both_bodies
 
     editor.show_unmeshable(mouth)
 
-    assert editor.visible_faces() == body_faces(editor, "Port") | body_faces(editor, "Cabinet") == checked_faces(editor)
-    assert editor.visible_faces().isdisjoint(body_faces(editor, "Chamber") - body_faces(editor, "Port"))
+    shown = body_faces(editor, "Port") | body_faces(editor, "Cabinet")
+    assert grey_faces(editor) == body_faces(editor, "Chamber") - shown
+    assert opaque_faces(editor) == shown
     assert editor.selected_faces() == {mouth}
 
 
-def test_showing_another_face_switches_and_show_all_and_clear_restore_everything(ball_editor):
+def test_showing_another_face_moves_the_grey_and_show_all_and_clear_end_it(ball_editor):
     editor, _ = ball_editor
     every = {f["id"] for f in editor.geometry["faces"]}
     side = cabinet_faces(editor, lambda f: True)[0]
     editor.show_unmeshable(torus_face(editor))
 
     editor.show_unmeshable(side)
-    assert editor.visible_faces() == body_faces(editor, "Cabinet") == checked_faces(editor)
+    # The torus has no triangles to grey.
+    assert grey_faces(editor) == body_faces(editor, "Ball") - body_faces(editor, "Cabinet") - {torus_face(editor)}
     assert editor.selected_faces() == {side}
 
     editor.show_all_button.click()
-    assert editor.visible_faces() == every == checked_faces(editor)
+    assert grey_faces(editor) == set() and editor.visible_faces() == every == checked_faces(editor)
     assert editor.selected_faces() == {side}
 
     editor.show_unmeshable(torus_face(editor))
     editor.clear_button.click()
-    assert editor.visible_faces() == every == checked_faces(editor)
+    assert grey_faces(editor) == set() and editor.visible_faces() == every == checked_faces(editor)
     assert editor.selected_faces() == set()
+
+
+def test_picking_a_grey_face_selects_it_and_keeps_the_grey(ball_editor, qapp):
+    editor, _ = ball_editor
+    editor.show_unmeshable(torus_face(editor))
+    grey = grey_faces(editor)
+    side = cabinet_faces(editor, lambda f: f["id"] in grey)[0]
+
+    editor.pick_face(side)
+    qapp.processEvents()  # the render timer
+
+    assert editor.selected_faces() == {side}
+    assert side in grey_faces(editor) and grey_faces(editor) == grey
+
+
+def test_unchecked_faces_stay_hidden_not_grey(ball_editor):
+    editor, _ = ball_editor
+    row = children_items(faces_row(body_items(editor)["Cabinet"]))[0]
+    side = item_face(row)
+    row.setCheckState(0, Qt.CheckState.Unchecked)
+
+    editor.show_unmeshable(torus_face(editor))
+
+    assert side not in editor.visible_faces() and side not in grey_faces(editor)
+    assert grey_faces(editor) == body_faces(editor, "Cabinet") - body_faces(editor, "Ball") - {side}
 
 
 def test_clicking_an_unmeshable_faces_row_shows_its_face(ball_editor):
@@ -1481,7 +1530,7 @@ def test_clicking_an_unmeshable_faces_row_shows_its_face(ball_editor):
 
     editor.unmeshable_list.itemClicked.emit(row)
 
-    assert editor.visible_faces() == body_faces(editor, "Ball")
+    assert grey_faces(editor) == body_faces(editor, "Cabinet") - body_faces(editor, "Ball")
     assert editor.selected_faces() == {torus}
     assert editor.status.text() == f"Face {torus} · Group 'walls'"
 
@@ -1508,6 +1557,10 @@ def test_the_local_surface_model_opens_with_both_unmeshable_tori_outlined(blank_
     assert len(unmeshable_outlines(editor)) == 2
     editor.show_unmeshable(47)
     assert len(unmeshable_outlines(editor)) == 1
+    # Face 47 is the sole face of "Exterior surface 2": the rest of the model stays on screen around it.
+    every = {f["id"] for f in editor.geometry["faces"]}
+    assert editor.visible_faces() == every
+    assert grey_faces(editor) == every - body_faces(editor, "Exterior surface 2") - {50}  # 50: no triangles
 
 
 def test_showing_an_unmeshable_face_without_curves_neither_outlines_nor_frames_it(ball_editor, monkeypatch):

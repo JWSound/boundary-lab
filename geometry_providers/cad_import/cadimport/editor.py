@@ -72,6 +72,7 @@ SIZING = (
 FACE_COLOUR, OUTLINE_COLOUR = "#c8ccd2", "#2b2f36"
 # The selection is orange; the face under the mouse pale orange, or dark orange when selected.
 SELECTED_COLOUR, HOVER_COLOUR, HOVER_SELECTED_COLOUR = "#e8a33d", "#f6cf98", "#b8620f"
+CONTEXT_COLOUR, CONTEXT_OPACITY = "#a0a4aa", 0.25  # the faces around a shown one: see-through grey
 AXIS_COLOURS = ("#d62728", "#2ca02c", "#1f77b4")  # X, Y, Z
 AXIS_LABELS = ("X · Horizontal", "Y · Vertical", "Z · On Axis")  # as the balloon and mesh views name them
 PLANE_COLOUR, PLANE_OPACITY = "#98df8a", 0.15  # the symmetry planes X=0 and Y=0, a lighter green than the Y axis
@@ -169,30 +170,34 @@ class Viewport(QWidget):
         selected=frozenset(),
         colours=None,
         *,
+        context=frozenset(),
         outlines=(),
         hovered=None,
         guides=None,
         reset_camera=False,
     ):
         """Draw the ``visible`` faces smooth with their outlines, in their ``colours`` (face id -> colour, default
-        plain), ``selected`` in orange and ``hovered`` (a face id) pale or, when selected, dark orange. ``outlines``
-        (sampled edges, m, of faces without triangles) are drawn in orange. ``guides`` (a bounding box, m) draws the
-        axes and symmetry planes around it."""
+        plain), ``selected`` in orange and ``hovered`` (a face id) pale or, when selected, dark orange. ``context``
+        faces are see-through, grey unless selected or hovered, and stay pickable. ``outlines`` (sampled edges, m,
+        of faces without triangles) are drawn in orange. ``guides`` (a bounding box, m) draws the axes and symmetry
+        planes around it."""
         import pyvista as pv
 
         self.plotter.clear()
         self._cell_faces = {}
         if preview is not None:
-            by_colour = {}
+            by_look = {}
             for face in visible:
                 if face == hovered:
                     colour = HOVER_SELECTED_COLOUR if face in selected else HOVER_COLOUR
                 elif face in selected:
                     colour = SELECTED_COLOUR
+                elif face in context:
+                    colour = CONTEXT_COLOUR
                 else:
                     colour = (colours or {}).get(face, FACE_COLOUR)
-                by_colour.setdefault(colour, []).append(face)
-            for colour, faces in by_colour.items():
+                by_look.setdefault((colour, CONTEXT_OPACITY if face in context else 1.0), []).append(face)
+            for (colour, opacity), faces in by_look.items():
                 mask = np.isin(preview["face_ids"], faces)
                 if mask.any():
                     triangles = preview["triangles"][mask]
@@ -201,6 +206,7 @@ class Viewport(QWidget):
                     actor = self.plotter.add_mesh(
                         pv.PolyData(preview["points"], cells),
                         color=colour,
+                        opacity=opacity,
                         smooth_shading=True,
                         split_sharp_edges=True,
                         reset_camera=False,
@@ -348,6 +354,7 @@ class CadImportEditor:
         self._key = None
         self._placement = None  # of the shown preview, as keyword arguments of the pipeline functions
         self._hidden = set()
+        self._context = set()  # the faces greyed around a shown unmeshable face
         self._hover = None  # the face under the mouse
         self._face_items = {}
         self._body_items = {}
@@ -727,6 +734,7 @@ class CadImportEditor:
         self.geometry = None if preview is None else preview["geometry"]
         self._resolve()
         self._hidden.clear()
+        self._context.clear()
         self._hover = None
         self._face_items = {}
         self._body_items = {}
@@ -1019,25 +1027,23 @@ class CadImportEditor:
         return next(body for body in self.geometry["bodies"] if body["name"] == name)
 
     def show_all(self):
-        self._show_only(set(self._face_items))
-        self._render()
-
-    def _show_only(self, shown):
-        """Check the tree rows of the ``shown`` faces, uncheck the others, and hide those."""
+        """Check every tree row, show every face and end the grey context."""
         self._syncing = True
-        for face, items in self._face_items.items():
+        for items in self._face_items.values():
             for item in items:
-                item.setCheckState(0, Qt.CheckState.Checked if face in shown else Qt.CheckState.Unchecked)
+                item.setCheckState(0, Qt.CheckState.Checked)
         for body in self._body_items.values():
             self._show_body_check(body.child(body.childCount() - 1))
         self._syncing = False
-        self._hidden = set(self._face_items) - shown
+        self._hidden.clear()
+        self._context.clear()
+        self._render()
 
     def show_unmeshable(self, face_id):
-        """Show only the bodies containing unmeshable ``face_id``, select and mark it, and frame it."""
-        self._show_only(
-            set().union(*(body["face_ids"] for body in self.geometry["bodies"] if face_id in body["face_ids"]))
-        )
+        """Grey the visible faces outside the bodies containing unmeshable ``face_id``, select and mark it, and
+        frame it."""
+        bodies = set().union(*(body["face_ids"] for body in self.geometry["bodies"] if face_id in body["face_ids"]))
+        self._context = self.visible_faces() - bodies
         self.select_faces({face_id})
         self.mark_face(face_id)
         self._render()
@@ -1045,7 +1051,7 @@ class CadImportEditor:
             self.viewport.frame(self._preview["edges"][face_id])
 
     def clear(self):
-        """Show everything and clear the selection."""
+        """Show everything, end the grey context and clear the selection."""
         self.show_all()
         self.tree.clearSelection()
 
@@ -1059,6 +1065,7 @@ class CadImportEditor:
             self.visible_faces(),
             self.selected_faces(),
             face_colours,
+            context=self._context,
             outlines=[self._preview["edges"][face] for face in outlined if len(self._preview["edges"][face])],
             hovered=self._hover,
             guides=self.geometry["bbox_m"] if self.geometry is not None and self.guides_check.isChecked() else None,
