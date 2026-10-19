@@ -71,6 +71,7 @@ FACE_COLOUR, OUTLINE_COLOUR = "#c8ccd2", "#2b2f36"
 # The selection is orange; the face under the mouse pale orange, or dark orange when selected.
 SELECTED_COLOUR, HOVER_COLOUR, HOVER_SELECTED_COLOUR = "#e8a33d", "#f6cf98", "#b8620f"
 CONTEXT_COLOUR, CONTEXT_OPACITY = "#a0a4aa", 0.25  # the faces around a shown one: see-through grey
+UNMESHABLE_COLOUR, UNMESHABLE_OPACITY = "#e53935", 0.5  # the fill triangles of faces Gmsh cannot mesh
 AXIS_COLOURS = ("#d62728", "#2ca02c", "#1f77b4")  # X, Y, Z
 AXIS_LABELS = ("X · Horizontal", "Y · Vertical", "Z · On Axis")  # as the balloon and mesh views name them
 PLANE_COLOUR, PLANE_OPACITY = "#98df8a", 0.15  # the symmetry planes X=0 and Y=0, a lighter green than the Y axis
@@ -169,6 +170,7 @@ class Viewport(QWidget):
         colours=None,
         *,
         context=frozenset(),
+        unmeshable=frozenset(),
         outlines=(),
         hovered=None,
         guides=None,
@@ -176,9 +178,9 @@ class Viewport(QWidget):
     ):
         """Draw the ``visible`` faces smooth with their outlines, in their ``colours`` (face id -> colour, default
         plain), ``selected`` in orange and ``hovered`` (a face id) pale or, when selected, dark orange. ``context``
-        faces are see-through, grey unless selected or hovered, and stay pickable. ``outlines`` (sampled edges, m,
-        of faces without triangles) are drawn in orange. ``guides`` (a bounding box, m) draws the axes and symmetry
-        planes around it."""
+        faces are see-through, grey unless selected or hovered, and stay pickable. ``unmeshable`` faces are always
+        see-through red. ``outlines`` (sampled edges, m, of selected unmeshable faces) are drawn in orange.
+        ``guides`` (a bounding box, m) draws the axes and symmetry planes around it."""
         import pyvista as pv
 
         self.plotter.clear()
@@ -186,7 +188,10 @@ class Viewport(QWidget):
         if preview is not None:
             by_look = {}
             for face in visible:
-                if face == hovered:
+                opacity = CONTEXT_OPACITY if face in context else 1.0
+                if face in unmeshable:
+                    colour, opacity = UNMESHABLE_COLOUR, UNMESHABLE_OPACITY
+                elif face == hovered:
                     colour = HOVER_SELECTED_COLOUR if face in selected else HOVER_COLOUR
                 elif face in selected:
                     colour = SELECTED_COLOUR
@@ -194,7 +199,7 @@ class Viewport(QWidget):
                     colour = CONTEXT_COLOUR
                 else:
                     colour = (colours or {}).get(face, FACE_COLOUR)
-                by_look.setdefault((colour, CONTEXT_OPACITY if face in context else 1.0), []).append(face)
+                by_look.setdefault((colour, opacity), []).append(face)
             for (colour, opacity), faces in by_look.items():
                 mask = np.isin(preview["face_ids"], faces)
                 if mask.any():
@@ -1045,8 +1050,11 @@ class CadImportEditor:
         self.select_faces({face_id})
         self.mark_face(face_id)
         self._render()
-        if len(self._preview["edges"][face_id]):  # a face without curves leaves the camera
-            self.viewport.frame(self._preview["edges"][face_id])
+        preview = self._preview
+        if len(preview["edges"][face_id]):
+            self.viewport.frame(preview["edges"][face_id])
+        elif (preview["face_ids"] == face_id).any():  # its fill; a face with neither leaves the camera
+            self.viewport.frame(preview["points"][preview["triangles"][preview["face_ids"] == face_id]])
 
     def clear(self):
         """Show everything, end the grey context and clear the selection."""
@@ -1057,13 +1065,14 @@ class CadImportEditor:
         colours = self.group_colours()
         face_colours = {face: colours[name] for name, faces, _ in self.rows() for face in faces}
         unmeshable = {u["id"] for u in self.geometry["unmeshable"]} if self.geometry is not None else set()
-        outlined = self.visible_faces() & self.selected_faces() & unmeshable  # no triangles to colour
+        outlined = self.visible_faces() & self.selected_faces() & unmeshable  # red or without triangles
         self.viewport.show_faces(
             self._preview,
             self.visible_faces(),
             self.selected_faces(),
             face_colours,
             context=self._context,
+            unmeshable=unmeshable,
             outlines=[self._preview["edges"][face] for face in outlined if len(self._preview["edges"][face])],
             hovered=self._hover,
             guides=self.geometry["bbox_m"] if self.geometry is not None and self.guides_check.isChecked() else None,

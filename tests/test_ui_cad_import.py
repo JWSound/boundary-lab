@@ -1430,23 +1430,33 @@ def checked_faces(editor):
 
 
 def drawn_faces(editor):
-    """``(faces, opacity)`` of each face mesh drawn, its faces read back from its triangles."""
+    """``(faces, opacity, colour)`` of each face mesh drawn, its faces read back from its triangles."""
     preview = editor._preview
     face_of = {tuple(t): f for t, f in zip(preview["triangles"].tolist(), preview["face_ids"].tolist(), strict=True)}
     return [
-        ({face_of[tuple(t)] for t in mesh.faces.reshape(-1, 4)[:, 1:].tolist()}, kwargs.get("opacity", 1.0))
+        (
+            {face_of[tuple(t)] for t in mesh.faces.reshape(-1, 4)[:, 1:].tolist()},
+            kwargs.get("opacity", 1.0),
+            kwargs["color"],
+        )
         for mesh, kwargs in editor.viewport.plotter.meshes
         if not mesh.n_lines and "name" not in kwargs
     ]
 
 
 def grey_faces(editor):
-    """The faces drawn translucent: the context of a shown face."""
-    return set().union(*(faces for faces, opacity in drawn_faces(editor) if opacity < 1))
+    """The faces drawn translucent but not red: the context of a shown face (grey unless selected or hovered)."""
+    return set().union(*(faces for faces, opacity, _ in drawn_faces(editor) if opacity < 1)) - red_faces(editor)
+
+
+def red_faces(editor):
+    """The faces drawn translucent red: unmeshable faces with fill triangles."""
+    red = sys.modules[type(editor).__module__].UNMESHABLE_COLOUR
+    return set().union(*(faces for faces, opacity, colour in drawn_faces(editor) if opacity < 1 and colour == red))
 
 
 def opaque_faces(editor):
-    return set().union(*(faces for faces, opacity in drawn_faces(editor) if opacity == 1))
+    return set().union(*(faces for faces, opacity, _ in drawn_faces(editor) if opacity == 1))
 
 
 def test_showing_an_unmeshable_face_greys_the_other_bodies_and_selects_and_marks_it(ball_editor):
@@ -1562,7 +1572,8 @@ def test_the_local_surface_model_opens_with_both_unmeshable_tori_outlined(blank_
     # Face 47 is the sole face of "Exterior surface 2": the rest of the model stays on screen around it.
     every = {f["id"] for f in editor.geometry["faces"]}
     assert editor.visible_faces() == every
-    assert grey_faces(editor) == every - body_faces(editor, "Exterior surface 2") - {50}  # 50: no triangles
+    assert grey_faces(editor) == every - body_faces(editor, "Exterior surface 2") - {50}
+    assert red_faces(editor) == {47, 50}  # both have fill triangles
 
 
 def test_showing_an_unmeshable_face_without_curves_neither_outlines_nor_frames_it(ball_editor, monkeypatch):
@@ -1574,6 +1585,56 @@ def test_showing_an_unmeshable_face_without_curves_neither_outlines_nor_frames_i
     editor.show_unmeshable(torus)
 
     assert editor.selected_faces() == {torus} and unmeshable_outlines(editor) == []
+
+
+def fill_torus(editor):
+    """Give the ball's torus one fill triangle (m), as reading a face the fill can approximate does."""
+    preview, torus = editor._preview, torus_face(editor)
+    start = len(preview["points"])
+    preview["points"] = np.vstack([preview["points"], [[0.0, 0.0, 0.0127], [0.001, 0.0, 0.0127], [0.0, 0.001, 0.0127]]])
+    preview["triangles"] = np.vstack([preview["triangles"], [[start, start + 1, start + 2]]])
+    preview["face_ids"] = np.append(preview["face_ids"], torus)
+    return torus
+
+
+def test_an_unmeshable_face_with_fill_triangles_is_drawn_red_and_outlined_when_selected(ball_editor, qapp):
+    editor, _ = ball_editor
+    torus = fill_torus(editor)
+
+    editor.show_all()
+    assert red_faces(editor) == {torus} and unmeshable_outlines(editor) == []
+    assert torus not in opaque_faces(editor)
+
+    editor.pick_face(torus)
+    qapp.processEvents()  # the render timer
+    assert red_faces(editor) == {torus} and len(unmeshable_outlines(editor)) == 1
+
+    editor.show_unmeshable(torus)
+    assert red_faces(editor) == {torus} and len(unmeshable_outlines(editor)) == 1
+    assert grey_faces(editor) == body_faces(editor, "Cabinet") - body_faces(editor, "Ball")
+
+
+def test_an_unmeshable_face_around_a_shown_face_stays_red_not_grey(ball_editor):
+    editor, _ = ball_editor
+    torus = fill_torus(editor)
+
+    editor.show_unmeshable(cabinet_faces(editor, lambda f: True)[0])
+
+    assert red_faces(editor) == {torus}
+    assert grey_faces(editor) == body_faces(editor, "Ball") - body_faces(editor, "Cabinet") - {torus}
+
+
+def test_showing_an_unmeshable_face_without_curves_frames_its_fill(ball_editor, monkeypatch):
+    editor, _ = ball_editor
+    torus = fill_torus(editor)
+    editor._preview["edges"][torus] = np.empty((0, 9, 3))
+    framed = []
+    monkeypatch.setattr(editor.viewport, "frame", framed.append)
+
+    editor.show_unmeshable(torus)
+
+    (points,) = framed
+    assert np.allclose(np.reshape(points, (-1, 3)), [[0.0, 0.0, 0.0127], [0.001, 0.0, 0.0127], [0.0, 0.001, 0.0127]])
 
 
 @pytest.fixture

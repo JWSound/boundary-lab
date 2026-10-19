@@ -251,7 +251,7 @@ def open_step(
     translation_m: Sequence[float] = ZERO,
     closed_shells: Mapping[str, str] | None = None,
 ) -> CadPreview:
-    """Read a STEP file for display with that placement; unmeshable faces get no triangles."""
+    """Read a STEP file for display with that placement; unmeshable faces get fill triangles where they can."""
     placement = _placement(rotation_deg, translation_m)
     with _gmsh_session() as gmsh:
         model = _analyse(gmsh, Path(step_path), placement, closed_shells or {})
@@ -391,14 +391,17 @@ def _geometry_from_json(g: Mapping) -> CadGeometry:
 def _tessellate(
     gmsh, geometry: CadGeometry
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, tuple[CadUnmeshableFace, ...]]:
-    """Coarse display triangles of the faces: points, triangles, face id per triangle; and the unmeshable faces."""
+    """Coarse display triangles of the faces: points, triangles, face id per triangle; and the unmeshable faces.
+
+    Unmeshable faces whose area reads positive get the triangles of :func:`_fill`, for display only.
+    """
     gmsh.option.setNumber("Mesh.MeshSizeMax", math.dist(*geometry.bbox_m) / 30 / _MM)
     gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 12)
     unmeshable = _mesh_surfaces(gmsh, geometry.faces)
     node_tags, coords, _ = gmsh.model.mesh.getNodes()
     index = np.zeros(int(node_tags.max()) + 1, dtype=np.int64)
     index[node_tags.astype(np.int64)] = np.arange(len(node_tags))
-    triangles, face_ids = [], []
+    points, triangles, face_ids = [np.asarray(coords).reshape(-1, 3)], [], []
     for face in (f.id for f in geometry.faces):
         types, _, nodes = gmsh.model.mesh.getElements(2, face)
         for kind, data in zip(types, nodes, strict=True):
@@ -406,12 +409,46 @@ def _tessellate(
                 block = index[np.asarray(data, dtype=np.int64)].reshape(-1, 3)
                 triangles.append(block)
                 face_ids.append(np.full(len(block), face))
+    areas = {f.id: f.area for f in geometry.faces}
+    for face in (u.id for u in unmeshable if areas[u.id] > 0):  # else the inside test is unreliable
+        fill_points, block = _fill(gmsh, face)
+        triangles.append(block + sum(len(p) for p in points))
+        face_ids.append(np.full(len(block), face))
+        points.append(fill_points)
     return (
-        np.asarray(coords).reshape(-1, 3) * _MM,
+        np.concatenate(points) * _MM,
         np.concatenate(triangles) if triangles else np.zeros((0, 3), dtype=np.int64),
         np.concatenate(face_ids) if face_ids else np.zeros(0, dtype=np.int64),
         unmeshable,
     )
+
+
+def _fill(gmsh, face: int) -> tuple[np.ndarray, np.ndarray]:
+    """Display points (mm) and triangles of a face Gmsh cannot mesh, from grids over its parameters.
+
+    A coarse grid over the parametrisation bounds, often far wider than the face, finds where it lies; a finer
+    grid over that box gives two triangles per cell whose corners are all inside the trimmed face.
+    """
+    coarse, n = 60, 40
+    lo, hi = (np.asarray(b) for b in gmsh.model.getParametrizationBounds(2, face))
+    uv, inside = _grid(gmsh, face, lo, hi, coarse)
+    if not inside.any():
+        return np.zeros((0, 3)), np.zeros((0, 3), dtype=np.int64)
+    step = (hi - lo) / (coarse - 1)
+    uv, inside = _grid(gmsh, face, uv[inside].min(axis=0) - step, uv[inside].max(axis=0) + step, n)
+    i = np.arange(n * n).reshape(n, n)
+    a, b, c, d = i[:-1, :-1], i[:-1, 1:], i[1:, 1:], i[1:, :-1]
+    cell = inside[a] & inside[b] & inside[c] & inside[d]
+    triangles = np.concatenate([np.stack([a[cell], b[cell], c[cell]], 1), np.stack([a[cell], c[cell], d[cell]], 1)])
+    return np.asarray(gmsh.model.getValue(2, face, uv.ravel())).reshape(-1, 3), triangles
+
+
+def _grid(gmsh, face, lo, hi, n) -> tuple[np.ndarray, np.ndarray]:
+    """An ``n`` by ``n`` grid of parameters from ``lo`` to ``hi``, row by row, and which lie inside ``face``."""
+    u, v = np.meshgrid(np.linspace(lo[0], hi[0], n), np.linspace(lo[1], hi[1], n))
+    uv = np.column_stack([u.ravel(), v.ravel()])
+    # Gmsh returns how many points lie inside, so each is tested alone.
+    return uv, np.array([gmsh.model.isInside(2, face, list(p), parametric=True) for p in uv], dtype=bool)
 
 
 def _mesh_surfaces(gmsh, faces: Sequence[CadFace]) -> tuple[CadUnmeshableFace, ...]:

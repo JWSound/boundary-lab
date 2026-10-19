@@ -651,6 +651,24 @@ def test_local_surface_model_reports_its_two_unmeshable_tori():
 
 
 @pytest.mark.skipif(not MESH_IMPORT.is_file(), reason="local-only fixture")
+def test_local_surface_model_fills_both_unmeshable_tori_for_display_only():
+    preview = open_step(MESH_IMPORT)
+
+    assert [u.id for u in preview.geometry.unmeshable] == [47, 50]
+    for face in (47, 50):
+        fill = preview.points[preview.triangles[preview.face_ids == face]]
+        assert len(fill) > 100
+        # Both tori lie near (-44, 44, 5) mm, about 13 mm round, where the read warns of open edges.
+        assert np.allclose(fill.reshape(-1, 3).mean(axis=0), [-0.044, 0.044, 0.005], atol=0.005)
+    moved = place_preview(preview, translation_m=(0.0, 0.0, 0.1))
+    assert np.array_equal(moved.face_ids, preview.face_ids)
+    assert np.allclose(moved.points, preview.points + [0.0, 0.0, 0.1])
+    round_trip = preview_from_json(json.loads(json.dumps(preview_to_json(preview))))
+    assert np.array_equal(round_trip.face_ids, preview.face_ids)
+    assert np.array_equal(round_trip.triangles, preview.triangles)
+
+
+@pytest.mark.skipif(not MESH_IMPORT.is_file(), reason="local-only fixture")
 def test_a_face_bounded_only_by_seams_still_has_curves_to_draw():
     preview = open_step(MESH_IMPORT)
     openings = preview.openings
@@ -684,6 +702,7 @@ def test_unmeshable_face_is_named_and_the_other_faces_are_still_tessellated(bore
     assert unmeshable.id == torus.id
     assert unmeshable.reason == f"Impossible to mesh periodic surface {torus.id}; area reads as negative"
     assert torus.area < 0  # legal in the faces
+    # Its area reads negative, so no fill: the inside test is unreliable on this doubly covered surface.
     assert set(preview.face_ids.tolist()) == {f.id for f in geometry.faces} - {torus.id}
     assert inspect_step(bored_ball_step).unmeshable == geometry.unmeshable
 
