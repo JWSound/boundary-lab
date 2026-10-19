@@ -1361,6 +1361,74 @@ def test_other_faces_are_grouped_and_sized_while_unmeshable_faces_are_listed(bal
     assert editor.selected_faces() == {face} and len(unmeshable_rows(editor)) == 1
 
 
+def checked_faces(editor):
+    """The faces whose every tree row is checked."""
+    rows = {}
+    for body in body_items(editor).values():
+        for item in children_items(faces_row(body)):
+            rows.setdefault(item_face(item), []).append(item.checkState(0) == Qt.CheckState.Checked)
+    return {face for face, checks in rows.items() if all(checks)}
+
+
+def test_showing_an_unmeshable_face_shows_only_its_body_and_selects_and_marks_it(ball_editor):
+    editor, _ = ball_editor
+    torus = torus_face(editor)
+
+    editor.show_unmeshable(torus)
+
+    assert editor.visible_faces() == body_faces(editor, "Ball") == checked_faces(editor)
+    assert body_items(editor)["Cabinet"].checkState(0) == Qt.CheckState.Unchecked
+    assert body_items(editor)["Ball"].checkState(0) == Qt.CheckState.Checked
+    assert editor.selected_faces() == {torus}
+    assert editor.status.text() == f"Face {torus} · Group 'walls'"
+    assert {i.row() for i in editor.groups_table.selectedItems()} == {row_of(editor, "walls")}
+
+
+def test_showing_a_face_shared_by_an_air_body_and_the_exterior_shows_both_bodies(cad_editor, qapp, tmp_path):
+    editor, _ = cad_editor
+    editor.set_step_path(str(vented_box(tmp_path / "covered.step", covered=True)))
+    wait(qapp, lambda: not editor.loading)
+    (mouth,) = [f["id"] for f in editor.geometry["faces"] if set(f["bodies"]) == {"Port", "Cabinet"}]
+
+    editor.show_unmeshable(mouth)
+
+    assert editor.visible_faces() == body_faces(editor, "Port") | body_faces(editor, "Cabinet") == checked_faces(editor)
+    assert editor.visible_faces().isdisjoint(body_faces(editor, "Chamber") - body_faces(editor, "Port"))
+    assert editor.selected_faces() == {mouth}
+
+
+def test_showing_another_face_switches_and_show_all_and_clear_restore_everything(ball_editor):
+    editor, _ = ball_editor
+    every = {f["id"] for f in editor.geometry["faces"]}
+    side = cabinet_faces(editor, lambda f: True)[0]
+    editor.show_unmeshable(torus_face(editor))
+
+    editor.show_unmeshable(side)
+    assert editor.visible_faces() == body_faces(editor, "Cabinet") == checked_faces(editor)
+    assert editor.selected_faces() == {side}
+
+    editor.show_all_button.click()
+    assert editor.visible_faces() == every == checked_faces(editor)
+    assert editor.selected_faces() == {side}
+
+    editor.show_unmeshable(torus_face(editor))
+    editor.clear_button.click()
+    assert editor.visible_faces() == every == checked_faces(editor)
+    assert editor.selected_faces() == set()
+
+
+def test_clicking_an_unmeshable_faces_row_shows_its_face(ball_editor):
+    editor, _ = ball_editor
+    torus = torus_face(editor)
+    row = editor.unmeshable_list.item(0)
+
+    editor.unmeshable_list.itemClicked.emit(row)
+
+    assert editor.visible_faces() == body_faces(editor, "Ball")
+    assert editor.selected_faces() == {torus}
+    assert editor.status.text() == f"Face {torus} · Group 'walls'"
+
+
 @pytest.fixture
 def menus(cad_editor, monkeypatch):
     """The entries of each menu opened."""

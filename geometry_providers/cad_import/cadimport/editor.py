@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
+    QListWidgetItem,
     QMenu,
     QMessageBox,
     QPushButton,
@@ -138,11 +139,21 @@ class Viewport(QWidget):
         self.plotter.installEventFilter(self)
 
     def show_faces(
-        self, preview, visible, selected=frozenset(), colours=None, *, hovered=None, guides=None, reset_camera=False
+        self,
+        preview,
+        visible,
+        selected=frozenset(),
+        colours=None,
+        *,
+        outlines=(),
+        hovered=None,
+        guides=None,
+        reset_camera=False,
     ):
         """Draw the ``visible`` faces smooth with their outlines, in their ``colours`` (face id -> colour, default
-        plain), ``selected`` in orange and ``hovered`` (a face id) pale or, when selected, dark orange. ``guides``
-        (a bounding box, m) draws the axes and symmetry planes around it."""
+        plain), ``selected`` in orange and ``hovered`` (a face id) pale or, when selected, dark orange. ``outlines``
+        (sampled edges, m, of faces without triangles) are drawn in orange. ``guides`` (a bounding box, m) draws the
+        axes and symmetry planes around it."""
         import pyvista as pv
 
         self.plotter.clear()
@@ -182,10 +193,26 @@ class Viewport(QWidget):
                     pickable=False,
                     reset_camera=False,
                 )
+            for edges in outlines:  # (edge, point, xyz): a polyline per edge
+                n, k = edges.shape[:2]
+                lines = np.hstack([np.full((n, 1), k), np.arange(n * k).reshape(n, k)]).ravel()
+                self.plotter.add_mesh(
+                    pv.PolyData(edges.reshape(-1, 3), lines=lines),
+                    color=SELECTED_COLOUR,
+                    line_width=4,
+                    pickable=False,
+                    reset_camera=False,
+                )
             if guides is not None:
                 self._show_guides(guides)
             if reset_camera:
                 self.plotter.view_xy()  # along -Z: Z towards the viewer, Y up, X to the right
+        self.plotter.render()
+
+    def frame(self, points):
+        """Point the camera at ``points`` (m) so that they fill the view."""
+        points = np.reshape(points, (-1, 3))
+        self.plotter.reset_camera(bounds=np.column_stack([points.min(axis=0), points.max(axis=0)]).ravel())
         self.plotter.render()
 
     def _show_guides(self, bbox_m):
@@ -332,6 +359,8 @@ class CadImportEditor:
         unmeshable_layout = QVBoxLayout(self.unmeshable_box)
         self.unmeshable_list = QListWidget()
         self.unmeshable_list.setAccessibleName("Unmeshable faces")
+        self.unmeshable_list.setToolTip("Click a face to show only its bodies, select it and frame it.")
+        self.unmeshable_list.itemClicked.connect(lambda item: self.show_unmeshable(item.data(FACE_ROLE)))
         unmeshable_layout.addWidget(self.unmeshable_list)
         self.unmeshable_box.hide()
         layout.addWidget(self.unmeshable_box)
@@ -680,10 +709,12 @@ class CadImportEditor:
             for face_id, reason in unmeshable.items():
                 face = faces[face_id]
                 centre = ", ".join(str(round(v * 1000)) for v in face["centre"])
-                self.unmeshable_list.addItem(
+                item = QListWidgetItem(
                     f"{_face_label(face)} · {face['surface_type']} · "
                     f"{' and '.join(face['bodies'])} · near ({centre}) mm · {reason}"
                 )
+                item.setData(FACE_ROLE, face_id)
+                self.unmeshable_list.addItem(item)
             warning_icon = self.widget.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxWarning)
             roles = {shell["name"]: shell["role"] for shell in self.geometry["closed_shells"]}
             checkable = Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable
@@ -954,15 +985,29 @@ class CadImportEditor:
         return next(body for body in self.geometry["bodies"] if body["name"] == name)
 
     def show_all(self):
-        self._syncing = True
-        for items in self._face_items.values():
-            for item in items:
-                item.setCheckState(0, Qt.CheckState.Checked)
-        for body in self._body_items.values():
-            body.setCheckState(0, Qt.CheckState.Checked)
-        self._syncing = False
-        self._hidden.clear()
+        self._show_only(set(self._face_items))
         self._render()
+
+    def _show_only(self, shown):
+        """Check the tree rows of the ``shown`` faces, uncheck the others, and hide those."""
+        self._syncing = True
+        for face, items in self._face_items.items():
+            for item in items:
+                item.setCheckState(0, Qt.CheckState.Checked if face in shown else Qt.CheckState.Unchecked)
+        for body in self._body_items.values():
+            self._show_body_check(body.child(body.childCount() - 1))
+        self._syncing = False
+        self._hidden = set(self._face_items) - shown
+
+    def show_unmeshable(self, face_id):
+        """Show only the bodies containing unmeshable ``face_id``, select and mark it, and frame it."""
+        self._show_only(
+            set().union(*(body["face_ids"] for body in self.geometry["bodies"] if face_id in body["face_ids"]))
+        )
+        self.select_faces({face_id})
+        self.mark_face(face_id)
+        self._render()
+        self.viewport.frame(self._preview["edges"][face_id])
 
     def clear(self):
         """Show everything and clear the selection."""
@@ -972,11 +1017,14 @@ class CadImportEditor:
     def _render(self, *, reset_camera=False):
         colours = self.group_colours()
         face_colours = {face: colours[name] for name, faces, _ in self.rows() for face in faces}
+        unmeshable = {u["id"] for u in self.geometry["unmeshable"]} if self.geometry is not None else set()
+        outlined = self.visible_faces() & self.selected_faces() & unmeshable  # no triangles to colour
         self.viewport.show_faces(
             self._preview,
             self.visible_faces(),
             self.selected_faces(),
             face_colours,
+            outlines=[self._preview["edges"][face] for face in outlined],
             hovered=self._hover,
             guides=self.geometry["bbox_m"] if self.geometry is not None and self.guides_check.isChecked() else None,
             reset_camera=reset_camera,
@@ -1301,8 +1349,11 @@ class CadImportEditor:
 
 
 def _view(preview):
-    """What the viewport draws of a scan or preview."""
-    return {"points": preview.points, "triangles": preview.triangles, "face_ids": preview.face_ids}
+    """What the viewport draws of a scan or preview; ``edges`` are each face's sampled boundary edges (m)."""
+    openings = preview.openings
+    points = dict(zip(openings.edges, openings.edge_points, strict=True))
+    edges = {face: np.array([points[e] for e in face_edges]) for face, face_edges in openings.face_edges.items()}
+    return {"points": preview.points, "triangles": preview.triangles, "face_ids": preview.face_ids, "edges": edges}
 
 
 def _face_label(face):
