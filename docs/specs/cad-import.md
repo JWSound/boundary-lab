@@ -165,7 +165,7 @@ Re-importing an edited STEP file keeps every assignment whose faces can still be
   - the face groups: each a name, its member faces' STEP names if present, and geometric fingerprints (taken in CAD axes, before the placement, so changing the placement keeps the groups);
   - the closed shell choices: closed shell name → `air` or `exterior`.
 - **Meshing pipeline** (headless, in the provider's worker process):
-  1. Read the STEP file with Gmsh's OpenCASCADE kernel, in metres.
+  1. Read the STEP file with Gmsh's OpenCASCADE kernel, in millimetres (OpenCASCADE's fixed tolerance is too coarse in metres); results are reported and written in metres.
   2. Apply the placement, as rigid motions so exact surface types are kept: the rotation about the fixed Boundary Lab axes in the order X, Y, Z about the origin, then the translation.
   3. Classify solids as air bodies and surface bodies as exterior surface bodies. Before that, free faces that close up among themselves through shared edges (each edge used by exactly two of them, as imported, before fragmenting) form a closed shell. Closed shells are named from the STEP if possible, else "Closed shell N" in import order. A closed shell chosen as air becomes a solid (an air body named after the shell); one chosen as exterior stays exterior surface. One without a choice gets the guessed kind: air, unless the file has no exterior surface body other than closed shells, in which case the closed shell with the largest bounding box is exterior and the others air. A choice for a name the file does not contain is rejected.
   4. Fragment all bodies into shared topology.

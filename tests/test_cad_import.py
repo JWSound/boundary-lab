@@ -37,7 +37,7 @@ from blab.cad_import import (
 from blab.cad_import import cli as cad_cli
 from blab.cad_import.sizing import legacy_sizes, migrated, read_face_sizes
 from blab.interface_conform import validate_conforming_interfaces
-from cad_fixtures import named_sides, strip_names, two_chambers, vented_box, waveguide
+from cad_fixtures import bored_ball, named_sides, strip_names, two_chambers, vented_box, waveguide
 
 # Target element size 343 / 3430 / 5 = 20 mm.
 SETTINGS = CadImportSettings(fmax_hz=3430.0, sound_speed_m_per_s=343.0, elements_per_wavelength=5.0)
@@ -643,6 +643,47 @@ def test_surface_model_with_near_coincident_edges_reads_without_degenerate_faces
 
     assert run.returncode == 0, run.stderr
     assert float(run.stdout) > 1e-9  # m², a 0.03 mm square
+
+
+@pytest.mark.skipif(not MESH_IMPORT.is_file(), reason="local-only fixture")
+def test_local_surface_model_reports_its_two_unmeshable_tori():
+    assert [u.id for u in inspect_step(MESH_IMPORT).unmeshable] == [47, 50]
+
+
+@pytest.fixture(scope="module")
+def bored_ball_step(tmp_path_factory):
+    """A ball whose one torus face Gmsh cannot mesh, inside a cabinet."""
+    return bored_ball(tmp_path_factory.mktemp("bored_ball") / "ball.step")
+
+
+def test_unmeshable_face_is_named_and_the_other_faces_are_still_tessellated(bored_ball_step):
+    preview = open_step(bored_ball_step)
+    geometry = preview.geometry
+
+    (torus,) = [f for f in geometry.faces if f.surface_type == "Torus"]
+    (unmeshable,) = geometry.unmeshable
+    assert unmeshable.id == torus.id
+    assert unmeshable.reason == f"Impossible to mesh periodic surface {torus.id}; area reads as negative"
+    assert torus.area < 0  # legal in the faces
+    assert set(preview.face_ids.tolist()) == {f.id for f in geometry.faces} - {torus.id}
+    assert inspect_step(bored_ball_step).unmeshable == geometry.unmeshable
+
+
+def test_unmeshable_faces_follow_placement_and_survive_json(bored_ball_step, vented):
+    preview = open_step(bored_ball_step)
+    unmeshable = preview.geometry.unmeshable
+
+    assert place_preview(preview, rotation_deg=(0.0, 0.0, 90.0)).geometry.unmeshable == unmeshable
+    assert preview_from_json(json.loads(json.dumps(preview_to_json(preview)))).geometry.unmeshable == unmeshable
+    result = replace(vented, geometry=preview.geometry)
+    assert result_from_json(json.loads(json.dumps(result_to_json(result)))) == result
+
+
+def test_a_good_file_has_no_unmeshable_faces_and_every_face_is_tessellated(tmp_path):
+    preview = open_step(vented_box(tmp_path / "box.step"))
+
+    assert preview.geometry.unmeshable == ()
+    assert set(preview.face_ids.tolist()) == {f.id for f in preview.geometry.faces}
 
 
 def test_closed_shell_chosen_as_air_becomes_a_bounded_region_with_an_interface(surface_model, tmp_path):

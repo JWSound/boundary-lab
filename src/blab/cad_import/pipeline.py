@@ -156,7 +156,17 @@ class CadClosedShell:
 
 
 @dataclass(frozen=True)
+class CadUnmeshableFace:
+    """A face (``CadFace.id``) that Gmsh's 2D mesher rejects, with the reason it gave."""
+
+    id: int
+    reason: str
+
+
+@dataclass(frozen=True)
 class CadGeometry:
+    """A read STEP file. A face whose area reads as zero or negative is legal in ``faces``."""
+
     bodies: tuple[CadBody, ...]
     faces: tuple[CadFace, ...]
     regions: tuple[CadRegion, ...]
@@ -165,6 +175,7 @@ class CadGeometry:
     symmetry: str  # suggested project symmetry: "off" | "x" | "xy"
     warnings: tuple[str, ...]
     closed_shells: tuple[CadClosedShell, ...] = ()
+    unmeshable: tuple[CadUnmeshableFace, ...] = ()  # found by the coarse display tessellation
 
 
 @dataclass(frozen=True)
@@ -190,10 +201,12 @@ def inspect_step(
     translation_m: Sequence[float] = ZERO,
     closed_shells: Mapping[str, str] | None = None,
 ) -> CadGeometry:
-    """Read, place, classify and fragment a STEP file without meshing it."""
+    """Read, place, classify and fragment a STEP file; its mesh is only the display tessellation."""
     placement = _placement(rotation_deg, translation_m)
     with _gmsh_session() as gmsh:
-        return _analyse(gmsh, Path(step_path), placement, closed_shells or {}).geometry
+        geometry = _analyse(gmsh, Path(step_path), placement, closed_shells or {}).geometry
+        *_, unmeshable = _tessellate(gmsh, geometry)
+        return replace(geometry, unmeshable=unmeshable)
 
 
 @dataclass(frozen=True)
@@ -237,14 +250,14 @@ def open_step(
     translation_m: Sequence[float] = ZERO,
     closed_shells: Mapping[str, str] | None = None,
 ) -> CadPreview:
-    """Read a STEP file for display with that placement."""
+    """Read a STEP file for display with that placement; unmeshable faces get no triangles."""
     placement = _placement(rotation_deg, translation_m)
     with _gmsh_session() as gmsh:
         model = _analyse(gmsh, Path(step_path), placement, closed_shells or {})
-        geometry = model.geometry
+        *tessellation, unmeshable = _tessellate(gmsh, model.geometry)
         return CadPreview(
-            geometry,
-            *_tessellate(gmsh, [face.id for face in geometry.faces], geometry.bbox_m),
+            replace(model.geometry, unmeshable=unmeshable),
+            *tessellation,
             openings=model.openings,
             **_shown(rotation_deg, translation_m),
         )
@@ -368,19 +381,22 @@ def _geometry_from_json(g: Mapping) -> CadGeometry:
         g["symmetry"],
         tuple(g["warnings"]),
         tuple(CadClosedShell(s["name"], s["role"], tuple(s["face_ids"])) for s in g["closed_shells"]),
+        tuple(CadUnmeshableFace(u["id"], u["reason"]) for u in g["unmeshable"]),
     )
 
 
-def _tessellate(gmsh, faces, bbox_m) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Coarse display triangles of ``faces``: points, triangles, face id per triangle."""
-    gmsh.option.setNumber("Mesh.MeshSizeMax", math.dist(*bbox_m) / 30 / _MM)
+def _tessellate(
+    gmsh, geometry: CadGeometry
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, tuple[CadUnmeshableFace, ...]]:
+    """Coarse display triangles of the faces: points, triangles, face id per triangle; and the unmeshable faces."""
+    gmsh.option.setNumber("Mesh.MeshSizeMax", math.dist(*geometry.bbox_m) / 30 / _MM)
     gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 12)
-    gmsh.model.mesh.generate(2)
+    unmeshable = _mesh_surfaces(gmsh, geometry.faces)
     node_tags, coords, _ = gmsh.model.mesh.getNodes()
     index = np.zeros(int(node_tags.max()) + 1, dtype=np.int64)
     index[node_tags.astype(np.int64)] = np.arange(len(node_tags))
     triangles, face_ids = [], []
-    for face in faces:
+    for face in (f.id for f in geometry.faces):
         types, _, nodes = gmsh.model.mesh.getElements(2, face)
         for kind, data in zip(types, nodes, strict=True):
             if kind == 2:
@@ -391,7 +407,47 @@ def _tessellate(gmsh, faces, bbox_m) -> tuple[np.ndarray, np.ndarray, np.ndarray
         np.asarray(coords).reshape(-1, 3) * _MM,
         np.concatenate(triangles) if triangles else np.zeros((0, 3), dtype=np.int64),
         np.concatenate(face_ids) if face_ids else np.zeros(0, dtype=np.int64),
+        unmeshable,
     )
+
+
+def _mesh_surfaces(gmsh, faces: Sequence[CadFace]) -> tuple[CadUnmeshableFace, ...]:
+    """Mesh the model in 2D, leaving out the ``faces`` the mesher rejects; returns those.
+
+    Gmsh stops at the first face it cannot mesh, so after a failed pass each face is meshed
+    alone to find them all, then the others together.
+    """
+    try:
+        gmsh.model.mesh.generate(2)
+        return ()
+    except Exception:  # Gmsh raises plain Exceptions
+        gmsh.model.mesh.clear()
+    entities = gmsh.model.getEntities()
+    gmsh.option.setNumber("Mesh.MeshOnlyVisible", 1)
+    try:
+        unmeshable = []
+        for face in faces:
+            _show(gmsh, entities, [face.id])
+            try:
+                gmsh.model.mesh.generate(2)
+            except Exception as exc:
+                reason = str(exc)
+                if face.area <= 0:
+                    reason += f"; area reads as {'zero' if face.area == 0 else 'negative'}"
+                unmeshable.append(CadUnmeshableFace(face.id, reason))
+        left_out = {u.id for u in unmeshable}
+        _show(gmsh, entities, [t for d, t in entities if d == 2 and t not in left_out])
+        gmsh.model.mesh.generate(2)
+    finally:
+        gmsh.model.setVisibility(entities, 1)
+        gmsh.option.setNumber("Mesh.MeshOnlyVisible", 0)
+    return tuple(unmeshable)
+
+
+def _show(gmsh, entities, faces) -> None:
+    """Make only ``faces`` and their boundaries visible."""
+    gmsh.model.setVisibility(entities, 0)
+    gmsh.model.setVisibility([(2, f) for f in faces], 1, recursive=True)
 
 
 def _shown(rotation_deg, translation_m) -> dict:

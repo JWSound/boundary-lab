@@ -213,6 +213,29 @@ def waveguide(path: Path, *, surface_model: bool = False, covered: bool = False)
     return path
 
 
+def bored_ball(path: Path) -> Path:
+    """A ball (r 12.7 mm) with a tilted bore (r 9 mm) through it, inside a closed cabinet.
+
+    The ball's sphere is written as a torus of tiny negative major radius, as the CAD tool
+    behind the local ``blab Mesh import.STEP`` does: a surface covering the sphere twice. Trimmed
+    by the bore's BSpline edges, that face reads with negative area and Gmsh's 2D mesher rejects
+    it; every other face meshes.
+    """
+
+    def build():
+        occ = gmsh.model.occ
+        ball, _ = occ.cut([(3, occ.addSphere(0, 0, 0, 12.7))], [(3, occ.addCylinder(-30, 4, -8, 60, 0, 16, 9))])
+        cabinet = _cabinet(60, 60, 120)
+        occ.translate(cabinet, 0, 0, 60)
+        return ball + cabinet, ["Ball"] + ["Cabinet"] * len(cabinet)
+
+    write_step(path, build)
+    text = path.read_text(encoding="utf-8")
+    text = re.sub(r"SPHERICAL_SURFACE\('',(#\d+),", r"TOROIDAL_SURFACE('',\1,-1.7E-05,", text)
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
 def two_chambers(path: Path) -> Path:
     """Two separate ported chambers side by side behind one cabinet with two holes."""
 

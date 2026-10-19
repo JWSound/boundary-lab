@@ -47,6 +47,10 @@ _Avoid_: Surface solid, watertight body
 A named set of geometry faces that becomes one physical surface group in a mesh. Faces in no other face group form the **walls** face group; each detected interface has its own face group on each side, whose faces detection decides. A face group **needs review** when the current STEP file no longer has all of its stored faces; generation is rejected until it is re-picked or deleted.
 _Avoid_: Tag, patch, selection
 
+**Unmeshable face**:
+A face of imported CAD geometry that Gmsh's 2D mesher rejects, usually a face malformed in the STEP file. Reading still shows the other faces; generation is rejected until the face is fixed in CAD.
+_Avoid_: Bad face, broken face, failed face
+
 **Placement**:
 The rotation and translation that put imported CAD geometry into Boundary Lab coordinates.
 _Avoid_: Transform, offset, pose, Forward/Up
