@@ -1380,9 +1380,9 @@ def test_the_view_comes_first_then_warnings_unmeshable_faces_placement_and_the_t
         [editor.step_path, editor.info, splitter, editor.groups_box, editor.fineness, editor.status],
     )
     panel = splitter.widget(1)
-    assert isinstance(panel, QScrollArea) and panel.widgetResizable()  # scrolls as a whole when it no longer fits
+    assert not isinstance(panel, QScrollArea)  # no outer scroll box: each list scrolls on its own
     assert in_order(
-        laid_out(panel.widget()),
+        laid_out(panel),
         [editor.warnings, editor.unmeshable_box, editor.placement_box, editor.tree, editor.show_all_button],
     )
 

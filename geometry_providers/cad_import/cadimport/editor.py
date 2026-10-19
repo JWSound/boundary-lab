@@ -21,7 +21,6 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
     QFormLayout,
-    QFrame,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -33,7 +32,6 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
-    QScrollArea,
     QSplitter,
     QStyle,
     QTableWidget,
@@ -477,11 +475,7 @@ class CadImportEditor:
         buttons.addStretch()
         buttons.addWidget(self.guides_check)
         tree_layout.addLayout(buttons)
-        scroll = QScrollArea()  # scrolls as a whole rather than squeezing its lists
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setWidget(tree_panel)
-        splitter.addWidget(scroll)
+        splitter.addWidget(tree_panel)
         layout.addWidget(splitter, 1)
 
         self.groups_box = QGroupBox("Face groups")
