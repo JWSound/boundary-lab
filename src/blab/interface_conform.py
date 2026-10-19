@@ -304,6 +304,15 @@ def conform_bem_interface_to_fem(
     adjacent_mask = (
         (~bem_interface_mask) & (~protected_mask) & (triangle_plane_deviation <= resolved_geometry_tolerance)
     )
+    adjacent_mask = _opening_connected_triangles(
+        bem_mesh.points,
+        bem_data.triangles,
+        bem_data.physical_tags,
+        adjacent_mask,
+        bem_mesh.points[old_bem_opening_path],
+        tolerance=resolved_geometry_tolerance,
+        closed=not interface_symmetry_axes,
+    )
     if not np.any(adjacent_mask):
         raise InterfaceConformError(
             "Could not find a planar non-interface BEM surface surrounding the interface perimeter. "
@@ -877,6 +886,53 @@ def _boundary_loops(triangles: np.ndarray) -> list[np.ndarray]:
             previous, current = current, next_vertex
         loops.append(np.asarray(loop, dtype=np.int64))
     return loops
+
+
+def _opening_connected_triangles(
+    points: np.ndarray,
+    triangles: np.ndarray,
+    physical_tags: np.ndarray,
+    candidates: np.ndarray,
+    opening: np.ndarray,
+    *,
+    tolerance: float,
+    closed: bool,
+) -> np.ndarray:
+    """Keep edge-connected planar patches that border the opening.
+
+    Match seed edges geometrically so separately indexed interface seams remain
+    supported. Require one physical tag at the opening and propagate within that
+    tag through shared edges, never through a lone vertex. Other coplanar surfaces
+    may meet the patch's outer perimeter without belonging to the remesh region.
+    """
+    edge_faces: dict[tuple[int, int], list[int]] = defaultdict(list)
+    for index in np.flatnonzero(candidates):
+        a, b, c = map(int, triangles[index])
+        for edge in ((a, b), (b, c), (c, a)):
+            edge_faces[tuple(sorted(edge))].append(int(index))
+    selected = np.zeros(len(triangles), dtype=bool)
+    if not edge_faces:
+        return selected
+    edges = np.asarray(list(edge_faces), dtype=np.int64)
+    samples = np.stack((points[edges[:, 0]], points[edges[:, 1]], points[edges].mean(axis=1)), axis=1)
+    path = np.vstack((opening, opening[0])) if closed else opening
+    distances = _points_to_open_polyline_distances(samples.reshape(-1, 3), path).reshape(-1, 3)
+    pending = [face for edge in edges[np.all(distances <= tolerance, axis=1)] for face in edge_faces[tuple(edge)]]
+    if len(np.unique(physical_tags[pending])) > 1:
+        raise InterfaceConformError("The surrounding BEM surface must have exactly one physical tag.")
+    while pending:
+        index = pending.pop()
+        if selected[index]:
+            continue
+        selected[index] = True
+        a, b, c = map(int, triangles[index])
+        for edge in ((a, b), (b, c), (c, a)):
+            pending.extend(
+                face
+                for face in edge_faces[tuple(sorted(edge))]
+                if not selected[face] and physical_tags[face] == physical_tags[index]
+            )
+    return selected
 
 
 def _surface_boundary_edges(triangles: np.ndarray) -> np.ndarray:
