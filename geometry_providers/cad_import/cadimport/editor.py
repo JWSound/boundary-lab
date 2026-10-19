@@ -430,9 +430,11 @@ class CadImportEditor:
                 spins.append(spin)
             placement_form.addRow(label, row)
         tree_layout.addWidget(self.placement_box)
+        self.tree_box = QGroupBox("Bodies and faces")
+        tree_box_layout = QVBoxLayout(self.tree_box)
         self.hint = QLabel()
         self.hint.setWordWrap(True)
-        tree_layout.addWidget(self.hint)
+        tree_box_layout.addWidget(self.hint)
         self.tree = QTreeWidget()
         self.tree.setColumnCount(3)
         self.tree.setHeaderLabels(["Body / face", "Mesh size", "Kind"])
@@ -459,7 +461,7 @@ class CadImportEditor:
         )
         self._size_rows = []  # (Mesh size dropdown, face ids, air-body volumes) of each tree row
         self.tree.itemSelectionChanged.connect(self._selection_changed)
-        tree_layout.addWidget(self.tree)
+        tree_box_layout.addWidget(self.tree)
         buttons = QHBoxLayout()
         self.show_all_button = QPushButton("Show all")
         self.show_all_button.clicked.connect(self.show_all)
@@ -474,7 +476,8 @@ class CadImportEditor:
         buttons.addWidget(self.clear_button)
         buttons.addStretch()
         buttons.addWidget(self.guides_check)
-        tree_layout.addLayout(buttons)
+        tree_box_layout.addLayout(buttons)
+        tree_layout.addWidget(self.tree_box)
         splitter.addWidget(tree_panel)
         layout.addWidget(splitter, 1)
 
@@ -511,7 +514,8 @@ class CadImportEditor:
         groups_layout.addWidget(self.groups_table)
         layout.addWidget(self.groups_box)
 
-        form = QFormLayout()
+        self.sizing_box = QGroupBox("Mesh sizes")
+        form = QFormLayout(self.sizing_box)
         self.fineness = QComboBox()
         for name, n in LEVELS.items():
             self.fineness.addItem(name, n)
@@ -545,7 +549,7 @@ class CadImportEditor:
         self.target_label = QLabel()
         self.target_label.setWordWrap(True)
         form.addRow(self.target_label)
-        layout.addLayout(form)
+        layout.addWidget(self.sizing_box)
 
         self.status = QLabel("Use Generate to create the meshes.")
         self.status.setWordWrap(True)

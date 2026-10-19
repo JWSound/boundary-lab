@@ -1377,14 +1377,16 @@ def test_the_view_comes_first_then_warnings_unmeshable_faces_placement_and_the_t
     assert isinstance(splitter, QSplitter) and splitter.widget(0) is editor.viewport
     assert in_order(
         laid_out(editor.widget),
-        [editor.step_path, editor.info, splitter, editor.groups_box, editor.fineness, editor.status],
+        [editor.step_path, editor.info, splitter, editor.groups_box, editor.sizing_box, editor.status],
     )
     panel = splitter.widget(1)
     assert not isinstance(panel, QScrollArea)  # no outer scroll box: each list scrolls on its own
     assert in_order(
         laid_out(panel),
-        [editor.warnings, editor.unmeshable_box, editor.placement_box, editor.tree, editor.show_all_button],
+        [editor.warnings, editor.unmeshable_box, editor.placement_box, editor.tree_box],
     )
+    assert in_order(laid_out(editor.tree_box), [editor.hint, editor.tree, editor.show_all_button])
+    assert editor.fineness in laid_out(editor.sizing_box)
 
 
 def test_warnings_are_red_in_both_themes_and_the_status_line_is_not(ball_editor, qapp):
