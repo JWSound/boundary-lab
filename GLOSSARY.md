@@ -31,6 +31,10 @@ _Avoid_: Radiator (ambiguous with the legacy group name)
 A geometry design that turns one STEP geometry, its face groups, and sizing into a mesh assembly with physical assignments.
 _Avoid_: STEP import (names only the file step), fusion2msh
 
+**CAD bridge**:
+A plugin inside a CAD tool that exports the chosen bodies as geometry for CAD import, together with the CAD tool's own identity of each face, so face groups survive CAD edits.
+_Avoid_: CAD plugin, exporter, Fusion2Msh
+
 **Air body**:
 A solid in imported CAD geometry that represents an air volume (rear chamber, port, waveguide throat) and becomes a bounded region.
 _Avoid_: Solid, cavity, chamber body
