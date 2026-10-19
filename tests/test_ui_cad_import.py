@@ -20,7 +20,7 @@ from blab.cad_import import inspect_step
 from blab.generators import catalog as catalog_module
 from blab.physical_compiler import PhysicalSystemCompiler
 from blab.ui.settings import load_gui_preferences, save_gui_preferences
-from cad_fixtures import named_sides, strip_names, vented_box, waveguide
+from cad_fixtures import bored_ball, named_sides, strip_names, vented_box, waveguide
 from conftest import _stub_qt_interactor_class
 from test_cad_import_provider import PROVIDER, ROOT
 from test_ui_settings import MemorySettings
@@ -1274,6 +1274,91 @@ def test_the_view_opens_looking_along_minus_z_and_resets_on_loading_a_file(cad_e
     wait(qapp, lambda: not editor.loading)
 
     assert "view_xy" in plotter.calls
+
+
+def unmeshable_rows(editor):
+    return [editor.unmeshable_list.item(i).text() for i in range(editor.unmeshable_list.count())]
+
+
+@pytest.fixture
+def ball_editor(cad_editor, qapp, tmp_path):
+    """The CAD Import design with the bored ball loaded: its torus face cannot be meshed."""
+    editor, host = cad_editor
+    editor.set_step_path(str(bored_ball(tmp_path / "ball.step")))
+    wait(qapp, lambda: not editor.loading)
+    return editor, host
+
+
+def torus_face(editor):
+    (face,) = [f["id"] for f in editor.geometry["faces"] if f["surface_type"] == "Torus"]
+    return face
+
+
+def listed_position(editor):
+    """The position, mm, of the one Unmeshable faces row."""
+    (row,) = unmeshable_rows(editor)
+    return np.array([int(v) for v in re.search(r"near \((-?\d+), (-?\d+), (-?\d+)\) mm", row).groups()])
+
+
+def test_a_good_file_shows_no_unmeshable_faces_list(cad_editor):
+    editor, _ = cad_editor
+
+    assert editor.unmeshable_box.isHidden() and unmeshable_rows(editor) == []
+    assert "cannot be meshed" not in editor.info.text()
+
+
+def test_unmeshable_faces_are_listed_with_their_name_type_body_position_and_reason(ball_editor):
+    editor, _ = ball_editor
+    torus = torus_face(editor)
+    reason = f"Impossible to mesh periodic surface {torus}; area reads as negative"
+
+    assert not editor.unmeshable_box.isHidden()
+    (row,) = unmeshable_rows(editor)
+    assert re.fullmatch(rf"Face {torus} · Torus · Ball · near \(-?\d+, -?\d+, -?\d+\) mm · {re.escape(reason)}", row)
+    # The ball (r 12.7 mm) sits at the origin: its face centre lies within it.
+    centre = next(f["centre"] for f in editor.geometry["faces"] if f["id"] == torus)
+    assert np.all(np.abs(listed_position(editor)) <= 12)
+    assert np.allclose(listed_position(editor), np.array(centre) * 1000, atol=0.5)
+    assert "1 face cannot be meshed; see the list." in editor.info.text()
+    item = face_item(editor, torus)
+    assert item.toolTip(0) == f"Cannot be meshed: {reason}" and not item.icon(0).isNull()
+    other = face_item(editor, cabinet_faces(editor, lambda f: True)[0])
+    assert other.toolTip(0) == "" and other.icon(0).isNull()
+
+
+def test_the_listed_position_follows_placement_without_reading(ball_editor, monkeypatch):
+    editor, _ = ball_editor
+    reads = record_reads(editor, monkeypatch)
+    before = listed_position(editor)
+
+    editor.translation_spins[0].setValue(100)
+
+    assert reads == [] and not editor.loading
+    assert np.array_equal(listed_position(editor), before + [100, 0, 0])
+
+
+def test_re_reading_a_fixed_file_empties_and_hides_the_list(ball_editor, qapp, tmp_path):
+    editor, _ = ball_editor
+
+    editor.set_step_path(str(vented_box(tmp_path / "fixed.step")))
+    wait(qapp, lambda: not editor.loading)
+
+    assert editor.unmeshable_box.isHidden() and unmeshable_rows(editor) == []
+    assert "cannot be meshed" not in editor.info.text()
+
+
+def test_other_faces_are_grouped_and_sized_while_unmeshable_faces_are_listed(ball_editor):
+    editor, host = ball_editor
+    face = cabinet_faces(editor, lambda f: True)[0]
+
+    editor.pick_face(face)
+    editor.group_selection("Front")
+    editor.set_face_size({face}, FINE)
+
+    source = host.snapshot().source
+    assert [(g["name"], len(g["faces"])) for g in source["face_groups"]] == [("Front", 1)]
+    assert [e["elements_per_wavelength"] for e in source["face_sizes"]] == [6]
+    assert editor.selected_faces() == {face} and len(unmeshable_rows(editor)) == 1
 
 
 @pytest.fixture

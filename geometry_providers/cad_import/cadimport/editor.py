@@ -27,10 +27,12 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QLabel,
     QLineEdit,
+    QListWidget,
     QMenu,
     QMessageBox,
     QPushButton,
     QSplitter,
+    QStyle,
     QTableWidget,
     QTableWidgetItem,
     QTreeWidget,
@@ -325,6 +327,14 @@ class CadImportEditor:
         self.info = QLabel("Open a STEP file: solids become air bodies, surface bodies the exterior.")
         self.info.setWordWrap(True)
         layout.addWidget(self.info)
+        self.unmeshable_box = QGroupBox("Unmeshable faces")
+        self.unmeshable_box.setToolTip("Faces Gmsh cannot mesh: fix them in the CAD tool, then read the file again.")
+        unmeshable_layout = QVBoxLayout(self.unmeshable_box)
+        self.unmeshable_list = QListWidget()
+        self.unmeshable_list.setAccessibleName("Unmeshable faces")
+        unmeshable_layout.addWidget(self.unmeshable_list)
+        self.unmeshable_box.hide()
+        layout.addWidget(self.unmeshable_box)
 
         splitter = QSplitter(Qt.Orientation.Vertical)
         self.viewport = Viewport(picked=self._viewport_picked, menu=self._show_face_menu, hovered=self._hovered)
@@ -662,8 +672,19 @@ class CadImportEditor:
         self.kind_combos = {}
         self._syncing = True
         self.tree.clear()
+        self.unmeshable_list.clear()
+        unmeshable = {} if self.geometry is None else {u["id"]: u["reason"] for u in self.geometry["unmeshable"]}
+        self.unmeshable_box.setHidden(not unmeshable)
         if self.geometry is not None:
             faces = {face["id"]: face for face in self.geometry["faces"]}
+            for face_id, reason in unmeshable.items():
+                face = faces[face_id]
+                centre = ", ".join(str(round(v * 1000)) for v in face["centre"])
+                self.unmeshable_list.addItem(
+                    f"{_face_label(face)} · {face['surface_type']} · "
+                    f"{' and '.join(face['bodies'])} · near ({centre}) mm · {reason}"
+                )
+            warning_icon = self.widget.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxWarning)
             roles = {shell["name"]: shell["role"] for shell in self.geometry["closed_shells"]}
             checkable = Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable
             for body in self.geometry["bodies"]:
@@ -696,10 +717,13 @@ class CadImportEditor:
                 rows.append((faces_item, body_faces, ()))
                 for face_id in body["face_ids"]:
                     face = faces[face_id]
-                    child = QTreeWidgetItem([face["step_name"] or f"Face {face_id}"])
+                    child = QTreeWidgetItem([_face_label(face)])
                     child.setFlags(checkable | Qt.ItemFlag.ItemIsSelectable)
                     child.setData(0, FACE_ROLE, face_id)
                     child.setCheckState(0, Qt.CheckState.Checked)
+                    if face_id in unmeshable:
+                        child.setIcon(0, warning_icon)
+                        child.setToolTip(0, f"Cannot be meshed: {unmeshable[face_id]}")
                     faces_item.addChild(child)
                     self._face_items.setdefault(face_id, []).append(child)
                     rows.append((child, {face_id}, ()))
@@ -711,6 +735,9 @@ class CadImportEditor:
             size = " x ".join(f"{(b - a) * 1000:.1f}" for a, b in zip(low, high, strict=True))
             lines = [f"Size {size} mm · Symmetry {SYMMETRY_LABELS[self.geometry['symmetry']]} suggested"]
             lines += [f"Warning: {warning}" for warning in self.geometry["warnings"]]
+            if unmeshable:
+                count = len(unmeshable)
+                lines.append(f"{count} face{'' if count == 1 else 's'} cannot be meshed; see the list.")
             self.info.setText("\n".join(lines))
         self._syncing = False
         self._show_overrides()
@@ -1276,6 +1303,11 @@ class CadImportEditor:
 def _view(preview):
     """What the viewport draws of a scan or preview."""
     return {"points": preview.points, "triangles": preview.triangles, "face_ids": preview.face_ids}
+
+
+def _face_label(face):
+    """A face's STEP name, else its number."""
+    return face["step_name"] or f"Face {face['id']}"
 
 
 def _file_stamp(path):
