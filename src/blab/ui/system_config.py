@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -238,7 +239,6 @@ class SystemConfigDialog(QDialog):
         self._mesh_file_overrides_by_name: dict[str, str] = {}
         self._interface_status_by_id: dict[str, str] = {}
         self._interface_diagnostics: list[tuple[str, str | None, str, str]] = []
-        self._selected_interface_geometry = None
         self._restored_resources_by_mesh_name: dict[str, MeshResource] = {}
         self._symmetry_mode = normalize_symmetry(symmetry_mode)
         self._interface_output_root = (
@@ -385,26 +385,35 @@ class SystemConfigDialog(QDialog):
         self.interface_details.setReadOnly(True)
         self.interface_details.setPlaceholderText("Select an interface to view its construction details.")
         self.interface_details.setMinimumHeight(110)
-        self.show_interface_pair_button = QPushButton("Show pair in 3D")
-        self.show_interface_pair_button.setEnabled(False)
-        self.show_interface_pair_button.clicked.connect(self._show_interface_pair)
+        self.interface_details_toggle = QToolButton()
+        self.interface_details_toggle.setText("Details and measurements")
+        self.interface_details_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.interface_details_toggle.setArrowType(Qt.ArrowType.RightArrow)
+        self.interface_details_toggle.setCheckable(True)
+        self.interface_details_toggle.toggled.connect(self._set_interface_details_expanded)
+        self.interface_details.hide()
         for column in range(3):
             self.interfaces_table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeMode.Stretch)
         self.interfaces_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         note = QLabel(
             "Interfaces are automatically detected and built from the boundary assignments. "
-            "Select a row for construction details. Failed attempts are not saved as solver interfaces."
+            "Select a row and expand Details and measurements to inspect it. "
+            "Failed attempts are not saved as solver interfaces."
         )
         note.setWordWrap(True)
         row = QHBoxLayout()
         row.addWidget(self.identify_interfaces_button)
-        row.addWidget(self.show_interface_pair_button)
         row.addStretch(1)
         layout = QVBoxLayout(self.interfaces_tab)
         layout.addWidget(note)
         layout.addLayout(row)
         layout.addWidget(self.interfaces_table)
+        layout.addWidget(self.interface_details_toggle)
         layout.addWidget(self.interface_details)
+
+    def _set_interface_details_expanded(self, expanded: bool) -> None:
+        self.interface_details.setVisible(expanded)
+        self.interface_details_toggle.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
 
     def _build_components_tab(self) -> None:
         self.components_table = QTableWidget(0, 5)
@@ -1006,7 +1015,8 @@ class SystemConfigDialog(QDialog):
                 QMessageBox.warning(
                     self,
                     "Build/Identify Interfaces",
-                    "Some interfaces could not be built. Select a failed or ambiguous row in Interfaces for details.",
+                    "Some interfaces could not be built. Select a failed or ambiguous row in Interfaces "
+                    "and expand Details and measurements.",
                 )
             identify_succeeded = True
         except (ValueError, OSError, InterfaceConformError) as exc:
@@ -1033,7 +1043,7 @@ class SystemConfigDialog(QDialog):
             QMessageBox.warning(
                 self,
                 "Build/Identify Interfaces",
-                "Interface construction failed. See Interfaces for details.",
+                "Interface construction failed. Open Interfaces and expand Details and measurements.",
             )
         finally:
             QApplication.restoreOverrideCursor()
@@ -1301,8 +1311,6 @@ class SystemConfigDialog(QDialog):
             self.interface_details.clear()
 
     def _show_interface_details(self) -> None:
-        self._selected_interface_geometry = None
-        self.show_interface_pair_button.setEnabled(False)
         row = self.interfaces_table.currentRow()
         item = self.interfaces_table.item(row, 3)
         if item is None:
@@ -1346,8 +1354,6 @@ class SystemConfigDialog(QDialog):
             except (ValueError, OSError, KeyError, np.linalg.LinAlgError) as exc:
                 self.interface_details.appendPlainText(f"\nSource measurements unavailable: {exc}")
             else:
-                self._selected_interface_geometry = geometry
-                self.show_interface_pair_button.setEnabled(True)
                 self.interface_details.appendPlainText("\n" + geometry.summary())
                 if self.stitch_exterior_meshes_check.isChecked():
                     self.interface_details.appendPlainText(
@@ -1356,19 +1362,6 @@ class SystemConfigDialog(QDialog):
                         "perimeters include any symmetry-cut edges."
                     )
         self.interface_details.verticalScrollBar().setValue(0)
-
-    def _show_interface_pair(self) -> None:
-        if self._selected_interface_geometry is None:
-            return
-        from blab.ui.interface_preview import InterfacePreviewDialog
-
-        row = self.interfaces_table.currentRow()
-        labels = tuple(self.interfaces_table.item(row, column).text() for column in (1, 2))
-        dialog = InterfacePreviewDialog(self._selected_interface_geometry, labels, self)
-        try:
-            dialog.exec()
-        finally:
-            dialog.deleteLater()
 
     def _region_names_by_id(self) -> dict[str, str]:
         names = {region.id: region.name for region in self._existing_regions.values()}
