@@ -213,21 +213,25 @@ def waveguide(path: Path, *, surface_model: bool = False, covered: bool = False)
     return path
 
 
-def bored_ball(path: Path) -> Path:
-    """A ball (r 12.7 mm) with a tilted bore (r 9 mm) through it, inside a closed cabinet.
+def bored_ball(path: Path, balls: int = 1) -> Path:
+    """``balls`` (1 or 2) balls (r 12.7 mm) with a tilted bore (r 9 mm) through each, inside a closed cabinet.
 
-    The ball's sphere is written as a torus of tiny negative major radius, as the CAD tool
-    behind the local ``blab Mesh import.STEP`` does: a surface covering the sphere twice. Trimmed
-    by the bore's BSpline edges, that face reads with negative area and Gmsh's 2D mesher rejects
-    it; every other face meshes.
+    The balls' spheres are written as tori of tiny negative major radius, as SolidWorks did for an
+    earlier local ``blab Mesh import.STEP``: a surface covering the sphere twice. Trimmed by the
+    bore's BSpline edges, such a face reads with negative area and Gmsh's 2D mesher rejects it;
+    every other face meshes.
     """
 
     def build():
         occ = gmsh.model.occ
-        ball, _ = occ.cut([(3, occ.addSphere(0, 0, 0, 12.7))], [(3, occ.addCylinder(-30, 4, -8, 60, 0, 16, 9))])
+        bodies, names = [], []
+        for k, x in enumerate((0,) if balls == 1 else (-25, 25), start=1):
+            bore = occ.addCylinder(x - 30, 4, -8, 60, 0, 16, 9)
+            bodies += occ.cut([(3, occ.addSphere(x, 0, 0, 12.7))], [(3, bore)])[0]
+            names.append("Ball" if balls == 1 else f"Ball {k}")
         cabinet = _cabinet(60, 60, 120)
         occ.translate(cabinet, 0, 0, 60)
-        return ball + cabinet, ["Ball"] + ["Cabinet"] * len(cabinet)
+        return bodies + cabinet, names + ["Cabinet"] * len(cabinet)
 
     write_step(path, build)
     text = path.read_text(encoding="utf-8")

@@ -646,51 +646,47 @@ def test_surface_model_with_near_coincident_edges_reads_without_degenerate_faces
 
 
 @pytest.mark.skipif(not MESH_IMPORT.is_file(), reason="local-only fixture")
-def test_local_surface_model_reports_its_two_unmeshable_tori():
-    assert [u.id for u in inspect_step(MESH_IMPORT).unmeshable] == [47, 50]
-
-
-@pytest.mark.skipif(not MESH_IMPORT.is_file(), reason="local-only fixture")
-def test_local_surface_model_fills_both_unmeshable_tori_for_display_only():
-    preview = open_step(MESH_IMPORT)
-
-    assert [u.id for u in preview.geometry.unmeshable] == [47, 50]
-    for face in (47, 50):
-        fill = preview.points[preview.triangles[preview.face_ids == face]]
-        assert len(fill) > 100
-        # Both tori lie near (-44, 44, 5) mm, about 13 mm round, where the read warns of open edges.
-        assert np.allclose(fill.reshape(-1, 3).mean(axis=0), [-0.044, 0.044, 0.005], atol=0.005)
-    moved = place_preview(preview, translation_m=(0.0, 0.0, 0.1))
-    assert np.array_equal(moved.face_ids, preview.face_ids)
-    assert np.allclose(moved.points, preview.points + [0.0, 0.0, 0.1])
-    round_trip = preview_from_json(json.loads(json.dumps(preview_to_json(preview))))
-    assert np.array_equal(round_trip.face_ids, preview.face_ids)
-    assert np.array_equal(round_trip.triangles, preview.triangles)
-
-
-@pytest.mark.skipif(not MESH_IMPORT.is_file(), reason="local-only fixture")
 def test_a_face_bounded_only_by_seams_still_has_curves_to_draw():
     preview = open_step(MESH_IMPORT)
     openings = preview.openings
 
-    assert openings.face_edges[47] == ()  # torus 47's curves all bound it on both sides: no openings run along it
     assert all(openings.face_curves[f] for f in openings.face_edges)
     assert set().union(*openings.face_curves.values()) <= set(openings.edges)  # sampled, so drawable
     assert preview_from_json(json.loads(json.dumps(preview_to_json(preview)))).openings.face_curves == openings.face_curves
-
-
-@pytest.mark.skipif(not MESH_IMPORT.is_file(), reason="local-only fixture")
-def test_generate_names_both_unmeshable_tori_of_the_local_surface_model(tmp_path):
-    with pytest.raises(
-        ValueError, match=r"^Faces 47 \(Torus, .+\), 50 \(Torus, .+\) cannot be meshed: face 47: .+; face 50: "
-    ):
-        mesh_step(MESH_IMPORT, replace(SETTINGS, fmax_hz=1000.0), tmp_path / "out")
 
 
 @pytest.fixture(scope="module")
 def bored_ball_step(tmp_path_factory):
     """A ball whose one torus face Gmsh cannot mesh, inside a cabinet."""
     return bored_ball(tmp_path_factory.mktemp("bored_ball") / "ball.step")
+
+
+@pytest.fixture(scope="module")
+def bored_balls_step(tmp_path_factory):
+    """Two balls, each with one torus face Gmsh cannot mesh, inside a cabinet."""
+    return bored_ball(tmp_path_factory.mktemp("bored_balls") / "balls.step", balls=2)
+
+
+def test_the_read_finds_every_unmeshable_face_not_just_the_first(bored_balls_step):
+    preview = open_step(bored_balls_step)
+    tori = [f.id for f in preview.geometry.faces if f.surface_type == "Torus"]
+
+    assert len(tori) == 2
+    assert [u.id for u in preview.geometry.unmeshable] == tori
+    assert set(preview.face_ids.tolist()) == {f.id for f in preview.geometry.faces} - set(tori)
+
+
+def test_generate_names_every_unmeshable_face_in_face_order(bored_balls_step, tmp_path):
+    a, b = [f.id for f in inspect_step(bored_balls_step).faces if f.surface_type == "Torus"]
+    reason = "Impossible to mesh periodic surface {}; area reads as negative"
+
+    with pytest.raises(ValueError) as error:
+        mesh_step(bored_balls_step, SETTINGS, tmp_path / "out")
+
+    assert str(error.value) == (
+        f"Faces {a} (Torus, Ball 1), {b} (Torus, Ball 2) cannot be meshed: "
+        f"face {a}: {reason.format(a)}; face {b}: {reason.format(b)}"
+    )
 
 
 def test_unmeshable_face_is_named_and_the_other_faces_are_still_tessellated(bored_ball_step):
