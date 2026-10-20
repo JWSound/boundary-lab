@@ -386,7 +386,7 @@ class SystemConfigDialog(QDialog):
         self.interface_details.setPlaceholderText("Select an interface to view its construction details.")
         self.interface_details.setMinimumHeight(110)
         self.interface_details_toggle = QToolButton()
-        self.interface_details_toggle.setText("Details and measurements")
+        self.interface_details_toggle.setText("Details")
         self.interface_details_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.interface_details_toggle.setArrowType(Qt.ArrowType.RightArrow)
         self.interface_details_toggle.setCheckable(True)
@@ -397,7 +397,7 @@ class SystemConfigDialog(QDialog):
         self.interfaces_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         note = QLabel(
             "Interfaces are automatically detected and built from the boundary assignments. "
-            "Select a row and expand Details and measurements to inspect it. "
+            "Select a row and expand Details to inspect it. "
             "Failed attempts are not saved as solver interfaces."
         )
         note.setWordWrap(True)
@@ -1016,7 +1016,7 @@ class SystemConfigDialog(QDialog):
                     self,
                     "Build/Identify Interfaces",
                     "Some interfaces could not be built. Select a failed or ambiguous row in Interfaces "
-                    "and expand Details and measurements.",
+                    "and expand Details.",
                 )
             identify_succeeded = True
         except (ValueError, OSError, InterfaceConformError) as exc:
@@ -1043,7 +1043,7 @@ class SystemConfigDialog(QDialog):
             QMessageBox.warning(
                 self,
                 "Build/Identify Interfaces",
-                "Interface construction failed. Open Interfaces and expand Details and measurements.",
+                "Interface construction failed. Open Interfaces and expand Details.",
             )
         finally:
             QApplication.restoreOverrideCursor()
