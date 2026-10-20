@@ -6,11 +6,12 @@ solving and the remote-server client. It does not bundle CUDA, Ath, or Wine.
 Ath generation is optional and uses [external tool setup](macos-ath-setup.md).
 The built-in parametric generator and imported meshes do not need Ath.
 
-This is a development/evaluation candidate, not a stable public release. The
-application retains its current development version and exact Git-pinned BEAT
-revision. A stable release must select version metadata and adopt a qualified,
-published engine wheel with a matching checksum under the normal release process.
-No engine version is silently substituted by these scripts.
+Installer builds are evaluation candidates until their final artifacts pass
+release qualification. They use the application version from the checkout and
+the BEAT requirement shared by `pyproject.toml` and `packaging/runtime-lock.json`.
+A stable release must adopt a qualified, published engine wheel with a matching
+checksum under the normal release process. No engine version is silently
+substituted by these scripts.
 
 CPU remains the default (including CLI auto selection). Select **BEAT Engine
 (Apple Metal)** in Preferences to use the GPU. Availability is checked in the
@@ -38,7 +39,7 @@ Installer certificate is needed for a DMG.
   --app 'build/macos-candidate/Boundary Lab.app' \
   --output dist/macos-signed --identity YOUR_CERTIFICATE_SHA1
 .venv/bin/python scripts/test_macos_installer.py \
-  --dmg dist/macos-signed/Boundary-Lab-0.5.0.dev0-mac-arm64.dmg \
+  --dmg dist/macos-signed/Boundary-Lab-0.5.0-mac-arm64.dmg \
   --output 'build/Mac Installed Qualification'
 ```
 
