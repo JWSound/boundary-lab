@@ -52,4 +52,4 @@ sys.modules['beat_engine'] = engine
 import blab.solvers.engine_distribution
 """)
     assert process.returncode != 0
-    assert "requires beat-engine 0.5.1; found 0.0.0" in process.stderr
+    assert "requires beat-engine 0.6.0; found 0.0.0" in process.stderr

@@ -5,8 +5,8 @@ try:
 except ImportError as exc:
     raise RuntimeError("BEAT Engine is not installed. Reinstall Boundary Lab with its declared dependencies.") from exc
 
-if beat_engine.__version__ != "0.5.1":
-    raise RuntimeError(f"Boundary Lab requires beat-engine 0.5.1; found {beat_engine.__version__}.")
+if beat_engine.__version__ != "0.6.0":
+    raise RuntimeError(f"Boundary Lab requires beat-engine 0.6.0; found {beat_engine.__version__}.")
 
 from beat_engine import backend_catalog as backend_catalog
 from beat_engine import backend_info as engine_backend_info
