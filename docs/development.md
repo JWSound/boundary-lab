@@ -36,6 +36,20 @@ are separate contracts; preserve old supported fixtures and test round trips.
 5. Enable GitHub release immutability; complete all assets before publication.
    Application dependency adoption happens in separate PRs and on its own schedule.
 
+Boundary Lab's package and `src/blab/__init__.py` versions must agree. Pin the
+same published BEAT wheel URL and SHA-256 in `pyproject.toml` and
+`packaging/runtime-lock.json`; both installer builders consume that lock.
+The release metadata gate checks these even though Boundary Lab has no npm
+desktop package.
+
+The Release candidate workflow builds Python distributions and includes both
+Windows batch files. It does not build or publish standalone installers.
+Build Windows candidates separately using the Windows installer candidate
+workflow and macOS candidates using `docs/macos-installer.md`. Build from the
+release commit, qualify the final signed/notarized assets as applicable, and
+attach them and their checksums before publishing an immutable release.
+Do not describe unsigned evaluation installers as signed public installers.
+
 Release signing credentials belong in the GitHub `release` environment. Untrusted
 PRs run on hosted runners without release secrets. GPU qualification stays a
 maintainer-triggered workflow on trusted hardware. Do not run arbitrary fork code

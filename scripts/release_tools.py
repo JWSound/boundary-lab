@@ -39,9 +39,14 @@ def check(tag):
             or lock["packages"][""]["version"] != npm_version
         ):
             raise ValueError("Python, npm and npm lock versions must agree.")
-        runtime = json.loads((ROOT / "packaging/runtime-lock.json").read_text(encoding="utf-8"))
+    runtime_lock = ROOT / "packaging/runtime-lock.json"
+    if runtime_lock.exists():
+        runtime = json.loads(runtime_lock.read_text(encoding="utf-8"))
         if runtime["beat_requirement"] != beat:
             raise ValueError("Application and bundled runtime BEAT pins must agree.")
+    app_init = ROOT / "src/blab/__init__.py"
+    if app_init.exists() and f'__version__ = "{version}"' not in app_init.read_text(encoding="utf-8"):
+        raise ValueError("Application runtime version disagrees with package metadata.")
     init = ROOT / "src/beat_engine/__init__.py"
     if init.exists() and f'__version__ = "{version}"' not in init.read_text(encoding="utf-8"):
         raise ValueError("Engine runtime version disagrees with package metadata.")
