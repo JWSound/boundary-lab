@@ -8,6 +8,7 @@ import pytest
 
 from blab.exterior_preparation import prepare_exterior_system
 from blab.interface_conform import InterfaceConformError, conform_bem_interface_to_fem
+from blab.interface_diagnostics import InterfaceBuildError
 from blab.physical_compiler import PhysicalSystemCompiler
 from blab.physical_model import (
     AcousticInterface,
@@ -114,6 +115,28 @@ def test_identify_uses_assembled_exterior(cutout_system, tmp_path):
     )
     assert [(p.bounded_boundary_id, p.unbounded_boundary_id) for p in prepared.interfaces] == [("fi", "bi")]
     PhysicalSystemCompiler().compile(prepared)
+
+
+@pytest.mark.parametrize("identify", [False, True])
+def test_interface_failure_preserves_source_boundary_ids(cutout_system, tmp_path, identify):
+    fem = replace(cutout_system.meshes[0], translation_m=(0, 0, 0.1))
+    system = replace(
+        cutout_system,
+        meshes=(fem, *cutout_system.meshes[1:]),
+        interfaces=() if identify else cutout_system.interfaces,
+    )
+    with pytest.raises(InterfaceBuildError) as caught:
+        prepare_exterior_system(
+            system,
+            stitch_tolerance_mm=3,
+            output_root=tmp_path / "derived",
+            identify_interfaces=identify,
+        )
+    (diagnostic,) = caught.value.diagnostics
+    assert diagnostic.bounded_boundary_id == "fi"
+    assert diagnostic.unbounded_boundary_id == "bi"
+    assert diagnostic.status == "Failed"
+    assert diagnostic.detail
 
 
 def test_unclosed_cutout_still_fails(cutout_system, tmp_path):

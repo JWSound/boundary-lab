@@ -1116,6 +1116,153 @@ def test_identify_interfaces_reuses_each_transformed_mesh(monkeypatch) -> None:
     assert sorted(transformed_resources) == ["mesh:exterior", "mesh:interior"]
 
 
+def test_failed_interface_stays_visible_and_can_be_retried(monkeypatch) -> None:
+    dialog = _configured_fixture_dialog()
+    original = dialog._match_interface_pair
+    warnings = []
+    monkeypatch.setattr(system_config_module.QMessageBox, "warning", lambda *args: warnings.append(args))
+
+    def fail(*args, **kwargs):
+        raise InterfaceConformError("Maximum perimeter deviation 0.002 exceeds tolerance 0.0005.")
+
+    monkeypatch.setattr(dialog, "_match_interface_pair", fail)
+    dialog._identify_interfaces()
+
+    assert dialog.interfaces_table.rowCount() == 1
+    assert dialog.interfaces_table.item(0, 3).text() == "Failed"
+    assert dialog.tabs.currentWidget() is dialog.interfaces_tab
+    details = dialog.interface_details.toPlainText()
+    assert "Interior / Interface" in details
+    assert "Exterior / Interface" in details
+    assert "0.002 exceeds tolerance 0.0005" in details
+    assert dialog.physical_system().interfaces == ()
+    assert len(warnings) == 1
+    assert dialog.identify_interfaces_button.isEnabled()
+
+    monkeypatch.setattr(dialog, "_match_interface_pair", original)
+    dialog._identify_interfaces()
+    assert dialog.interfaces_table.rowCount() == 1
+    assert dialog.interfaces_table.item(0, 3).text() == "Ready"
+    assert "0.002" not in dialog.interface_details.toPlainText()
+    assert len(dialog.physical_system().interfaces) == 1
+
+
+def test_interface_discovery_continues_after_failed_interior(monkeypatch) -> None:
+    dialog = _configured_fixture_dialog()
+    boundaries = dialog._collect_boundaries()
+    fem = next(b for b in boundaries if b.kind == BoundaryKind.INTERFACE and b.group.mesh_id == "mesh:interior")
+    failed_fem = replace(fem, id="failed-mouth", name="Failed mouth", group=replace(fem.group, name="Failed mouth"))
+    monkeypatch.setattr(dialog, "_collect_boundaries", lambda: (failed_fem, *boundaries))
+    original = dialog._match_interface_pair
+    calls = []
+
+    def match(fem_boundary, *args, **kwargs):
+        calls.append(fem_boundary.id)
+        if fem_boundary.id == failed_fem.id:
+            raise InterfaceConformError("Perimeter mismatch.")
+        return original(fem_boundary, *args, **kwargs)
+
+    monkeypatch.setattr(dialog, "_match_interface_pair", match)
+    monkeypatch.setattr(system_config_module.QMessageBox, "warning", lambda *args: None)
+    dialog._identify_interfaces()
+
+    assert calls == [failed_fem.id, fem.id]
+    assert [dialog.interfaces_table.item(r, 3).text() for r in range(2)] == ["Ready", "Failed"]
+    assert dialog.interfaces_table.currentRow() == 1
+    assert "Perimeter mismatch" in dialog.interface_details.toPlainText()
+    assert [p.bounded_boundary_id for p in dialog._interfaces] == [fem.id]
+
+
+def test_interface_settings_changes_mark_existing_pair_stale() -> None:
+    dialog = _configured_fixture_dialog()
+    dialog.stitch_exterior_meshes_check.setChecked(True)
+    assert dialog.interfaces_table.item(0, 3).text() == "Needs recheck"
+    assert not dialog._interfaces
+    assert "check again" in dialog.interface_details.toPlainText()
+
+
+def test_removing_exterior_assignment_keeps_unpaired_interior_visible() -> None:
+    dialog = _configured_fixture_dialog()
+    for row in range(dialog.boundaries_table.rowCount()):
+        if (
+            dialog.boundaries_table.item(row, 1).text() == "Exterior"
+            and dialog.boundaries_table.item(row, 2).text() == "Interface"
+        ):
+            combo = dialog.boundaries_table.cellWidget(row, 3)
+            combo.setCurrentIndex(combo.findData(BoundaryKind.RIGID))
+    assert dialog.interfaces_table.rowCount() == 1
+    assert dialog.interfaces_table.item(0, 3).text() == "Not checked"
+    assert "Interior / Interface" in dialog.interface_details.toPlainText()
+    assert not dialog._interfaces
+
+
+def test_ambiguous_interface_lists_each_compatible_exterior(monkeypatch) -> None:
+    dialog = _configured_fixture_dialog()
+    boundaries = dialog._collect_boundaries()
+    bem = next(b for b in boundaries if b.kind == BoundaryKind.INTERFACE and b.group.mesh_id == "mesh:exterior")
+    duplicate = replace(bem, id="other-exterior", name="Other exterior")
+    monkeypatch.setattr(dialog, "_collect_boundaries", lambda: (*boundaries, duplicate))
+    monkeypatch.setattr(system_config_module.QMessageBox, "warning", lambda *args: None)
+    dialog._identify_interfaces()
+    assert dialog.interfaces_table.rowCount() == 2
+    assert [dialog.interfaces_table.item(r, 3).text() for r in range(2)] == ["Ambiguous", "Ambiguous"]
+    assert "More than one" in dialog.interface_details.toPlainText()
+    assert not dialog._interfaces
+
+
+def test_missing_exterior_assignment_has_actionable_diagnostic(monkeypatch) -> None:
+    dialog = _configured_fixture_dialog()
+    boundaries = tuple(
+        replace(b, kind=BoundaryKind.RIGID) if b.group.mesh_id == "mesh:exterior" else b
+        for b in dialog._collect_boundaries()
+    )
+    monkeypatch.setattr(dialog, "_collect_boundaries", lambda: boundaries)
+    monkeypatch.setattr(system_config_module.QMessageBox, "warning", lambda *args: None)
+    dialog._identify_interfaces()
+    assert dialog.interfaces_table.rowCount() == 1
+    assert dialog.interfaces_table.item(0, 3).text() == "Failed"
+    assert "No unpaired exterior" in dialog.interface_details.toPlainText()
+    assert not dialog._interfaces
+
+
+def test_global_build_error_is_retained_without_claiming_pair_success(monkeypatch) -> None:
+    dialog = _configured_fixture_dialog()
+    dialog.stitch_exterior_meshes_check.setChecked(True)
+
+    def fail(*args, **kwargs):
+        raise ValueError("Exterior seam has no compatible boundary loop.")
+
+    monkeypatch.setattr(system_config_module, "prepare_exterior_system", fail)
+    monkeypatch.setattr(system_config_module.QMessageBox, "warning", lambda *args: None)
+    dialog._identify_interfaces()
+    assert dialog.interfaces_table.item(dialog.interfaces_table.currentRow(), 3).text() == "Build failed"
+    assert "no compatible boundary loop" in dialog.interface_details.toPlainText()
+    assert not dialog._interfaces
+
+
+def test_stitched_interface_failure_identifies_source_pair(monkeypatch) -> None:
+    from blab.interface_diagnostics import InterfaceBuildError, InterfaceDiagnostic
+
+    dialog = _configured_fixture_dialog()
+    pair = dialog._interfaces[0]
+    dialog.stitch_exterior_meshes_check.setChecked(True)
+
+    def fail(*args, **kwargs):
+        raise InterfaceBuildError(
+            "Mismatch",
+            (InterfaceDiagnostic(pair.bounded_boundary_id, pair.unbounded_boundary_id, "Failed", "Plane mismatch."),),
+        )
+
+    monkeypatch.setattr(system_config_module, "prepare_exterior_system", fail)
+    monkeypatch.setattr(system_config_module.QMessageBox, "warning", lambda *args: None)
+    dialog._identify_interfaces()
+    assert dialog.interfaces_table.rowCount() == 1
+    assert dialog.interfaces_table.item(0, 3).text() == "Failed"
+    assert "Plane mismatch" in dialog.interface_details.toPlainText()
+    assert "Exterior / Interface" in dialog.interface_details.toPlainText()
+    assert not dialog._interfaces
+
+
 def test_saved_regions_rebind_to_unique_compatible_renamed_meshes() -> None:
     system = _configured_fixture_dialog().physical_system()
     fem, bem = inspect_system_meshes(_fixture_mesh_entries())

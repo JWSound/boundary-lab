@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -52,6 +53,7 @@ from blab.interface_conform import (
     build_conforming_interface_map,
     conform_bem_interface_to_fem,
 )
+from blab.interface_diagnostics import InterfaceBuildError
 from blab.mesh_inventory import AvailableSystemMesh, inspect_system_mesh_variants, inspect_system_meshes
 from blab.paths import working_runs_root
 from blab.physical_model import (
@@ -234,6 +236,7 @@ class SystemConfigDialog(QDialog):
         self._collected_component_channels: dict[str, str] = {}
         self._mesh_file_overrides_by_name: dict[str, str] = {}
         self._interface_status_by_id: dict[str, str] = {}
+        self._interface_diagnostics: list[tuple[str, str | None, str, str]] = []
         self._restored_resources_by_mesh_name: dict[str, MeshResource] = {}
         self._symmetry_mode = normalize_symmetry(symmetry_mode)
         self._interface_output_root = (
@@ -337,6 +340,7 @@ class SystemConfigDialog(QDialog):
         self.stitch_exterior_meshes_check.setToolTip(
             "Join the exterior region's mesh parts into one conforming BEM solve mesh."
         )
+        self.stitch_exterior_meshes_check.toggled.connect(self._invalidate_identified_interfaces)
         row.addSpacing(16)
         row.addWidget(self.stitch_exterior_meshes_check)
         row.addStretch(1)
@@ -372,12 +376,19 @@ class SystemConfigDialog(QDialog):
         self.interfaces_table.setHorizontalHeaderLabels(["Name", "Bounded Interior", "Unbounded Exterior", "Status"])
         self.interfaces_table.verticalHeader().setVisible(False)
         self.interfaces_table.setAlternatingRowColors(True)
+        self.interfaces_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.interfaces_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.interfaces_table.itemSelectionChanged.connect(self._show_interface_details)
+        self.interface_details = QPlainTextEdit()
+        self.interface_details.setReadOnly(True)
+        self.interface_details.setPlaceholderText("Select an interface to view its construction details.")
+        self.interface_details.setMinimumHeight(110)
         for column in range(3):
             self.interfaces_table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeMode.Stretch)
         self.interfaces_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         note = QLabel(
             "Interfaces are automatically detected and built from the boundary assignments. "
-            "Ensure that the interface surfaces are coplanar and have matching element density."
+            "Select a row for construction details. Failed attempts are not saved as solver interfaces."
         )
         note.setWordWrap(True)
         row = QHBoxLayout()
@@ -387,6 +398,7 @@ class SystemConfigDialog(QDialog):
         layout.addWidget(note)
         layout.addLayout(row)
         layout.addWidget(self.interfaces_table)
+        layout.addWidget(self.interface_details)
 
     def _build_components_tab(self) -> None:
         self.components_table = QTableWidget(0, 5)
@@ -542,6 +554,9 @@ class SystemConfigDialog(QDialog):
         )
         mesh_combo.currentIndexChanged.connect(lambda _index, r=row: self._refresh_region_volume_combo(r))
         self._refresh_region_volume_combo(row, selected=volume_group)
+        type_combo.currentIndexChanged.connect(self._invalidate_identified_interfaces)
+        mesh_combo.currentIndexChanged.connect(self._invalidate_identified_interfaces)
+        volume_combo.currentIndexChanged.connect(self._invalidate_identified_interfaces)
         self._refresh_interfaces_tab_availability()
 
     def _add_default_region(self) -> None:
@@ -602,6 +617,9 @@ class SystemConfigDialog(QDialog):
     def _on_tab_changed(self, index: int) -> None:
         if self.tabs.widget(index) is self.boundaries_tab:
             self._refresh_boundaries()
+        elif self.tabs.widget(index) is self.interfaces_tab:
+            self._refresh_boundaries()
+            self._load_interfaces()
         elif self.tabs.widget(index) is self.components_tab:
             self._refresh_components_boundary_choices()
 
@@ -773,8 +791,15 @@ class SystemConfigDialog(QDialog):
         self._refresh_wall_impedance_button(button, assignment, bounded)
 
     def _invalidate_identified_interfaces(self, _index: int) -> None:
+        self._interface_diagnostics.extend(
+            (pair.bounded_boundary_id, pair.unbounded_boundary_id, "", "") for pair in self._interfaces
+        )
         self._interfaces.clear()
         self._interface_status_by_id.clear()
+        self._interface_diagnostics = [
+            (fem, bem, "Needs recheck", "Interface settings changed. Build/Identify Interfaces to check again.")
+            for fem, bem, _status, _detail in self._interface_diagnostics
+        ]
         self._load_interfaces()
 
     def _collect_boundaries(self) -> tuple[Boundary, ...]:
@@ -825,6 +850,7 @@ class SystemConfigDialog(QDialog):
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         quality_warning_interfaces: list[str] = []
         identify_succeeded = False
+        self._interface_diagnostics.clear()
         try:
             regions, resources = self._collect_regions_and_resources()
             boundaries = self._collect_boundaries()
@@ -873,7 +899,7 @@ class SystemConfigDialog(QDialog):
             available_unbounded = list(unbounded)
             for fem_boundary in bounded:
                 matches: list[_InterfacePairMatch] = []
-                last_error = None
+                failures = []
                 for bem_boundary in available_unbounded:
                     try:
                         matches.append(
@@ -888,15 +914,35 @@ class SystemConfigDialog(QDialog):
                                 ),
                             )
                         )
-                    except InterfaceConformError as exc:
-                        last_error = exc
+                    except (ValueError, OSError) as exc:
+                        failures.append((bem_boundary.id, str(exc)))
                         continue
                 if len(matches) != 1:
-                    detail = "" if last_error is None or matches else f" Last check: {last_error}"
-                    raise ValueError(
-                        f"Interface surface '{fem_boundary.group.name}' requires exactly one compatible "
-                        f"unbounded interface side; found {len(matches)}.{detail}"
-                    )
+                    if matches:
+                        for match in matches:
+                            self._interface_diagnostics.append(
+                                (
+                                    fem_boundary.id,
+                                    match.boundary.id,
+                                    "Ambiguous",
+                                    "More than one exterior surface is compatible. Check the boundary assignments; "
+                                    "no pair was selected for this interior surface.",
+                                )
+                            )
+                    elif failures:
+                        self._interface_diagnostics.extend(
+                            (fem_boundary.id, bem_id, "Failed", detail) for bem_id, detail in failures
+                        )
+                    else:
+                        self._interface_diagnostics.append(
+                            (
+                                fem_boundary.id,
+                                None,
+                                "Failed",
+                                "No unpaired exterior Interface surface is available. Check the boundary assignments.",
+                            )
+                        )
+                    continue
                 match = matches[0]
                 bem_boundary = match.boundary
                 interface_status = "Ready"
@@ -945,13 +991,44 @@ class SystemConfigDialog(QDialog):
                     )
                 )
                 self._interface_status_by_id[interface_id] = interface_status
-            if not interfaces:
+            if not interfaces and not self._interface_diagnostics:
                 raise ValueError("Mark matching bounded and unbounded surface groups as Interface first.")
             self._interfaces = interfaces
             self._load_interfaces()
+            if self._interface_diagnostics:
+                self.tabs.setCurrentWidget(self.interfaces_tab)
+                QMessageBox.warning(
+                    self,
+                    "Build/Identify Interfaces",
+                    "Some interfaces could not be built. Select a failed or ambiguous row in Interfaces for details.",
+                )
             identify_succeeded = True
         except (ValueError, OSError, InterfaceConformError) as exc:
-            QMessageBox.warning(self, "Build/Identify Interfaces", str(exc))
+            if isinstance(exc, InterfaceBuildError):
+                self._interface_diagnostics.extend(
+                    (d.bounded_boundary_id, d.unbounded_boundary_id, d.status, d.detail) for d in exc.diagnostics
+                )
+            else:
+                self._interface_diagnostics.append(("", None, "Build failed", str(exc)))
+            failed_fem = {d[0] for d in self._interface_diagnostics}
+            self._interface_diagnostics.extend(
+                (
+                    p.bounded_boundary_id,
+                    p.unbounded_boundary_id,
+                    "Not checked",
+                    "Construction stopped before this connection could be confirmed. Build/Identify Interfaces again.",
+                )
+                for p in self._interfaces
+                if p.bounded_boundary_id not in failed_fem
+            )
+            self._interfaces.clear()
+            self._load_interfaces(status="Needs recheck")
+            self.tabs.setCurrentWidget(self.interfaces_tab)
+            QMessageBox.warning(
+                self,
+                "Build/Identify Interfaces",
+                "Interface construction failed. See Interfaces for details.",
+            )
         finally:
             QApplication.restoreOverrideCursor()
             self.identify_interfaces_button.setEnabled(True)
@@ -1111,6 +1188,19 @@ class SystemConfigDialog(QDialog):
         self.interfaces_table.setRowCount(0)
         boundaries = {boundary.id: boundary for boundary in self._collect_boundaries()}
         regions = self._region_names_by_id()
+        mesh_names = {value: key for key, value in self._resource_ids_by_mesh_name().items()}
+        bounded_region_ids = {
+            str(self.regions_table.cellWidget(row, 0).property("region_id"))
+            for row in range(self.regions_table.rowCount())
+            if self._region_kind(row) == AcousticRegionKind.BOUNDED_AIR
+        }
+
+        def surface_label(boundary: Boundary) -> str:
+            return (
+                f"{regions.get(boundary.region_id, boundary.region_id)} / "
+                f"{mesh_names.get(boundary.group.mesh_id, boundary.group.mesh_id)} / {boundary.group.name}"
+            )
+
         valid = []
         for interface in self._interfaces:
             bounded = boundaries.get(interface.bounded_boundary_id)
@@ -1121,16 +1211,109 @@ class SystemConfigDialog(QDialog):
             self.interfaces_table.insertRow(row)
             values = (
                 interface.name,
-                f"{regions.get(bounded.region_id, bounded.region_id)} / {bounded.group.name}",
-                f"{regions.get(unbounded.region_id, unbounded.region_id)} / {unbounded.group.name}",
+                surface_label(bounded),
+                surface_label(unbounded),
                 status or self._interface_status_by_id.get(interface.id, "Configured"),
             )
             for column, value in enumerate(values):
                 item = QTableWidgetItem(str(value))
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                item.setToolTip(str(value))
                 self.interfaces_table.setItem(row, column, item)
             valid.append(interface)
         self._interfaces = valid
+        diagnostics = [
+            diagnostic
+            for diagnostic in self._interface_diagnostics
+            if all(
+                not boundary_id
+                or (boundary_id in boundaries and boundaries[boundary_id].kind == BoundaryKind.INTERFACE)
+                for boundary_id in diagnostic[:2]
+            )
+        ]
+        represented = {p.bounded_boundary_id for p in valid} | {d[0] for d in diagnostics}
+        represented_exterior = {p.unbounded_boundary_id for p in valid} | {d[1] for d in diagnostics}
+        for boundary in boundaries.values():
+            if boundary.kind != BoundaryKind.INTERFACE:
+                continue
+            bounded = boundary.region_id in bounded_region_ids
+            if bounded and boundary.id not in represented:
+                diagnostics.append(
+                    (
+                        boundary.id,
+                        None,
+                        "Not checked",
+                        "Build/Identify Interfaces to find a compatible exterior surface.",
+                    )
+                )
+            elif not bounded and boundary.id not in represented_exterior:
+                diagnostics.append(
+                    (
+                        "",
+                        boundary.id,
+                        "Not paired",
+                        "No interior interface has been paired with this exterior surface.",
+                    )
+                )
+        for fem_id, bem_id, diagnostic_status, detail in diagnostics:
+            fem = boundaries.get(fem_id)
+            bem = boundaries.get(bem_id)
+            if fem_id and (fem is None or fem.kind != BoundaryKind.INTERFACE):
+                continue
+            if bem_id and (bem is None or bem.kind != BoundaryKind.INTERFACE):
+                continue
+            row = self.interfaces_table.rowCount()
+            self.interfaces_table.insertRow(row)
+            values = (
+                str(fem.group.name) if fem is not None else str(bem.group.name) if bem is not None else "Construction",
+                "—" if fem is None else surface_label(fem),
+                "—" if bem is None else surface_label(bem),
+                diagnostic_status,
+            )
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                item.setData(Qt.ItemDataRole.UserRole, detail)
+                item.setToolTip(value)
+                self.interfaces_table.setItem(row, column, item)
+        self.interfaces_table.resizeRowsToContents()
+        if self.interfaces_table.rowCount():
+            first_failure = next(
+                (
+                    row
+                    for row in range(self.interfaces_table.rowCount())
+                    if self.interfaces_table.item(row, 3).text() in ("Failed", "Ambiguous", "Build failed")
+                ),
+                0,
+            )
+            self.interfaces_table.selectRow(first_failure)
+        else:
+            self.interface_details.clear()
+
+    def _show_interface_details(self) -> None:
+        row = self.interfaces_table.currentRow()
+        item = self.interfaces_table.item(row, 3)
+        if item is None:
+            self.interface_details.clear()
+            return
+        side_items = [self.interfaces_table.item(row, column) for column in (1, 2)]
+        if any(side is None for side in side_items):
+            return
+        sides = [side.text() for side in side_items]
+        detail = item.data(Qt.ItemDataRole.UserRole)
+        self.interface_details.setPlainText(
+            f"Interior: {sides[0]}\nExterior: {sides[1]}\nStatus: {item.text()}\n\n"
+            + (
+                detail
+                or (
+                    INTERFACE_SEAM_SIMPLIFICATION_WARNING
+                    if item.text() == "Built (inspect)"
+                    else "Interface construction completed."
+                    if item.text() in ("Ready", "Built")
+                    else "Build/Identify Interfaces to check this connection."
+                )
+            )
+        )
 
     def _region_names_by_id(self) -> dict[str, str]:
         names = {region.id: region.name for region in self._existing_regions.values()}
