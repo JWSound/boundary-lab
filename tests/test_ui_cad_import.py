@@ -1420,6 +1420,26 @@ def test_every_unmeshable_face_row_shows(ball_editor, qapp):
     assert listed.viewport().height() >= listed.count() * listed.sizeHintForRow(0)
 
 
+@pytest.mark.parametrize("long", ["unmeshable", "groups"])
+def test_a_long_unmeshable_list_or_face_groups_table_shows_8_rows_then_scrolls(ball_editor, qapp, long):
+    editor, _ = ball_editor
+    listed, table = editor.unmeshable_list, editor.groups_table
+    if long == "unmeshable":
+        for _ in range(19):
+            listed.addItem(listed.item(0).text())
+        view, row = listed, listed.sizeHintForRow(0)
+    else:
+        table.setRowCount(20)
+        view, row = table, table.rowHeight(0)
+
+    shown(editor, qapp)
+
+    assert 8 * row <= view.viewport().height() < 9 * row
+    assert view.verticalScrollBar().maximum() > 0
+    if long == "unmeshable":  # 8 taller face group rows leave the tree its minimum in this window
+        assert editor.tree.viewport().height() >= 4 * editor.tree.sizeHintForRow(0)
+
+
 def test_size_columns_fit_their_dropdowns_and_face_group_names_take_the_spare_width(ball_editor, qapp, tmp_path):
     editor, _ = ball_editor
     shown(editor, qapp)

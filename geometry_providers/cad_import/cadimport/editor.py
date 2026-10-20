@@ -81,6 +81,7 @@ GROUP_COLOURS = (
     "#4e79a7", "#59a14f", "#e15759", "#76b7b2", "#b07aa1",
     "#9c755f", "#edc948", "#ff9da7", "#2f6f4f", "#8c6bb1",
 )  # fmt: skip
+MAX_ROWS = 8  # rows a list or table sized to its rows shows before it scrolls
 
 
 class _Relay(QObject):
@@ -106,6 +107,22 @@ class _WarningLabel(QLabel):
         if palette.color(QPalette.ColorRole.WindowText) != red:  # else setting it changes the palette again
             palette.setColor(QPalette.ColorRole.WindowText, red)
             self.setPalette(palette)
+
+
+def _capped(hint, rows, row_height):
+    """A view's ``hint`` for all its ``rows`` capped at MAX_ROWS rows."""
+    hint.setHeight(hint.height() - max(0, rows - MAX_ROWS) * row_height)
+    return hint
+
+
+class _UnmeshableList(QListWidget):
+    def viewportSizeHint(self):
+        return _capped(super().viewportSizeHint(), self.count(), self.sizeHintForRow(0))
+
+
+class _GroupsTable(QTableWidget):
+    def viewportSizeHint(self):
+        return _capped(super().viewportSizeHint(), self.rowCount(), self.rowHeight(0))
 
 
 def _actor_key(actor):
@@ -404,9 +421,10 @@ class CadImportEditor:
         self.unmeshable_box = QGroupBox("Unmeshable faces")
         self.unmeshable_box.setToolTip("Faces Gmsh cannot mesh: fix them in the CAD tool, then read the file again.")
         unmeshable_layout = QVBoxLayout(self.unmeshable_box)
-        self.unmeshable_list = QListWidget()
+        self.unmeshable_list = _UnmeshableList()
         self.unmeshable_list.setSizeAdjustPolicy(QAbstractItemView.SizeAdjustPolicy.AdjustToContents)
-        self.unmeshable_list.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)  # all rows; the tree gets the rest
+        # Its rows, up to MAX_ROWS; the tree gets the rest.
+        self.unmeshable_list.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.unmeshable_list.setAccessibleName("Unmeshable faces")
         self.unmeshable_list.setToolTip("Click a face to show it in context, select it and frame it.")
         self.unmeshable_list.itemClicked.connect(lambda item: self.show_unmeshable(item.data(FACE_ROLE)))
@@ -510,7 +528,7 @@ class CadImportEditor:
         name_row.addWidget(self.remove_button)
         name_row.addWidget(self.delete_group_button)
         groups_layout.addLayout(name_row)
-        self.groups_table = QTableWidget(0, 3)
+        self.groups_table = _GroupsTable(0, 3)
         self.groups_table.setHorizontalHeaderLabels(["Face group", "Faces", "Mesh size"])
         self.groups_table.verticalHeader().hide()
         groups_header = self.groups_table.horizontalHeader()
@@ -520,6 +538,8 @@ class CadImportEditor:
         self.groups_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.groups_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.groups_table.setSizeAdjustPolicy(QAbstractItemView.SizeAdjustPolicy.AdjustToContents)
+        # Its rows, up to MAX_ROWS.
+        self.groups_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.groups_table.setAccessibleName("Face groups")
         self.groups_table.itemSelectionChanged.connect(self._group_selected)
         self.groups_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
