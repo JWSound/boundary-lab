@@ -9,7 +9,7 @@
     "url": "https://julialang-s3.julialang.org/bin/winnt/x64/1.12/julia-1.12.6-win64.zip",
     "sha256": "a63d991976e6893f508c512e3dc7bca1836c1a1f6ad1f3e4aedec159b6733e89"
   },
-  "beat_requirement": "beat-engine @ git+https://github.com/JWSound/BEAT_Engine.git@c9d43b90692b33cb0ea995b8a4538dc4044f332a",
+  "beat_requirement": "beat-engine @ https://github.com/JWSound/BEAT_Engine/releases/download/v0.6.0/beat_engine-0.6.0-py3-none-any.whl#sha256=10db2ee28eb9a8675fa0131127a04eeaad61097328c3aac453721a5924187dd3",
   "cuda_runtime": "13.3",
   "macos_arm64": {
     "python": {
