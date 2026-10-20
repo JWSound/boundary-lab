@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -17,12 +18,16 @@ def export_on_axis_text_files(
     output_target: str | Path,
     *,
     include_sum: bool = False,
+    selected_trace: Callable[[str], bool] | None = None,
+    force_directory: bool = False,
 ) -> list[Path]:
     """Write REW-compatible frequency, SPL, and propagation-aligned phase columns.
 
     ``output_target`` is the exact file path for one output trace and an output
     directory for multiple traces. Requesting the synthesized sum therefore
-    always uses a directory when at least one channel is present.
+    always uses a directory when at least one channel is present. Use
+    ``force_directory`` to preserve directory targeting when trace selection
+    leaves a single response. ``selected_trace`` filters channel names and Sum.
     """
     freqs, channel_names, spl_db, phase_deg = dataset.as_channel_on_axis_export_arrays()
     if include_sum:
@@ -30,9 +35,14 @@ def export_on_axis_text_files(
         channel_names = np.concatenate((np.asarray(["Sum"]), channel_names.astype(str)))
         spl_db = np.vstack((summed_spl_db, spl_db))
         phase_deg = np.vstack((summed_phase_deg, phase_deg))
+    if selected_trace is not None:
+        mask = np.asarray([selected_trace(str(name)) for name in channel_names], dtype=bool)
+        channel_names, spl_db, phase_deg = channel_names[mask], spl_db[mask], phase_deg[mask]
+    if not channel_names.size:
+        raise ValueError("At least one export trace is required.")
     target = Path(output_target)
 
-    if channel_names.size == 1:
+    if channel_names.size == 1 and not force_directory:
         file_path = target if target.suffix else target.with_suffix(".txt")
         file_path.parent.mkdir(parents=True, exist_ok=True)
         _write_response(file_path, freqs, spl_db[0], phase_deg[0])

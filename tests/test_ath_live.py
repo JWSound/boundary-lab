@@ -1369,6 +1369,16 @@ def test_export_on_axis_text_files_can_include_the_synthesized_sum(tmp_path: Pat
     sum_columns = (tmp_path / "responses" / "on_axis_Sum.txt").read_text(encoding="utf-8").split()
     assert float(sum_columns[1]) == pytest.approx(100.0, abs=0.001)
 
+    selected = export_on_axis_text_files(
+        dataset, tmp_path / "selected", include_sum=True,
+        selected_trace=lambda name: name == "right", force_directory=True,
+    )
+    assert [path.name for path in selected] == ["on_axis_right.txt"]
+    assert selected[0].parent == tmp_path / "selected"
+    assert selected[0].read_text() == written[2].read_text()
+    with pytest.raises(ValueError, match="At least one export trace"):
+        export_on_axis_text_files(dataset, tmp_path / "empty", selected_trace=lambda name: False)
+
 
 def test_export_frequency_trace_table_writes_named_quantities_and_nonfinite_values(tmp_path: Path) -> None:
     output = export_frequency_trace_table(

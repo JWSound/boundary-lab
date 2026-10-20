@@ -13,6 +13,7 @@ from matplotlib.cm import ScalarMappable
 from matplotlib.colors import BoundaryNorm, LinearSegmentedColormap, Normalize
 from matplotlib.figure import Figure
 from matplotlib.ticker import LogLocator, MultipleLocator
+from PySide6.QtCore import Signal
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QMenu
 
@@ -211,6 +212,20 @@ def _grid_bracket(values: np.ndarray, target: float) -> tuple[int, int, float]:
 class InteractivePlotCanvas(FigureCanvas):
     """Shared mouse lifecycle for plot crosshairs and solve comparisons."""
 
+    trace_visibility_changed = Signal()
+
+    def is_series_visible(self, label: str) -> bool:
+        """Return the trace-menu selection, including traces not rendered yet."""
+        return getattr(self, "_series_visibility", {}).get(str(label), True)
+
+    def has_selected_traces(self) -> bool:
+        labels = getattr(self, "_series_labels", ())
+        return not labels or any(self.is_series_visible(label) for label in labels)
+
+    def _set_plot_title(self, title: str, **kwargs) -> None:
+        self.axes.set_title(title, **kwargs)
+        self.axes.title.set_visible(False)
+
     def __init__(self, figure: Figure, title: str) -> None:
         self.title = title
         self._manual_axis_limits: PlotAxisLimits | None = None
@@ -273,7 +288,15 @@ class InteractivePlotCanvas(FigureCanvas):
     def print_figure(self, *args, **kwargs):
         # Figure.savefig routes through this method, even for hidden canvases.
         self._ensure_empty_plot()
-        return super().print_figure(*args, **kwargs)
+        title = self.axes.title
+        was_visible = title.get_visible()
+        title.set_visible(True)
+        try:
+            return super().print_figure(*args, **kwargs)
+        finally:
+            title.set_visible(was_visible)
+            self._invalidate_crosshair_background()
+            self.draw_idle()
 
     def showEvent(self, event) -> None:  # noqa: N802 - Qt override
         self._ensure_empty_plot()
@@ -410,7 +433,7 @@ class InteractivePlotCanvas(FigureCanvas):
         self._comparison_restore_plot = current_plot
         self._apply_plot_state(self._comparison_plot)
         self._comparison_active = True
-        self.axes.set_title(f"{self.title} - Previous Solve", pad=PLOT_TITLE_PAD)
+        self._set_plot_title(f"{self.title} - Previous Solve", pad=PLOT_TITLE_PAD)
         self._invalidate_crosshair_background()
         self.draw_idle()
 
@@ -426,7 +449,7 @@ class InteractivePlotCanvas(FigureCanvas):
         self._comparison_active = False
         if restore_plot is not None:
             self._apply_plot_state(restore_plot)
-        self.axes.set_title(self.title, pad=PLOT_TITLE_PAD)
+        self._set_plot_title(self.title, pad=PLOT_TITLE_PAD)
         self._invalidate_crosshair_background()
         self.draw_idle()
 
@@ -560,7 +583,7 @@ class IsobarCanvas(InteractivePlotCanvas):
 
     def _configure_axes(self) -> None:
         self._apply_layout_profile()
-        self.axes.set_title(self.title, pad=PLOT_TITLE_PAD)
+        self._set_plot_title(self.title, pad=PLOT_TITLE_PAD)
         self.axes.set_xlabel("Frequency (Hz)")
         self.axes.set_ylabel("Angle (deg)")
         if self._x_axis_mode == "log_image":
@@ -1431,7 +1454,7 @@ class ImpedanceCanvas(RawCoordinatePlotCanvas):
         self._draw_empty()
 
     def _configure_axes(self) -> None:
-        self.axes.set_title(self.title, pad=PLOT_TITLE_PAD)
+        self._set_plot_title(self.title, pad=PLOT_TITLE_PAD)
         self.axes.set_xlabel("Frequency (Hz)")
         self.axes.set_ylabel("Normalized Acoustic Impedance (Z / ρcSd)")
         apply_audio_frequency_axis(self.axes)
@@ -1550,6 +1573,7 @@ class ImpedanceCanvas(RawCoordinatePlotCanvas):
         if label not in self._series_labels:
             return
         self._series_visibility[label] = bool(visible)
+        self.trace_visibility_changed.emit()
         self._apply_series_visibility()
         self._update_y_limits()
         self._apply_manual_axis_limits()
@@ -1625,7 +1649,7 @@ class OnAxisResponseCanvas(RawCoordinatePlotCanvas):
         self._draw_empty()
 
     def _configure_axes(self) -> None:
-        self.axes.set_title(self.title, pad=PLOT_TITLE_PAD)
+        self._set_plot_title(self.title, pad=PLOT_TITLE_PAD)
         self.axes.set_xlabel("Frequency (Hz)")
         self.axes.set_ylabel("SPL (dB)")
         self.phase_axes.set_ylabel("Phase (deg)")
@@ -1894,6 +1918,7 @@ class OnAxisResponseCanvas(RawCoordinatePlotCanvas):
         if label not in self._series_labels:
             return
         self._series_visibility[label] = bool(visible)
+        self.trace_visibility_changed.emit()
         self._apply_series_visibility()
         self._update_magnitude_limits()
         self._apply_manual_axis_limits()
@@ -2013,7 +2038,7 @@ class SpinoramaCanvas(RawCoordinatePlotCanvas):
         clear_plot_axes(self.di_axes)
         self._reset_plot_data()
         self._apply_layout()
-        self.axes.set_title(self.title, pad=PLOT_TITLE_PAD)
+        self._set_plot_title(self.title, pad=PLOT_TITLE_PAD)
         self.axes.set_xlabel("Frequency (Hz)")
         self.axes.set_ylabel("SPL (dB)")
         self.di_axes.set_ylabel("DI (dB)")

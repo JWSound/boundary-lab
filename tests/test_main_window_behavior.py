@@ -898,3 +898,26 @@ def test_reset_layout_docks_floating_panels_and_hides_plots(main_window) -> None
     for plot_id, dock in main_window.plot_docks.items():
         assert dock.isHidden(), plot_id
         assert not main_window.plot_view_actions[plot_id].isChecked(), plot_id
+
+
+@pytest.mark.parametrize("fail_export", [False, True])
+def test_plot_titles_only_appear_in_image_exports(main_window, monkeypatch, tmp_path, fail_export):
+    from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+
+    def print_figure(canvas, *args, **kwargs):
+        assert canvas.axes.title.get_visible()
+        assert canvas.axes.get_title() == canvas.title
+        if fail_export:
+            raise OSError("Export failed")
+
+    monkeypatch.setattr(FigureCanvasQTAgg, "print_figure", print_figure)
+    for entry in main_window.plot_entries:
+        canvas = entry.widget
+        canvas._ensure_empty_plot()
+        assert not canvas.axes.title.get_visible()
+        if fail_export:
+            with pytest.raises(OSError, match="Export failed"):
+                canvas.figure.savefig(tmp_path / "plot.png")
+        else:
+            canvas.figure.savefig(tmp_path / "plot.png")
+        assert not canvas.axes.title.get_visible()

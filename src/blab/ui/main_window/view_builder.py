@@ -107,6 +107,9 @@ class ViewBuilderMixin:
             data_action.setEnabled(False)
             data_action.triggered.connect(lambda _checked=False, plot_id=entry.plot_id: self.export_plot_data(plot_id))
             self.export_plot_data_actions[entry.plot_id] = data_action
+            entry.widget.trace_visibility_changed.connect(
+                lambda plot_id=entry.plot_id: self.refresh_plot_data_export(plot_id)
+            )
             if entry.plot_id in {"horizontal_isobar", "vertical_isobar"}:
                 capture_action = QAction("Capture Contours", self)
                 capture_action.setToolTip(f"Capture contours for {entry.title}")
@@ -520,7 +523,7 @@ class ViewBuilderMixin:
         for plot_id, action in self.export_plot_actions.items():
             action.setEnabled(available and self.plot_data_is_available(plot_id))
         for plot_id, action in self.export_plot_data_actions.items():
-            action.setEnabled(available and self.plot_data_is_available(plot_id))
+            action.setEnabled(available and self.selected_plot_data_is_available(plot_id))
 
     def set_max_spl_available(self, available: bool) -> None:
         self.max_spl_plot.calculate_action.setEnabled(available)
@@ -531,7 +534,7 @@ class ViewBuilderMixin:
             action.setEnabled(available)
         data_action = self.export_plot_data_actions.get("max_spl")
         if data_action is not None:
-            data_action.setEnabled(available)
+            data_action.setEnabled(available and self.selected_plot_data_is_available("max_spl"))
 
     def set_system_config_available(self, available: bool) -> None:
         self.system_config_button.setEnabled(available)

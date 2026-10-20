@@ -53,7 +53,7 @@ def test_plot_widgets_use_compact_title_padding() -> None:
     assert "SINGLE_AXIS_LAYOUT = PlotLayoutProfile" in plot_source
     assert "DUAL_AXIS_LAYOUT = PlotLayoutProfile" in plot_source
     assert "GRID_LINE_ALPHA = 0.6" in plot_source
-    assert "set_title(self.title, pad=PLOT_TITLE_PAD)" in plot_source
+    assert "_set_plot_title(self.title, pad=PLOT_TITLE_PAD)" in plot_source
     assert "set_yticks(np.arange(-180, 181, 45))" in plot_source
     assert 'grid(which="major", color="#808080", linewidth=0.8, alpha=GRID_LINE_ALPHA)' in plot_source
 
@@ -384,7 +384,7 @@ def test_isobar_canvas_has_hold_right_button_previous_solve_comparison() -> None
     assert 'f"{self.title} - Previous Solve"' in interaction_block
     assert "self._apply_plot_state(self._comparison_plot)" in interaction_block
     assert "self._apply_plot_state(restore_plot)" in interaction_block
-    assert "self.axes.set_title(self.title, pad=PLOT_TITLE_PAD)" in interaction_block
+    assert "self._set_plot_title(self.title, pad=PLOT_TITLE_PAD)" in interaction_block
     assert 'self.mpl_connect("figure_leave_event", self._on_figure_leave)' in interaction_block
     assert "self.solve_session.last_completed_visualization" in main_source
     assert "refreshed_dataset.snapshot()" in main_source

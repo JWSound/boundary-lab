@@ -936,17 +936,27 @@ def test_spinorama_legend_clears_the_x_label_at_panel_height() -> None:
     assert legend_top > 0.0, "legend fell off the bottom of the figure"
 
 
-def test_chart_titles_stand_off_the_axes() -> None:
-    """pad=1 sat the title on the top spine."""
+def test_exported_chart_titles_stand_off_the_axes(tmp_path) -> None:
+    """Titles are hidden in docks and retain their padding in saved images."""
     from blab.ui.plots import PLOT_TITLE_PAD
 
     assert PLOT_TITLE_PAD >= 5
-
     canvas = OnAxisResponseCanvas()
     canvas.resize(520, 740)
     canvas.figure.canvas.draw()
+    assert not canvas.axes.title.get_visible()
+    rendered_titles = []
 
-    to_figure = canvas.figure.transFigure.inverted()
-    title_bottom = to_figure.transform_bbox(canvas.axes.title.get_window_extent()).y0
+    def check_export_title(event):
+        title = canvas.axes.title
+        assert title.get_visible()
+        to_figure = canvas.figure.transFigure.inverted()
+        title_bottom = to_figure.transform_bbox(title.get_window_extent(event.renderer)).y0
+        assert title_bottom > canvas.axes.get_position().y1
+        rendered_titles.append(title.get_text())
 
-    assert title_bottom > canvas.axes.get_position().y1
+    callback_id = canvas.mpl_connect("draw_event", check_export_title)
+    canvas.figure.savefig(tmp_path / "response.png")
+    canvas.mpl_disconnect(callback_id)
+    assert rendered_titles == [canvas.title]
+    assert not canvas.axes.title.get_visible()

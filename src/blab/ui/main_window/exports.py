@@ -68,7 +68,7 @@ class ExportsMixin:
         entry = next((item for item in self.plot_entries if item.plot_id == plot_id), None)
         if entry is None:
             return
-        if not self.plot_data_is_available(plot_id):
+        if not self.selected_plot_data_is_available(plot_id):
             QMessageBox.warning(self, "No plot data", "This plot has no data to export.")
             return
 
@@ -93,6 +93,17 @@ class ExportsMixin:
                 self.status_label.setText(f"Exported {len(written)} {entry.title} data files to {output_target}")
         except Exception as exc:
             QMessageBox.critical(self, f"Export {entry.title} data failed", str(exc))
+
+    def selected_plot_data_is_available(self, plot_id: str) -> bool:
+        entry = next((item for item in self.plot_entries if item.plot_id == plot_id), None)
+        return (
+            entry is not None
+            and entry.widget.has_selected_traces()
+            and self.plot_data_is_available(plot_id)
+        )
+
+    def refresh_plot_data_export(self, plot_id: str) -> None:
+        self.export_plot_data_actions[plot_id].setEnabled(self.selected_plot_data_is_available(plot_id))
 
     def plot_data_is_available(self, plot_id: str) -> bool:
         dataset = self.live_dataset
@@ -158,6 +169,21 @@ class ExportsMixin:
             self.channel_configs(),
             flat_target_reference_angle_deg=self.preferences.horizontal_normalization_angle,
         )
+        entry = next(item for item in self.plot_entries if item.plot_id == plot_id)
+        selected = entry.widget.is_series_visible
+
+        def export_selected_table(output_path, *, trace_names, quantities, **kwargs):
+            mask = np.asarray([selected(name) for name in trace_names], dtype=bool)
+            return export_frequency_trace_table(
+                output_path,
+                trace_names=np.asarray(trace_names)[mask],
+                quantities=tuple(
+                    TraceQuantity(quantity.label, quantity.unit, np.asarray(quantity.values)[mask])
+                    for quantity in quantities
+                ),
+                **kwargs,
+            )
+
         target = Path(output_target)
         if plot_id in {"horizontal_isobar", "vertical_isobar"}:
             plane = "H" if plot_id == "horizontal_isobar" else "V"
@@ -172,7 +198,9 @@ class ExportsMixin:
             )
         if plot_id == "on_axis_frequency_response":
             if dataset.supports_channel_resynthesis:
-                return export_on_axis_text_files(dataset, target, include_sum=True)
+                return export_on_axis_text_files(
+                    dataset, target, include_sum=True, selected_trace=selected, force_directory=True
+                )
             projection = self.prepared_live_dataset()
             if projection is None:
                 raise ValueError("No prepared on-axis data is available.")
@@ -186,7 +214,7 @@ class ExportsMixin:
             )
             output_path = target / "on_axis_Sum.txt"
             return [
-                export_frequency_trace_table(
+                export_selected_table(
                     output_path,
                     title="On-Axis Frequency Response",
                     frequency_hz=response.freq_hz,
@@ -205,7 +233,7 @@ class ExportsMixin:
             frequency, names, pressure = data
             point = radiation.points_m[0]
             return [
-                export_frequency_trace_table(
+                export_selected_table(
                     target,
                     title=f"Radiated SPL by Interface at {tuple(float(value) for value in point)} m (fixed operating flux)",
                     frequency_hz=frequency,
@@ -224,7 +252,7 @@ class ExportsMixin:
         if plot_id == "acoustic_impedance":
             data = projection.impedance
             return [
-                export_frequency_trace_table(
+                export_selected_table(
                     target,
                     title="Normalized Acoustic Impedance (Z / rho*c*Sd)",
                     frequency_hz=data.freq_hz,
@@ -244,7 +272,7 @@ class ExportsMixin:
                     else ("Interface Particle Velocity", "Average normal velocity RMS", "m/s")
                 )
                 return [
-                    export_frequency_trace_table(
+                    export_selected_table(
                         target,
                         title=title,
                         frequency_hz=data.freq_hz,
@@ -255,7 +283,7 @@ class ExportsMixin:
         if plot_id == "electrical_impedance" and projection.electrical_impedance is not None:
             data = projection.electrical_impedance
             return [
-                export_frequency_trace_table(
+                export_selected_table(
                     target,
                     title="Electrical Impedance",
                     frequency_hz=data.freq_hz,
@@ -269,7 +297,7 @@ class ExportsMixin:
         if plot_id == "group_delay" and projection.group_delay is not None:
             data = projection.group_delay
             return [
-                export_frequency_trace_table(
+                export_selected_table(
                     target,
                     title="Group Delay",
                     frequency_hz=data.freq_hz,
@@ -280,7 +308,7 @@ class ExportsMixin:
         if plot_id == "transducer_excursion" and projection.excursion is not None:
             data = projection.excursion
             return [
-                export_frequency_trace_table(
+                export_selected_table(
                     target,
                     title="Transducer Excursion",
                     frequency_hz=data.freq_hz,
@@ -291,7 +319,7 @@ class ExportsMixin:
         if plot_id == "max_spl" and projection.max_spl is not None:
             data = projection.max_spl
             return [
-                export_frequency_trace_table(
+                export_selected_table(
                     target,
                     title="Maximum SPL",
                     frequency_hz=data.freq_hz,
@@ -303,7 +331,7 @@ class ExportsMixin:
             curves = self._spinorama_curves_for_projection(projection)
             named_curves = (*curves.spl_curves(), *curves.di_curves())
             return [
-                export_frequency_trace_table(
+                export_selected_table(
                     target,
                     title="Spinorama",
                     frequency_hz=curves.freq_hz,
