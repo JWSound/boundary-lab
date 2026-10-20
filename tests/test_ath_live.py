@@ -1370,8 +1370,11 @@ def test_export_on_axis_text_files_can_include_the_synthesized_sum(tmp_path: Pat
     assert float(sum_columns[1]) == pytest.approx(100.0, abs=0.001)
 
     selected = export_on_axis_text_files(
-        dataset, tmp_path / "selected", include_sum=True,
-        selected_trace=lambda name: name == "right", force_directory=True,
+        dataset,
+        tmp_path / "selected",
+        include_sum=True,
+        selected_trace=lambda name: name == "right",
+        force_directory=True,
     )
     assert [path.name for path in selected] == ["on_axis_right.txt"]
     assert selected[0].parent == tmp_path / "selected"

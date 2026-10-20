@@ -96,11 +96,7 @@ class ExportsMixin:
 
     def selected_plot_data_is_available(self, plot_id: str) -> bool:
         entry = next((item for item in self.plot_entries if item.plot_id == plot_id), None)
-        return (
-            entry is not None
-            and entry.widget.has_selected_traces()
-            and self.plot_data_is_available(plot_id)
-        )
+        return entry is not None and entry.widget.has_selected_traces() and self.plot_data_is_available(plot_id)
 
     def refresh_plot_data_export(self, plot_id: str) -> None:
         self.export_plot_data_actions[plot_id].setEnabled(self.selected_plot_data_is_available(plot_id))
