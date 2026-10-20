@@ -476,9 +476,7 @@ class _ComponentEditorDialog(QDialog):
         except ValueError as exc:
             QMessageBox.warning(self, "Export Driver", str(exc))
             return
-        path = self.file_dialogs.save_file(
-            self, "Export Driver", "Driver text (*.txt);;All files (*)", "driver.txt"
-        )
+        path = self.file_dialogs.save_file(self, "Export Driver", "Driver text (*.txt);;All files (*)", "driver.txt")
         if path is None:
             return
         if not path.suffix:
