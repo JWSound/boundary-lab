@@ -54,6 +54,7 @@ from blab.interface_conform import (
     conform_bem_interface_to_fem,
 )
 from blab.interface_diagnostics import InterfaceBuildError
+from blab.interface_geometry import measure_interface_geometry
 from blab.mesh_inventory import AvailableSystemMesh, inspect_system_mesh_variants, inspect_system_meshes
 from blab.paths import working_runs_root
 from blab.physical_model import (
@@ -237,6 +238,7 @@ class SystemConfigDialog(QDialog):
         self._mesh_file_overrides_by_name: dict[str, str] = {}
         self._interface_status_by_id: dict[str, str] = {}
         self._interface_diagnostics: list[tuple[str, str | None, str, str]] = []
+        self._selected_interface_geometry = None
         self._restored_resources_by_mesh_name: dict[str, MeshResource] = {}
         self._symmetry_mode = normalize_symmetry(symmetry_mode)
         self._interface_output_root = (
@@ -383,6 +385,9 @@ class SystemConfigDialog(QDialog):
         self.interface_details.setReadOnly(True)
         self.interface_details.setPlaceholderText("Select an interface to view its construction details.")
         self.interface_details.setMinimumHeight(110)
+        self.show_interface_pair_button = QPushButton("Show pair in 3D")
+        self.show_interface_pair_button.setEnabled(False)
+        self.show_interface_pair_button.clicked.connect(self._show_interface_pair)
         for column in range(3):
             self.interfaces_table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeMode.Stretch)
         self.interfaces_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
@@ -393,6 +398,7 @@ class SystemConfigDialog(QDialog):
         note.setWordWrap(True)
         row = QHBoxLayout()
         row.addWidget(self.identify_interfaces_button)
+        row.addWidget(self.show_interface_pair_button)
         row.addStretch(1)
         layout = QVBoxLayout(self.interfaces_tab)
         layout.addWidget(note)
@@ -1219,6 +1225,9 @@ class SystemConfigDialog(QDialog):
                 item = QTableWidgetItem(str(value))
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 item.setToolTip(str(value))
+                item.setData(
+                    Qt.ItemDataRole.UserRole + 1, (interface.bounded_boundary_id, interface.unbounded_boundary_id)
+                )
                 self.interfaces_table.setItem(row, column, item)
             valid.append(interface)
         self._interfaces = valid
@@ -1274,6 +1283,7 @@ class SystemConfigDialog(QDialog):
                 item = QTableWidgetItem(value)
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 item.setData(Qt.ItemDataRole.UserRole, detail)
+                item.setData(Qt.ItemDataRole.UserRole + 1, (fem_id, bem_id))
                 item.setToolTip(value)
                 self.interfaces_table.setItem(row, column, item)
         self.interfaces_table.resizeRowsToContents()
@@ -1291,6 +1301,8 @@ class SystemConfigDialog(QDialog):
             self.interface_details.clear()
 
     def _show_interface_details(self) -> None:
+        self._selected_interface_geometry = None
+        self.show_interface_pair_button.setEnabled(False)
         row = self.interfaces_table.currentRow()
         item = self.interfaces_table.item(row, 3)
         if item is None:
@@ -1314,6 +1326,49 @@ class SystemConfigDialog(QDialog):
                 )
             )
         )
+        pair = item.data(Qt.ItemDataRole.UserRole + 1)
+        if pair and all(pair):
+            try:
+                boundaries = {b.id: b for b in self._collect_boundaries()}
+                fem, bem = (boundaries[boundary_id] for boundary_id in pair)
+                _, resources = self._collect_regions_and_resources()
+                by_id = (
+                    self._symmetry_analysis_resources_by_id(resources)
+                    if self.stitch_exterior_meshes_check.isChecked()
+                    else {resource.id: resource for resource in resources}
+                )
+                geometry = measure_interface_geometry(
+                    self._interface_mesh(by_id[fem.group.mesh_id]),
+                    self._interface_mesh(by_id[bem.group.mesh_id]),
+                    fem_interface_name=str(fem.group.name),
+                    bem_interface_name=str(bem.group.name),
+                )
+            except (ValueError, OSError, KeyError, np.linalg.LinAlgError) as exc:
+                self.interface_details.appendPlainText(f"\nSource measurements unavailable: {exc}")
+            else:
+                self._selected_interface_geometry = geometry
+                self.show_interface_pair_button.setEnabled(True)
+                self.interface_details.appendPlainText("\n" + geometry.summary())
+                if self.stitch_exterior_meshes_check.isChecked():
+                    self.interface_details.appendPlainText(
+                        "These are the selected source patches before exterior stitching, "
+                        "using the current symmetry mesh variants. Symmetry images are not replicated; "
+                        "perimeters include any symmetry-cut edges."
+                    )
+        self.interface_details.verticalScrollBar().setValue(0)
+
+    def _show_interface_pair(self) -> None:
+        if self._selected_interface_geometry is None:
+            return
+        from blab.ui.interface_preview import InterfacePreviewDialog
+
+        row = self.interfaces_table.currentRow()
+        labels = tuple(self.interfaces_table.item(row, column).text() for column in (1, 2))
+        dialog = InterfacePreviewDialog(self._selected_interface_geometry, labels, self)
+        try:
+            dialog.exec()
+        finally:
+            dialog.deleteLater()
 
     def _region_names_by_id(self) -> dict[str, str]:
         names = {region.id: region.name for region in self._existing_regions.values()}

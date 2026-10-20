@@ -1137,6 +1137,9 @@ def test_failed_interface_stays_visible_and_can_be_retried(monkeypatch) -> None:
     assert "Interior / Interface" in details
     assert "Exterior / Interface" in details
     assert "0.002 exceeds tolerance 0.0005" in details
+    assert "Source-surface measurements" in details
+    assert "Maximum sampled perimeter deviation:" in details
+    assert dialog.show_interface_pair_button.isEnabled()
     assert dialog.physical_system().interfaces == ()
     assert len(warnings) == 1
     assert dialog.identify_interfaces_button.isEnabled()
@@ -1172,7 +1175,46 @@ def test_interface_discovery_continues_after_failed_interior(monkeypatch) -> Non
     assert [dialog.interfaces_table.item(r, 3).text() for r in range(2)] == ["Ready", "Failed"]
     assert dialog.interfaces_table.currentRow() == 1
     assert "Perimeter mismatch" in dialog.interface_details.toPlainText()
+    assert "Source measurements unavailable:" in dialog.interface_details.toPlainText()
+    assert not dialog.show_interface_pair_button.isEnabled()
     assert [p.bounded_boundary_id for p in dialog._interfaces] == [fem.id]
+
+
+def test_interface_measurements_use_resource_translation_and_preview_selected_pair(monkeypatch) -> None:
+    from blab.ui import interface_preview
+
+    dialog = _configured_fixture_dialog()
+    original_geometry = dialog._selected_interface_geometry
+    regions, resources = dialog._collect_regions_and_resources()
+    offset = original_geometry.fem.plane_normal * 0.003
+    resources = tuple(
+        replace(resource, translation_m=tuple(offset)) if resource.id == "mesh:exterior" else resource
+        for resource in resources
+    )
+    monkeypatch.setattr(dialog, "_collect_regions_and_resources", lambda: (regions, resources))
+    dialog._show_interface_details()
+    geometry = dialog._selected_interface_geometry
+    assert geometry.centroid_normal_offset_m == pytest.approx(0.003, abs=1e-12)
+    np.testing.assert_allclose(geometry.bem.points, original_geometry.bem.points + offset)
+    assert "Centroid offset along FEM fitted normal: 3 mm" in dialog.interface_details.toPlainText()
+    shown = []
+
+    class Preview:
+        def __init__(self, report, labels, parent):
+            shown.append((report, labels, parent))
+
+        def exec(self):
+            pass
+
+        def deleteLater(self):
+            pass
+
+    monkeypatch.setattr(interface_preview, "InterfacePreviewDialog", Preview)
+    dialog.show_interface_pair_button.click()
+    assert shown[0][0] is geometry
+    assert "Interior / Interface" in shown[0][1][0]
+    assert "Exterior / Interface" in shown[0][1][1]
+    assert shown[0][2] is dialog
 
 
 def test_interface_settings_changes_mark_existing_pair_stale() -> None:
@@ -1225,6 +1267,7 @@ def test_missing_exterior_assignment_has_actionable_diagnostic(monkeypatch) -> N
     assert dialog.interfaces_table.item(0, 3).text() == "Failed"
     assert "No unpaired exterior" in dialog.interface_details.toPlainText()
     assert not dialog._interfaces
+    assert not dialog.show_interface_pair_button.isEnabled()
 
 
 def test_global_build_error_is_retained_without_claiming_pair_success(monkeypatch) -> None:
