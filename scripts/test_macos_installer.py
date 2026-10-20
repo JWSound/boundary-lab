@@ -59,25 +59,33 @@ def main():
     run(app / "Contents/MacOS/Boundary Lab", "--initialize", env=dict(env, HOME=str(launcher_home)), cwd=output)
     if not (launcher_home / "Documents/Boundary Lab/runs").is_dir():
         raise RuntimeError("Native launcher did not initialize its isolated user files")
-    for phase in ("cold", "warm"):
-        with (output / f"{phase}.log").open("w") as log:
-            result = subprocess.run(
-                [python, "-I", "-B", runner, "--output", output / phase, "--solve"],
-                cwd=output,
-                env=env,
-                stdout=log,
-                stderr=subprocess.STDOUT,
-                timeout=4200,
-            )
-        if result.returncode:
-            raise RuntimeError(f"{phase} qualification failed; see {output / (phase + '.log')}")
-        verify_resources(resources, manifest)
-        print(f"{phase} GUI, VTK, Gmsh and CPU solves passed", flush=True)
+    for backend in manifest["backends"]:
+        if backend not in ("cpu", "metal"):
+            raise RuntimeError(f"Unsupported qualification backend: {backend}")
+        for phase in ("cold", "warm"):
+            label = f"{backend}-{phase}"
+            command = [python, "-I", "-B", runner, "--output", output / label, "--backend", backend, "--solve"]
+            if backend == "metal":
+                command += ["--cpu-reference", output / f"cpu-{phase}"]
+            with (output / f"{label}.log").open("w") as log:
+                result = subprocess.run(
+                    command,
+                    cwd=output,
+                    env=env,
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    timeout=4200,
+                )
+            if result.returncode:
+                raise RuntimeError(f"{label} qualification failed; see {output / (label + '.log')}")
+            verify_resources(resources, manifest)
+            print(f"{label} GUI, VTK, Gmsh and solves passed", flush=True)
     (output / "verification.json").write_text(
         json.dumps(
             dict(
                 runtime_id=manifest["runtime_id"],
                 dmg_sha256=digest(args.dmg),
+                backends=manifest["backends"],
                 cold=True,
                 warm=True,
                 resources_unchanged=True,

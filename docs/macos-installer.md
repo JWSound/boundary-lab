@@ -1,8 +1,8 @@
 # macOS Apple Silicon candidate
 
 The macOS build produces a standalone `Boundary Lab.app` in a drag-to-Applications
-DMG. The initial candidate targets macOS 14+ on Apple Silicon and bundles CPU
-solving and the remote-server client. It does not bundle CUDA, Metal, Ath, or Wine.
+DMG. The initial candidate targets macOS 14+ on Apple Silicon and bundles CPU and Metal
+solving and the remote-server client. It does not bundle CUDA, Ath, or Wine.
 Ath generation is optional and uses [external tool setup](macos-ath-setup.md).
 The built-in parametric generator and imported meshes do not need Ath.
 
@@ -11,6 +11,20 @@ application retains its current development version and exact Git-pinned BEAT
 revision. A stable release must select version metadata and adopt a qualified,
 published engine wheel with a matching checksum under the normal release process.
 No engine version is silently substituted by these scripts.
+
+CPU remains the default (including CLI auto selection). Select **BEAT Engine
+(Apple Metal)** in Preferences to use the GPU. Availability is checked in the
+background when selected, and on startup if that selection was saved. Successful
+checks are silent; failures show a short status message and log details. The check
+allows up to fifteen minutes for a fresh GPU compiler cache and is cancelled when
+the window closes. Metal worker startup uses the same budget; CPU worker startup
+is unchanged. No setup wizard, confirmation, or success notification is shown.
+
+The pinned engine does not support exterior electrodynamic-transducer requests
+on Metal; select CPU for those projects. Coupled FEM-BEM-LEM and exterior ideal
+velocity sources are included in Metal qualification. GPU assembly uses Float32;
+CPU remains available for workloads requiring Float64. Users do not need to install
+Julia, GPU packages, or a separate SDK.
 
 ## Build and sign
 
@@ -30,7 +44,8 @@ Installer certificate is needed for a DMG.
 
 Outputs must be new directories. The build downloads checksum-pinned standalone
 Python and Julia, uses pinned native Python wheels, and stages Julia packages in
-an isolated build depot. The resource whitelist omits `ath/` and Wine. The app
+an isolated build depot, staging both the CPU and Metal environments (including
+lazy native artifacts). The resource whitelist omits `ath/` and Wine. The app
 contains a native launcher, icons, bundled plugins, examples, and documentation.
 Unused Qt linker object files from the wheel are excluded before signing because
 Apple rejects these unsigned build artifacts during notarization.
@@ -43,10 +58,11 @@ Do not mutate a signed app or its manifest. Rebuild into a new directory instead
 
 Qualification mounts and copies the DMG into a spaced path, verifies signatures,
 checks the native launcher, and runs isolated GUI/VTK rendering, native Gmsh
-meshing, and validated exterior/coupled CPU solves with blocked HTTP(S) proxies.
-It repeats with the same user cache, checks complex results/provenance, and
-verifies that installed resource hashes have not changed. It does not qualify
-external Ath/Wine or GPU solving.
+meshing, and validated exterior/coupled CPU and Metal solves with blocked HTTP(S) proxies.
+It repeats each backend with the same user cache, checks complex results and actual
+backend provenance, compares Metal arrays with CPU at a 0.1% relative norm tolerance
+for these fixtures, and verifies that installed resource hashes have not changed. It does not qualify
+external Ath/Wine, CUDA, or all model classes.
 
 ## Notarize after qualification
 

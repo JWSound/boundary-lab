@@ -1,4 +1,4 @@
-"""macOS GUI, native Gmsh, and CPU solves without external Ath or Wine."""
+"""macOS GUI, native Gmsh, and CPU/Metal solves without external Ath or Wine."""
 
 from __future__ import annotations
 
@@ -8,14 +8,16 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--backend", choices=("cpu", "cuda"), default="cpu")
+    parser.add_argument("--backend", choices=("cpu", "metal"), default="cpu")
     parser.add_argument("--solve", action="store_true")
+    parser.add_argument("--cpu-reference", type=Path)
     args = parser.parse_args(argv)
     args.output.mkdir(parents=True, exist_ok=False)
     os.environ["QT_QPA_PLATFORM"] = "cocoa"
@@ -35,6 +37,17 @@ def main(argv=None):
     window = MainWindow()
     window.show()
     app.processEvents()
+    if args.backend == "metal":
+        window.preferences.solve_backend = "beat_metal"
+        failures = []
+        window.backend_health.availability_failed.connect(failures.append)
+        window.backend_health.check_selected_backend()
+        deadline = time.monotonic() + 920
+        while window.backend_health._probe is not None and time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(0.01)
+        assert window.backend_health._metal_available, failures
+        assert not failures, failures
     window.grab().save(str(args.output / "window.png"))
     for preview in window.findChildren(MeshPreview):
         if preview.viewer is not None:
@@ -60,6 +73,7 @@ def main(argv=None):
         "external_ath_required": False,
         "backend": args.backend,
         "solves": [],
+        "cpu_comparison_relative_errors": {},
     }
     if args.solve:
         fixture = args.output / "fixture"
@@ -100,12 +114,28 @@ def main(argv=None):
             manifest = json.loads((output / "manifest.json").read_text())
             assert all(manifest["completion_mask"]), manifest["status"]
             assert manifest["engine_runs"], "Missing engine provenance"
+            assert manifest["backend_id"] == "beat_" + args.backend
+            assert any(run["execution"].get("backend") == args.backend for run in manifest["engine_runs"]), (
+                "Wrong backend provenance"
+            )
             for run in manifest["engine_runs"]:
                 assert run["engine"]["version"] == "0.4.0"
                 assert len(run["engine"]["source_sha256"]) == 64
             with np.load(output / "frequencies/000000.npz") as values:
                 assert any(np.iscomplexobj(values[k]) for k in values.files), "Complex results lost"
                 assert all(np.isfinite(values[k]).all() for k in values.files), "Nonfinite result"
+            if args.cpu_reference:
+                with (
+                    np.load(output / "frequencies/000000.npz") as actual,
+                    np.load(args.cpu_reference / name / "frequencies/000000.npz") as reference,
+                ):
+                    assert set(actual.files) == set(reference.files)
+                    for key in actual.files:
+                        relative_error = np.linalg.norm(actual[key] - reference[key]) / max(
+                            np.linalg.norm(reference[key]), 1e-12
+                        )
+                        report["cpu_comparison_relative_errors"][f"{name}/{key}"] = float(relative_error)
+                        assert relative_error < 0.001, (name, key, relative_error)
             report["solves"].append(name)
     (args.output / "smoke.json").write_text(json.dumps(report, indent=2))
     print(json.dumps(report), flush=True)
