@@ -417,6 +417,30 @@ Ath-generated driver groups are initially seeded as prescribed-velocity
 components.
 
 Electrodynamic components use direct Re, Le, Bl, Mmd, Cms, and Rms parameters.
+Use **Import Driver…** and **Export Driver…** in the component editor to reuse
+these parameters as manufacturer-independent `.txt` files. Keep one file per
+driver in a folder of your choice. Import fills the editor; the component's
+existing name, surfaces, channel, motion direction, and rear chamber are
+preserved. Confirm the editor to keep the changes, or cancel to discard them.
+The project stores the imported values and does not depend on the source file.
+
+The first nonblank line is the driver name, followed by `parameter=value`
+lines. Use decimal points and optionally scientific notation. The required
+parameters are `Bl` (N/A), `Cms` (m/N), `Rms` (N·s/m), `Mmd` (g),
+`Le` (mH), and `Re` (Ω). `Mmd` is dry moving mass; `Mms` is not interchangeable.
+Optional `Sd` (cm²) is retained as reference information, not used to override
+the geometry-derived diaphragm area. `Pmax` and `Xmax` are ignored on import
+and omitted on export; configure those limits per channel in Maximum SPL.
+
+An optional semi-inductance section begins with `Re'`, followed by `Leb`,
+`Le`, `Ke`, and `Rss`, and requires `SemiInductance=0` or `1`.
+The second `Le` belongs to this section, not the ordinary voice-coil inductance.
+Re′ and Rss use Ω, Leb and Le use mH, and Ke uses sH.
+Disabled zero placeholders do not replace ordinary driver values. The second
+`Rms` and `Ams` entries are inactive damping data; enabled `Damping` or `LossyLe`
+models are rejected. Export writes supported parameters and disabled model
+placeholders, without preserving unsupported data.
+
 The **Semi-Inductance** button beside Le optionally opens the advanced Re′,
 Leb, Le, Ke, and Rss voice-coil impedance model.
 The solver retains a 2.83 V reference basis, while the channel Voltage control

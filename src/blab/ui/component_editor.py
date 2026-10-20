@@ -36,6 +36,7 @@ from blab.component_symmetry import (
     infer_projected_diaphragm_area,
 )
 from blab.config import normalize_symmetry
+from blab.driver_text import DriverText, format_driver_text, parse_driver_text
 from blab.physical_model import (
     Boundary,
     ComponentKind,
@@ -46,6 +47,7 @@ from blab.system_editing import (
     MotionAxisInference,
     infer_component_motion_axis,
 )
+from blab.ui.file_dialogs import FileDialogService
 from blab.ui.numeric_locale import FlexibleDoubleValidator, format_decimal_number, parse_decimal_number
 
 PROJECTED_AREA_DEBOUNCE_MS = 500
@@ -190,6 +192,8 @@ class _ComponentEditorDialog(QDialog):
         self.setWindowTitle("Component")
         self._exterior_only = exterior_only
         self._draft = draft
+        self.file_dialogs = FileDialogService()
+        self._driver_reference = dict(draft.parameters.get("driver_reference") or {})
         self._boundaries_by_id = {boundary.id: boundary for boundary in boundaries}
         self._resources_by_id = resources_by_id
         self._mesh_cache = mesh_cache
@@ -373,6 +377,18 @@ class _ComponentEditorDialog(QDialog):
         self.transducer_group = QGroupBox("Rigid-piston transducer")
         transducer_layout = QVBoxLayout(self.transducer_group)
         transducer_layout.addLayout(transducer_form)
+        driver_actions = QHBoxLayout()
+        self.import_driver_button = QPushButton("Import Driver…")
+        self.export_driver_button = QPushButton("Export Driver…")
+        driver_actions.addWidget(self.import_driver_button)
+        driver_actions.addWidget(self.export_driver_button)
+        transducer_layout.addLayout(driver_actions)
+        self.driver_reference_label = QLabel()
+        self.driver_reference_label.setWordWrap(True)
+        transducer_layout.addWidget(self.driver_reference_label)
+        self._refresh_driver_reference()
+        self.import_driver_button.clicked.connect(self._import_driver)
+        self.export_driver_button.clicked.connect(self._export_driver)
         self.motion_group = QGroupBox("Motion direction")
         motion_layout = QVBoxLayout(self.motion_group)
         motion_layout.addLayout(axis_form)
@@ -415,6 +431,62 @@ class _ComponentEditorDialog(QDialog):
                     self._infer_axis(symmetry_inference)
                 else:
                     self._update_projected_area_readout(symmetry_inference)
+
+    def _refresh_driver_reference(self) -> None:
+        text = str(self._driver_reference.get("name", ""))
+        sd = self._driver_reference.get("sd_m2")
+        if sd is not None:
+            text += f" · Reference Sd: {sd * 10_000:g} cm² (simulation area comes from geometry)"
+        self.driver_reference_label.setText(text)
+
+    def _import_driver(self) -> None:
+        path = self.file_dialogs.open_file(self, "Import Driver", "Driver text (*.txt);;All files (*)")
+        if path is None:
+            return
+        try:
+            driver = parse_driver_text(path.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "Import Driver", str(exc))
+            return
+        for key, _label, _unit, display_per_si in _TRANSDUCER_PARAMETER_FIELDS:
+            edit = self.parameter_edits[key]
+            edit.setText(format_decimal_number(driver.parameters[key] * display_per_si, edit.locale()))
+        self._semi_inductance_parameters = driver.parameters.get("semi_inductance")
+        self._driver_reference = {"name": driver.name}
+        if driver.sd_m2 is not None:
+            self._driver_reference["sd_m2"] = driver.sd_m2
+        self._refresh_semi_inductance_controls()
+        self._refresh_driver_reference()
+
+    def _export_driver(self) -> None:
+        try:
+            parameters = {
+                key: parse_decimal_number(self.parameter_edits[key].text(), self.parameter_edits[key].locale())
+                / display_per_si
+                for key, _label, _unit, display_per_si in _TRANSDUCER_PARAMETER_FIELDS
+            }
+            parameters["semi_inductance"] = self._semi_inductance_parameters
+            text = format_driver_text(
+                DriverText(
+                    self._driver_reference.get("name") or self.name_edit.text(),
+                    parameters,
+                    self._driver_reference.get("sd_m2"),
+                )
+            )
+        except ValueError as exc:
+            QMessageBox.warning(self, "Export Driver", str(exc))
+            return
+        path = self.file_dialogs.save_file(
+            self, "Export Driver", "Driver text (*.txt);;All files (*)", "driver.txt"
+        )
+        if path is None:
+            return
+        if not path.suffix:
+            path = path.with_suffix(".txt")
+        try:
+            path.write_text(text, encoding="utf-8")
+        except OSError as exc:
+            QMessageBox.warning(self, "Export Driver", str(exc))
 
     def selected_boundary_ids(self) -> tuple[str, ...]:
         return tuple(
@@ -463,6 +535,8 @@ class _ComponentEditorDialog(QDialog):
                 parameters[key] = display_value / display_per_si
             if self._semi_inductance_parameters is not None:
                 parameters[_SEMI_INDUCTANCE_KEY] = dict(self._semi_inductance_parameters)
+            if self._driver_reference:
+                parameters["driver_reference"] = dict(self._driver_reference)
             mode = str(self.axis_mode_combo.currentData())
             if mode == "automatic":
                 inference = self._infer_axis(symmetry_inference, update_projected_area=False)

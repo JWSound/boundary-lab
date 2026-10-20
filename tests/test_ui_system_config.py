@@ -918,8 +918,10 @@ def test_component_editor_applies_automatic_axis_to_a_two_sided_transducer(monke
     editor.parameter_edits["le_h"].setText("0.75")
     editor.parameter_edits["mmd_kg"].setText("18")
     editor.parameter_edits["cms_m_per_n"].setText("625")
+    editor._driver_reference = {"name": "Measured driver", "sd_m2": 0.0522}
     updated = editor.component_draft()
 
+    assert updated.parameters["driver_reference"] == {"name": "Measured driver", "sd_m2": 0.0522}
     assert updated.boundary_ids == ("boundary:front", "boundary:rear")
     assert np.abs(updated.parameters["motion_axis"]) == pytest.approx((0.0, 0.0, 1.0))
     assert updated.parameters["le_h"] == pytest.approx(0.00075)
