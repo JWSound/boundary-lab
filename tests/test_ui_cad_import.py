@@ -14,7 +14,7 @@ import pytest
 from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
 from PySide6.QtGui import QMouseEvent, QPalette
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QDockWidget, QHeaderView, QScrollArea, QSplitter
+from PySide6.QtWidgets import QApplication, QComboBox, QDockWidget, QHeaderView, QScrollArea, QSplitter
 
 from blab.cad_import import inspect_step
 from blab.generators import catalog as catalog_module
@@ -1387,6 +1387,57 @@ def test_the_view_comes_first_then_warnings_unmeshable_faces_placement_and_the_t
     )
     assert in_order(laid_out(editor.tree_box), [editor.hint, editor.tree, editor.show_all_button])
     assert editor.fineness in laid_out(editor.sizing_box)
+
+
+def shown(editor, qapp, height=1330):
+    """Show ``editor``'s window ``height`` pixels tall and let it lay out."""
+    window = editor.widget.window()
+    window.resize(1900, height)
+    window.show()
+    for _ in range(20):
+        qapp.processEvents()
+
+
+def test_the_face_groups_table_takes_only_its_rows_and_the_tree_the_spare_height(ball_editor, qapp):
+    editor, _ = ball_editor
+    table, tree = editor.groups_table, editor.tree
+
+    shown(editor, qapp)
+
+    rows = sum(table.rowHeight(r) for r in range(table.rowCount()))
+    assert rows <= table.viewport().height() <= rows + table.rowHeight(0)  # a scroll area keeps a minimum height
+    assert tree.viewport().height() >= 4 * tree.sizeHintForRow(0)
+
+
+def test_every_unmeshable_face_row_shows(ball_editor, qapp):
+    editor, _ = ball_editor
+    listed = editor.unmeshable_list
+    for _ in range(5):  # more rows than a list shows unless sized to them
+        listed.addItem(listed.item(0).text())
+
+    shown(editor, qapp)
+
+    assert listed.viewport().height() >= listed.count() * listed.sizeHintForRow(0)
+
+
+def test_size_columns_fit_their_dropdowns_and_face_group_names_take_the_spare_width(ball_editor, qapp, tmp_path):
+    editor, _ = ball_editor
+    shown(editor, qapp)
+    # Read while shown: a dropdown shown before Global is named would keep the width it had without the name.
+    editor.set_step_path(str(bored_ball(tmp_path / "again.step")))
+    wait(qapp, lambda: not editor.loading)
+    shown(editor, qapp)
+
+    def fitted(combo):
+        unshown = QComboBox()
+        unshown.addItems([combo.itemText(i) for i in range(combo.count())])
+        return unshown.sizeHint().width()
+
+    assert editor.tree.columnWidth(1) >= fitted(editor.tree.itemWidget(editor.tree.topLevelItem(0), 1))
+    table = editor.groups_table
+    assert table.horizontalHeader().sectionResizeMode(0) == QHeaderView.ResizeMode.Stretch
+    assert table.columnWidth(1) >= table.sizeHintForColumn(1)
+    assert table.columnWidth(2) >= fitted(table.cellWidget(0, 2))
 
 
 def test_warnings_are_red_in_both_themes_and_the_status_line_is_not(ball_editor, qapp):

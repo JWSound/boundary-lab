@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QSplitter,
     QStyle,
     QTableWidget,
@@ -404,6 +405,8 @@ class CadImportEditor:
         self.unmeshable_box.setToolTip("Faces Gmsh cannot mesh: fix them in the CAD tool, then read the file again.")
         unmeshable_layout = QVBoxLayout(self.unmeshable_box)
         self.unmeshable_list = QListWidget()
+        self.unmeshable_list.setSizeAdjustPolicy(QAbstractItemView.SizeAdjustPolicy.AdjustToContents)
+        self.unmeshable_list.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)  # all rows; the tree gets the rest
         self.unmeshable_list.setAccessibleName("Unmeshable faces")
         self.unmeshable_list.setToolTip("Click a face to show it in context, select it and frame it.")
         self.unmeshable_list.itemClicked.connect(lambda item: self.show_unmeshable(item.data(FACE_ROLE)))
@@ -510,8 +513,13 @@ class CadImportEditor:
         self.groups_table = QTableWidget(0, 3)
         self.groups_table.setHorizontalHeaderLabels(["Face group", "Faces", "Mesh size"])
         self.groups_table.verticalHeader().hide()
+        groups_header = self.groups_table.horizontalHeader()
+        groups_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        groups_header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        groups_header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         self.groups_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.groups_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.groups_table.setSizeAdjustPolicy(QAbstractItemView.SizeAdjustPolicy.AdjustToContents)
         self.groups_table.setAccessibleName("Face groups")
         self.groups_table.itemSelectionChanged.connect(self._group_selected)
         self.groups_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -1242,6 +1250,7 @@ class CadImportEditor:
     def _size_combo(self, face_ids, volumes):
         """A Mesh size dropdown writing to ``face_ids`` and air-body ``volumes``."""
         combo = QComboBox()
+        combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)  # Global is named once shown
         combo.setAccessibleName("Mesh size")
         combo.addItem("", None)  # Global, named when shown
         for label, choice in SIZE_CHOICES:
