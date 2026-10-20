@@ -1690,6 +1690,82 @@ def test_open_step_starts_in_the_folder_last_used(blank_cad_editor, monkeypatch,
     assert Path(starts[1]) == step.parent
 
 
+def save_and_reopen(main_window, qapp, path):
+    """Save the project to ``path``, start a new one, open ``path`` again and return the reopened CAD editor."""
+    document_id = main_window.active_generator_document().id
+    assert main_window.project_workflow._save_project_to_path(path)
+    main_window.new_project()
+    assert all(d.id != document_id for d in main_window.project.generator_documents)
+    main_window.project_workflow._load_project_from_path(path)
+    wait(qapp, lambda: main_window.active_generator_document().id == document_id)
+    editor, host = main_window._provider_editors[document_id]
+    wait(qapp, lambda: not editor.loading and editor.geometry is not None)
+    return editor, host
+
+
+def test_a_saved_project_reopens_with_the_design_and_its_meshes(cad_editor, main_window, monkeypatch, qapp, tmp_path):
+    from blab.ui.main_window import geometry_workflow
+
+    editor, host = cad_editor
+    monkeypatch.setattr(geometry_workflow, "GENERATED_GEOMETRY_ROOT", tmp_path / "runs")
+    errors = []
+    monkeypatch.setattr(main_window, "show_error", lambda *args: errors.append(args))
+    side = cabinet_faces(editor, lambda f: abs(abs(f["normal"][0]) - 1) < 1e-9)[0]
+    editor.pick_face(side)
+    editor.group_selection("Side")
+    editor.set_face_size({side}, COARSE)
+    editor.rename_interface("Interface 1 Port", "Port mouth")
+    editor.rotation_spins[1].setValue(90)
+    editor.translation_spins[0].setValue(25)
+    host.generate(expected_revision=host.snapshot().revision)
+    wait(qapp, lambda: not main_window.geometry_controller.active)
+    assert not errors
+    source = host.snapshot().source
+    rows = all_rows(editor)
+    meshes = [m.mesh_path for m in main_window.active_generator_document().artifact.meshes]
+
+    editor, host = save_and_reopen(main_window, qapp, tmp_path / "speaker.blab.json")
+
+    assert not errors
+    assert host.snapshot().source == source
+    assert all_rows(editor) == rows
+    assert [s.value() for s in editor.rotation_spins] == [0, 90, 0]
+    assert [s.value() for s in editor.translation_spins] == [25, 0, 0]
+    assert size_combo(editor, "Side").currentText() == "Coarse"
+    assert [m.mesh_path for m in main_window.active_generator_document().artifact.meshes] == meshes
+    entries = main_window._mesh_config_dialog_entries()
+    assert len(entries) == 2 and all(e.locked for e in entries)
+    assert len(PhysicalSystemCompiler().compile(main_window.project.physical_system).interfaces) == 1
+    assert not main_window.geometry_controller.active  # restored, not re-meshed
+
+
+def test_a_saved_project_whose_meshes_are_gone_reopens_with_the_design_and_generate_rebuilds_them(
+    cad_editor, main_window, monkeypatch, qapp, tmp_path
+):
+    from blab.ui.main_window import geometry_workflow
+
+    editor, host = cad_editor
+    monkeypatch.setattr(geometry_workflow, "GENERATED_GEOMETRY_ROOT", tmp_path / "runs")
+    errors = []
+    monkeypatch.setattr(main_window, "show_error", lambda *args: errors.append(args))
+    editor.translation_spins[0].setValue(25)
+    host.generate(expected_revision=host.snapshot().revision)
+    wait(qapp, lambda: not main_window.geometry_controller.active)
+    assert not errors
+    source = host.snapshot().source
+    for mesh in main_window.active_generator_document().artifact.meshes:
+        Path(mesh.mesh_path).unlink()
+
+    editor, host = save_and_reopen(main_window, qapp, tmp_path / "speaker.blab.json")
+
+    assert host.snapshot().source == source
+    host.generate(expected_revision=host.snapshot().revision)
+    wait(qapp, lambda: not main_window.geometry_controller.active)
+    assert not errors
+    assert all(Path(m.mesh_path).is_file() for m in main_window.active_generator_document().artifact.meshes)
+    assert len(PhysicalSystemCompiler().compile(main_window.project.physical_system).interfaces) == 1
+
+
 def test_bundled_cad_import_is_enabled_once_also_for_existing_installs():
     settings = MemorySettings({"providers/enabled": [VENTED], "providers/vented_enclosure_introduced": True})
     assert load_gui_preferences(settings).enabled_geometry_providers == (VENTED, PROVIDER)
