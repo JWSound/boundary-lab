@@ -8,6 +8,7 @@ import os
 import shutil
 import subprocess
 import sys
+from importlib.metadata import version
 from pathlib import Path
 
 
@@ -97,7 +98,7 @@ def main(argv=None):
             assert all(manifest["completion_mask"]), manifest["status"]
             assert manifest["engine_runs"], "Missing engine provenance"
             for run in manifest["engine_runs"]:
-                assert run["engine"]["version"] == "0.4.0"
+                assert run["engine"]["version"] == version("beat-engine")
                 assert len(run["engine"]["source_sha256"]) == 64
             with np.load(output / "frequencies/000000.npz") as values:
                 assert any(np.iscomplexobj(values[k]) for k in values.files), "Complex results lost"
