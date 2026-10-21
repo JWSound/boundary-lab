@@ -64,13 +64,13 @@ The Z direction of Boundary Lab coordinates, the loudspeaker's main radiation ax
 _Avoid_: Forward, depth axis
 
 **Target element size**:
-The default mesh edge length, sound speed ÷ maximum frequency ÷ elements per wavelength.
+The default mesh edge length, sound speed ÷ maximum frequency ÷ the global mesh fineness, one per method: the **FEM target element size** sizes air-body volumes and faces, the **BEM target element size** sizes exterior surface faces, and a face on both takes the finer.
 _Avoid_: Mesh resolution, density
 
 **Mesh fineness**:
-The choice of elements per wavelength at the maximum frequency, as a named level (Coarse, Medium, Fine) or a custom number.
+The choice of elements per wavelength at the maximum frequency, as a named level (FEM Fine, Medium, Coarse for uniform interior meshes; BEM Fine, Medium, Coarse for graded surface meshes) or a custom number.
 _Avoid_: Mesh density, mesh quality, resolution
 
 **Size override**:
-A mesh fineness or edge length set on a face, or on the volume (interior) of an air body, that replaces the target element size there. Only faces and volumes carry one: setting a size on a body or face group sets it on each of its faces (and a body's volume), and a body or face group shows their shared size or "Mixed". A face or volume without one follows the mesh fineness ("Global").
+A mesh fineness or edge length set on a face, or on the volume (interior) of an air body, that replaces the target element size there. Only faces and volumes carry one: setting a size on a body or face group sets it on each of its faces (and a body's volume), and a body or face group shows their shared size or "Mixed". A face or volume without one follows its target element size ("Global").
 _Avoid_: Local refinement, size field
