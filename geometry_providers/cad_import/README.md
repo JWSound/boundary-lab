@@ -49,14 +49,15 @@ in **Edit > Generator Plugins...** and add a design.
    survive changing the placement. **Delete group** removes a picked group.
 5. Choose the **FEM mesh fineness**: FEM Fine (6 elements per wavelength at
    the maximum frequency, the default), FEM Medium (4), FEM Coarse (2) or
-   Custom with a number; each level's tooltip names the frequency up to which it still gives
-   6 per wavelength. The target element size is sound speed ÷ the project's
-   maximum frequency ÷ elements per wavelength; the sound speed is that of the
-   project's exterior air region (343 m/s when there is none yet). Curvature
-   refinement (elements per full circle) and growth are set below it.
-   **Size overrides** replace the target size as FEM Fine / Medium / Coarse,
-   BEM Fine / Medium / Coarse or a custom size in mm: per body or face in the tree's **Mesh size** column
-   (double-click), per face group in the list, or on the selected faces from
+   Custom with a number; each level's tooltip names the frequency up to which
+   it still gives 6 per wavelength. The target element size is sound speed ÷
+   the project's maximum frequency ÷ elements per wavelength; the sound speed
+   is that of the project's exterior air region (343 m/s when there is none
+   yet). Curvature refinement (elements per full circle) and growth are set
+   below it. **Size overrides** replace the target size as FEM Fine / Medium /
+   Coarse, BEM Fine / Medium / Coarse or a custom size in mm: per body or face
+   in the tree's **Mesh size** column (double-click), per face group in the
+   list, or on the selected faces from
    the 3D right-click menu (**Mesh size ▸**). The most specific wins: face,
    face group, the finest of the face's bodies, then the mesh fineness; an
    empty cell's tooltip says where its size comes from. A face override whose
