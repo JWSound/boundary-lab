@@ -14,7 +14,7 @@ import pytest
 from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
 from PySide6.QtGui import QMouseEvent, QPalette
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QComboBox, QDockWidget, QHeaderView, QScrollArea, QSplitter
+from PySide6.QtWidgets import QApplication, QComboBox, QDockWidget, QHeaderView, QLabel, QScrollArea, QSplitter
 
 from blab.cad_import import inspect_step
 from blab.generators import catalog as catalog_module
@@ -519,12 +519,21 @@ def test_deleting_a_group_keeps_the_sizes_of_its_faces(cad_editor):
 
     assert host.snapshot().source["face_groups"] == []
     assert [e["elements_per_wavelength"] for e in host.snapshot().source["face_sizes"]] == [6]
-    assert size_combo(editor, face_item(editor, face)).currentText() == "Fine"
+    assert size_combo(editor, face_item(editor, face)).currentText() == "FEM Fine"
 
 
 FINE = {"elements_per_wavelength": 6}
 COARSE = {"elements_per_wavelength": 2}
-SIZE_ENTRIES = ["Global (Fine)", "Coarse", "Medium", "Fine", "Custom…"]
+SIZE_ENTRIES = [
+    "Global (FEM Fine)",
+    "FEM Fine",
+    "FEM Medium",
+    "FEM Coarse",
+    "BEM Fine",
+    "BEM Medium",
+    "BEM Coarse",
+    "Custom…",
+]
 
 
 def size_combo(editor, row):
@@ -540,7 +549,7 @@ def size_entries(combo):
 
 def choose_size(combo, text, qapp):
     """Choose ``text`` in a Mesh size dropdown, as a user does."""
-    assert size_entries(combo)[:5] == SIZE_ENTRIES
+    assert size_entries(combo)[: len(SIZE_ENTRIES)] == SIZE_ENTRIES
     combo.setCurrentIndex(combo.findText(text))
     combo.activated.emit(combo.currentIndex())
     qapp.processEvents()  # applied once the dropdown has closed
@@ -569,19 +578,19 @@ def test_every_row_has_a_mesh_size_dropdown_showing_global_its_own_size_or_mixed
     rows = tree_rows(editor)
 
     assert all(size_entries(size_combo(editor, row)) == SIZE_ENTRIES for row in rows)
-    assert {size_combo(editor, row).currentText() for row in rows} == {"Global (Fine)"}
-    assert {size_combo(editor, name).currentText() for name in all_rows(editor)} == {"Global (Fine)"}
+    assert {size_combo(editor, row).currentText() for row in rows} == {"Global (FEM Fine)"}
+    assert {size_combo(editor, name).currentText() for name in all_rows(editor)} == {"Global (FEM Fine)"}
 
     side = cabinet_faces(editor, lambda f: True)[0]
     editor.set_face_size({side}, COARSE)
 
     cabinet = body_items(editor)["Cabinet"]
-    assert size_combo(editor, face_item(editor, side)).currentText() == "Coarse"
+    assert size_combo(editor, face_item(editor, side)).currentText() == "FEM Coarse"
     for row in (cabinet, faces_row(cabinet), "walls"):
         combo = size_combo(editor, row)
         assert combo.currentText() == "Mixed"
         assert not combo.model().item(combo.currentIndex()).isEnabled()  # shown, never chosen
-    assert size_combo(editor, "Driver").currentText() == "Global (Fine)"
+    assert size_combo(editor, "Driver").currentText() == "Global (FEM Fine)"
 
 
 def test_a_body_size_sets_its_volume_and_faces_and_a_volume_size_only_the_volume(cad_editor, monkeypatch, qapp):
@@ -590,19 +599,19 @@ def test_a_body_size_sets_its_volume_and_faces_and_a_volume_size_only_the_volume
     volume, faces = child_row(chamber, "Volume"), faces_row(chamber)
     assert volume.flags() & Qt.ItemFlag.ItemIsUserCheckable == Qt.ItemFlag.NoItemFlags  # a volume is not drawn
 
-    choose_size(size_combo(editor, chamber), "Medium", qapp)
+    choose_size(size_combo(editor, chamber), "FEM Medium", qapp)
 
     source = host.snapshot().source
     assert source["volume_sizes"] == {"Chamber": {"elements_per_wavelength": 4}}
     assert len(source["face_sizes"]) == len(body_faces(editor, "Chamber"))
     assert "body_sizes" not in source and "face_group_sizes" not in source
-    assert size_combo(editor, "Driver").currentText() == "Medium"  # a chamber face
+    assert size_combo(editor, "Driver").currentText() == "FEM Medium"  # a chamber face
     assert size_combo(editor, "walls").currentText() == "Mixed"  # chamber and cabinet walls
 
-    choose_size(size_combo(editor, volume), "Coarse", qapp)
+    choose_size(size_combo(editor, volume), "FEM Coarse", qapp)
     assert host.snapshot().source["volume_sizes"] == {"Chamber": COARSE}
     assert size_combo(editor, chamber).currentText() == "Mixed"
-    assert size_combo(editor, faces).currentText() == "Medium"
+    assert size_combo(editor, faces).currentText() == "FEM Medium"
 
     monkeypatch.setattr(editor, "ask_size_mm", lambda: 25.0)
     choose_size(size_combo(editor, faces), "Custom…", qapp)
@@ -612,7 +621,7 @@ def test_a_body_size_sets_its_volume_and_faces_and_a_volume_size_only_the_volume
     choose_size(size_combo(editor, chamber), "Custom…", qapp)
     assert host.snapshot().source["volume_sizes"] == {"Chamber": COARSE}
 
-    choose_size(size_combo(editor, chamber), "Global (Fine)", qapp)
+    choose_size(size_combo(editor, chamber), "Global (FEM Fine)", qapp)
     assert (host.snapshot().source["volume_sizes"], host.snapshot().source["face_sizes"]) == ({}, [])
 
 
@@ -620,14 +629,29 @@ def test_face_group_sizes_are_written_to_their_faces_even_on_walls_and_interface
     editor, host = cad_editor
     (interface,) = editor.geometry["interfaces"]
 
-    choose_size(size_combo(editor, "Interface 1 Port"), "Fine", qapp)
-    choose_size(size_combo(editor, "walls"), "Coarse", qapp)
+    choose_size(size_combo(editor, "Interface 1 Port"), "FEM Fine", qapp)
+    choose_size(size_combo(editor, "walls"), "FEM Coarse", qapp)
 
     source = host.snapshot().source
     assert len(source["face_sizes"]) == len(interface["face_ids"]) + all_rows(editor)["walls"]
-    assert size_combo(editor, "Interface 1 Port").currentText() == "Fine"
-    assert size_combo(editor, "walls").currentText() == "Coarse"
+    assert size_combo(editor, "Interface 1 Port").currentText() == "FEM Fine"
+    assert size_combo(editor, "walls").currentText() == "FEM Coarse"
     assert "face_group_sizes" not in source
+
+
+def test_a_bem_level_stores_its_elements_per_wavelength_on_faces_and_volumes(cad_editor, qapp):
+    editor, host = cad_editor
+    side = cabinet_faces(editor, lambda f: True)[0]
+    volume = child_row(body_items(editor)["Chamber"], "Volume")
+
+    choose_size(size_combo(editor, face_item(editor, side)), "BEM Coarse", qapp)
+    choose_size(size_combo(editor, volume), "BEM Fine", qapp)
+
+    source = host.snapshot().source
+    assert [e["elements_per_wavelength"] for e in source["face_sizes"]] == [0.3]
+    assert source["volume_sizes"] == {"Chamber": {"elements_per_wavelength": 12}}
+    assert size_combo(editor, face_item(editor, side)).currentText() == "BEM Coarse"
+    assert size_combo(editor, volume).currentText() == "BEM Fine"
 
 
 def face_item(editor, face_id):
@@ -658,18 +682,18 @@ def test_mesh_size_from_the_face_menu_sets_a_face_override_on_the_selection(cad_
     assert list(menu_entries(menu)) == ['Move to "Driver"', "New group…", "Mesh size"]  # both in walls
     sizes = menu_entries(menu_entries(menu)["Mesh size"].menu())
     assert list(sizes) == SIZE_ENTRIES
-    sizes["Fine"].trigger()
+    sizes["FEM Fine"].trigger()
 
     entries = host.snapshot().source["face_sizes"]
     assert [e["elements_per_wavelength"] for e in entries] == [6, 6]
     assert {round(abs(e["face"]["centre"][0]), 3) for e in entries} == {0.06}  # stored like face group faces
-    assert size_combo(editor, face_item(editor, first)).currentText() == "Fine"
+    assert size_combo(editor, face_item(editor, first)).currentText() == "FEM Fine"
 
     interface_entries = menu_entries(editor.face_menu(interface_face))
     assert list(interface_entries) == ["Rename interface…", "Mesh size"]
-    menu_entries(interface_entries["Mesh size"].menu())["Coarse"].trigger()  # the face, outside the selection
+    menu_entries(interface_entries["Mesh size"].menu())["FEM Coarse"].trigger()  # the face, outside the selection
     assert len(host.snapshot().source["face_sizes"]) == 3
-    menu_entries(menu_entries(editor.face_menu(first))["Mesh size"].menu())["Global (Fine)"].trigger()
+    menu_entries(menu_entries(editor.face_menu(first))["Mesh size"].menu())["Global (FEM Fine)"].trigger()
     assert len(host.snapshot().source["face_sizes"]) == 1
 
 
@@ -757,7 +781,7 @@ def test_existing_designs_get_the_face_and_volume_sizes_that_applied_before(cad_
     port = body_faces(editor, "Port")  # its interface face too: no face group size
     assert {size_combo(editor, face_item(editor, f)).currentText() for f in port} == {"30 mm"}
     cabinet = body_faces(editor, "Cabinet")
-    assert {size_combo(editor, face_item(editor, f)).currentText() for f in cabinet} == {"Global (5 per wavelength)"}
+    assert {size_combo(editor, face_item(editor, f)).currentText() for f in cabinet} == {"Global (BEM Medium)"}
     assert editor.fineness.currentText() == "Custom" and not editor.spins["elements_per_wavelength"].isHidden()
 
     catalog = catalog_module._catalog
@@ -778,10 +802,14 @@ def test_mesh_fineness_levels_set_elements_per_wavelength_and_name_the_frequency
     wait(qapp, lambda: "3000" in editor.target_label.text())
     fineness, custom = editor.fineness, editor.spins["elements_per_wavelength"]
 
-    assert [fineness.itemText(i) for i in range(fineness.count())] == ["Coarse", "Medium", "Fine", "Custom"]
-    assert fineness.currentText() == "Fine" and custom.isHidden()  # new designs
-    assert "6 per wavelength up to 1000 Hz" in fineness.itemData(0, Qt.ItemDataRole.ToolTipRole)
+    labels = {label.text() for label in editor.sizing_box.findChildren(QLabel)}
+    assert "FEM mesh fineness" in labels and "Mesh fineness" not in labels
+    assert fineness.accessibleName() == "FEM mesh fineness"
+    assert [fineness.itemText(i) for i in range(fineness.count())] == ["FEM Fine", "FEM Medium", "FEM Coarse", "Custom"]
+    assert fineness.currentText() == "FEM Fine" and custom.isHidden()  # new designs
+    assert "6 per wavelength up to 3000 Hz" in fineness.itemData(0, Qt.ItemDataRole.ToolTipRole)
     assert "up to 2000 Hz" in fineness.itemData(1, Qt.ItemDataRole.ToolTipRole)
+    assert "6 per wavelength up to 1000 Hz" in fineness.itemData(2, Qt.ItemDataRole.ToolTipRole)
 
     fineness.setCurrentIndex(1)
     fineness.activated.emit(1)
@@ -1152,7 +1180,7 @@ def test_an_interface_is_renamed_from_its_face_menu_and_keeps_its_size(cad_edito
     source = host.snapshot().source
     assert source["interface_names"] == {"Interface 1 Port": "Port mouth"}
     assert "Port mouth" in all_rows(editor) and "Interface 1 Port" not in all_rows(editor)
-    assert size_combo(editor, "Port mouth").currentText() == "Fine"  # the size is on its faces
+    assert size_combo(editor, "Port mouth").currentText() == "FEM Fine"  # the size is on its faces
 
     rename("Driver")
     assert "'Driver' is taken" in editor.status.text()
@@ -1727,7 +1755,7 @@ def test_volume_row_menu_sizes_the_volume(cad_editor, monkeypatch):
     editor, host = cad_editor
 
     def choose_coarse(menu):
-        menu_entries(menu_entries(menu)["Mesh size"].menu())["Coarse"].trigger()
+        menu_entries(menu_entries(menu)["Mesh size"].menu())["FEM Coarse"].trigger()
 
     patch_menu_exec(editor, monkeypatch, choose_coarse)
     editor.show_row_menu(child_row(body_items(editor)["Port"], "Volume"), QPoint())
@@ -1802,7 +1830,7 @@ def test_a_saved_project_reopens_with_the_design_and_its_meshes(cad_editor, main
     assert all_rows(editor) == rows
     assert [s.value() for s in editor.rotation_spins] == [0, 90, 0]
     assert [s.value() for s in editor.translation_spins] == [25, 0, 0]
-    assert size_combo(editor, "Side").currentText() == "Coarse"
+    assert size_combo(editor, "Side").currentText() == "FEM Coarse"
     assert [m.mesh_path for m in main_window.active_generator_document().artifact.meshes] == meshes
     entries = main_window._mesh_config_dialog_entries()
     assert len(entries) == 2 and all(e.locked for e in entries)

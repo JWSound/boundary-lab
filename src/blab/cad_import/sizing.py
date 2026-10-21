@@ -20,7 +20,10 @@ if TYPE_CHECKING:
     from .design import CadFaceGroups
     from .pipeline import CadGeometry
 
-LEVELS = {"Coarse": 2, "Medium": 4, "Fine": 6}  # mesh fineness: elements per wavelength at the maximum frequency
+# Mesh size levels, fine to coarse: elements per wavelength at the maximum frequency (ADR 0002).
+FEM_LEVELS = {"FEM Fine": 6, "FEM Medium": 4, "FEM Coarse": 2}
+BEM_LEVELS = {"BEM Fine": 12, "BEM Medium": 5, "BEM Coarse": 0.3}
+LEVELS = FEM_LEVELS | BEM_LEVELS
 LEVEL_NAMES = {n: name for name, n in LEVELS.items()}
 MIXED = "mixed"  # the shown size of several faces or volumes whose sizes differ
 

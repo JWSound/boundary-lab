@@ -44,6 +44,7 @@ from PySide6.QtWidgets import (
 )
 
 from blab.cad_import import (
+    FEM_LEVELS,
     LEVELS,
     MIXED,
     WALLS,
@@ -550,10 +551,10 @@ class CadImportEditor:
         self.sizing_box = QGroupBox("Mesh sizes")
         form = QFormLayout(self.sizing_box)
         self.fineness = QComboBox()
-        for name, n in LEVELS.items():
+        for name, n in FEM_LEVELS.items():
             self.fineness.addItem(name, n)
         self.fineness.addItem("Custom", None)
-        self.fineness.setAccessibleName("Mesh fineness")
+        self.fineness.setAccessibleName("FEM mesh fineness")
         self.fineness.activated.connect(self._fineness_chosen)
         self._custom_fineness = False  # Custom chosen: it stays while the number is a level's
         custom = QDoubleSpinBox()
@@ -566,7 +567,7 @@ class CadImportEditor:
         fineness_row = QHBoxLayout()
         fineness_row.addWidget(self.fineness)
         fineness_row.addWidget(custom, 1)
-        form.addRow("Mesh fineness", fineness_row)
+        form.addRow("FEM mesh fineness", fineness_row)
         self.spins = {"elements_per_wavelength": custom}
         for key, label, low, high, decimals, suffix in SIZING:
             spin = QDoubleSpinBox()
@@ -624,7 +625,7 @@ class CadImportEditor:
     def _show_fineness(self):
         """The level of the source's elements per wavelength, else (or while chosen) Custom with its number."""
         n = float(self.source["elements_per_wavelength"])
-        custom = self._custom_fineness or n not in LEVELS.values()
+        custom = self._custom_fineness or n not in FEM_LEVELS.values()
         self.fineness.setCurrentIndex(self.fineness.count() - 1 if custom else self.fineness.findData(n))
         self.spins["elements_per_wavelength"].setHidden(not custom)
 
@@ -1391,11 +1392,12 @@ class CadImportEditor:
             f"{sizing.elements_per_wavelength:g} "
             f"(c = {self._sound_speed:g} m/s)"
         )
-        for index, level in enumerate(LEVELS.values()):
+        held = FEM_LEVELS["FEM Fine"]  # the elements per wavelength a level's frequency limit holds
+        for index, level in enumerate(FEM_LEVELS.values()):
             self.fineness.setItemData(
                 index,
                 f"{level} elements per wavelength at {self._fmax_hz:g} Hz: "
-                f"{LEVELS['Fine']} per wavelength up to {self._fmax_hz * level / LEVELS['Fine']:.0f} Hz",
+                f"{held} per wavelength up to {self._fmax_hz * level / held:.0f} Hz",
                 Qt.ItemDataRole.ToolTipRole,
             )
 

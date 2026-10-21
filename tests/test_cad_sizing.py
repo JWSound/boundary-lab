@@ -6,7 +6,17 @@ from dataclasses import asdict, replace
 
 import pytest
 
-from blab.cad_import import MIXED, CadFaceGroups, CadSizeOverride, CadSizes, CadSizing, face_ref, inspect_step
+from blab.cad_import import (
+    FEM_LEVELS,
+    LEVELS,
+    MIXED,
+    CadFaceGroups,
+    CadSizeOverride,
+    CadSizes,
+    CadSizing,
+    face_ref,
+    inspect_step,
+)
 from blab.cad_import.sizing import LEGACY_SIZES, legacy_sizes, migrated, read_face_sizes
 from cad_fixtures import vented_box
 
@@ -32,13 +42,30 @@ def test_edge_lengths_follow_sound_speed_maximum_frequency_and_fineness():
 
 
 def test_texts_name_levels_custom_numbers_edge_lengths_global_and_mixed():
-    assert SIZING.text(None) == "Global (5 per wavelength)"
-    assert CadSizing(3430.0).text(None) == "Global (Fine)"
-    assert SIZING.text(COARSE) == "Coarse"
-    assert SIZING.text(COARSE, edge=True) == "Coarse (50 mm)"
-    assert CadSizing(None).text(COARSE, edge=True) == "Coarse"  # edge lengths once the frequency is known
+    assert SIZING.text(None) == "Global (BEM Medium)"  # N = 5 is BEM Medium's
+    assert CadSizing(3430.0, 343.0, 3.0).text(None) == "Global (3 per wavelength)"
+    assert CadSizing(3430.0).text(None) == "Global (FEM Fine)"
+    assert SIZING.text(COARSE) == "FEM Coarse"
+    assert SIZING.text(COARSE, edge=True) == "FEM Coarse (50 mm)"
+    assert CadSizing(None).text(COARSE, edge=True) == "FEM Coarse"  # edge lengths once the frequency is known
     assert SIZING.text(MM_8, edge=True) == "8 mm"
     assert SIZING.text(MIXED) == "Mixed"
+
+
+def test_six_levels_fine_to_coarse_each_named_by_its_elements_per_wavelength():
+    assert LEVELS == {
+        "FEM Fine": 6,
+        "FEM Medium": 4,
+        "FEM Coarse": 2,
+        "BEM Fine": 12,
+        "BEM Medium": 5,
+        "BEM Coarse": 0.3,
+    }
+    assert list(LEVELS) == ["FEM Fine", "FEM Medium", "FEM Coarse", "BEM Fine", "BEM Medium", "BEM Coarse"]
+    assert list(FEM_LEVELS) == ["FEM Fine", "FEM Medium", "FEM Coarse"]
+    for name, n in LEVELS.items():
+        assert SIZING.text(CadSizeOverride(elements_per_wavelength=n)) == name
+    assert SIZING.text(CadSizeOverride(elements_per_wavelength=0.3), edge=True) == "BEM Coarse (333 mm)"
 
 
 @pytest.mark.parametrize(

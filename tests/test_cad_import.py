@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 
 from blab.cad_import import (
+    LEVELS,
     CadClosedShell,
     CadFace,
     CadFaceGroups,
@@ -310,6 +311,17 @@ def test_face_override_wins_over_its_face_group_and_one_no_longer_found_is_ignor
     (grouped,) = [f.id for f in result.geometry.faces if np.allclose(f.centre, sides[1].centre)]
     assert 0.003 < face_edge_median(bem, own) < 0.0055  # the face's own override, not its group's
     assert 0.0065 < face_edge_median(bem, grouped) < 0.0095  # the group's
+
+
+def test_a_face_sized_bem_fine_meshes_at_twelve_elements_per_wavelength(vented, tmp_path):
+    side = next(f for f in vented.geometry.faces if f.bodies == ("Cabinet",) and abs(abs(f.normal[0]) - 1) < 1e-9)
+    bem_fine = CadSizeOverride(elements_per_wavelength=LEVELS["BEM Fine"])
+    settings = replace(SETTINGS, face_sizes=((face_ref(side), bem_fine),))
+
+    result = mesh_step(vented_box(tmp_path / "box.step"), settings, tmp_path / "out")
+
+    (face,) = [f.id for f in result.geometry.faces if np.allclose(f.centre, side.centre)]
+    assert 0.0065 < face_edge_median(read(result, "exterior"), face) < 0.0095  # 343 / 3430 / 12 = 8.3 mm
 
 
 @pytest.mark.parametrize(
