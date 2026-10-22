@@ -141,12 +141,21 @@ class CadImportSession:
         cad_settings = settings(self.request.source, self.request.configuration)
         output = self.request.run_root.resolve() / ("cad_import_" + uuid4().hex)
         output.mkdir(parents=True)
-        if status_callback:
-            status_callback(
-                f"Meshing {path.name} (target element size FEM {cad_settings.target_size_m * 1000:.1f} mm, "
-                f"BEM {cad_settings.sizing.bem_target_size_m * 1000:.1f} mm)"
-            )
-        result = mesh_in_worker(path, cad_settings, output, cancelled=cancelled, started=self._set_process)
+        message = (
+            f"Meshing {path.name} (target element size FEM {cad_settings.target_size_m * 1000:.1f} mm, "
+            f"BEM {cad_settings.sizing.bem_target_size_m * 1000:.1f} mm)"
+        )
+        reported = [-1]
+
+        def elapsed(seconds):
+            whole = int(seconds)
+            if status_callback and whole != reported[0]:
+                reported[0] = whole
+                status_callback(message if whole == 0 else f"{message}, elapsed {whole} s")
+
+        result = mesh_in_worker(
+            path, cad_settings, output, cancelled=cancelled, started=self._set_process, elapsed=elapsed
+        )
         geometry = result.geometry
         metadata = dict(
             generator_version="0.1.0",

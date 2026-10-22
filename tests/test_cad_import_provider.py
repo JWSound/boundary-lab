@@ -611,17 +611,21 @@ def test_cancel_stops_a_mesh_worker_that_never_returns(plugin, box_step, tmp_pat
     assert session.process is None
 
 
-def test_mesh_worker_that_never_returns_times_out(plugin, box_step, tmp_path, monkeypatch):
+@pytest.mark.timeout(30)
+def test_a_running_mesh_job_reports_its_elapsed_time(plugin, box_step, tmp_path, monkeypatch):
     catalog, backend = plugin
     jobs = sys.modules[type(backend).__module__.replace(".backend", ".jobs")]
     hang = tmp_path / "hang.py"
     hang.write_text("import time\ntime.sleep(600)\n", encoding="utf-8")
     monkeypatch.setattr(jobs, "WORKER", hang)
-    monkeypatch.setattr(jobs, "MESH_TIMEOUT_S", 0.5)
     session = backend.create_session(make_request(make_project(catalog, box_step), tmp_path / "out"))
-    with pytest.raises(ValueError, match="timed out after 0.5 s"):
-        session.generate()
-    assert session.process is None
+    messages = []
+    with pytest.raises(GenerationCancelledError):
+        session.generate(
+            status_callback=messages.append, stop_requested=lambda: any("elapsed 1 s" in m for m in messages)
+        )
+    assert "Meshing" in messages[0] and "elapsed" not in messages[0]
+    assert "Meshing" in messages[-1] and "elapsed 1 s" in messages[-1]
 
 
 @pytest.mark.parametrize(
