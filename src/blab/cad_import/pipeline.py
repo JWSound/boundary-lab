@@ -24,10 +24,10 @@ import numpy as np
 from blab.defaults import DEFAULT_SOUND_SPEED_M_PER_S
 
 from .design import CadFaceGroups
-from .face_refs import ZERO, CadFace, CadFaceRef, match_face_ref
+from .face_refs import ZERO, CadFace, CadFaceRef
 from .face_refs import moved as _moved
 from .face_refs import placement as _placement
-from .sizing import CadSizeOverride, CadSizing, size_override
+from .sizing import CadSizeOverride, CadSizing, size_override, size_plan
 
 EXTERIOR_MESH_ID = "exterior"
 SYMMETRY_LABELS = {"off": "Off", "x": "X", "xy": "XY"}
@@ -1045,46 +1045,13 @@ def _step_face_vertices(path) -> list[tuple[str, np.ndarray]]:
 
 
 def _apply_sizes(gmsh, model: _Model, settings: CadImportSettings, groups) -> None:
-    """Target sizes everywhere (FEM, BEM, the finer on interface faces), overrides per body / face group / face
-    (the most specific wins) and air-body interiors, graded by the growth rate."""
+    """Apply the size plan (:func:`size_plan`) and the target sizes of faces in use: size options, fields and
+    grading by the growth rate."""
     sizing = settings.sizing
-    geometry = model.geometry
-    targets = sizing.face_targets(geometry)
-    unknown = sorted(set(settings.body_sizes) - {b.name for b in geometry.bodies})
-    if unknown:
-        raise ValueError(f"Size override for unknown body '{unknown[0]}'.")
-    group_of = {face: name for mesh_groups in groups.values() for name, faces in mesh_groups.items() for face in faces}
-    unknown = sorted(set(settings.face_group_sizes) - set(group_of.values()))
-    if unknown:
-        raise ValueError(f"Size override for unknown face group '{unknown[0]}'.")
-    own = {}
-    for face, size in settings.face_sizes:
-        if isinstance(face, CadFaceRef):
-            face = match_face_ref(face, geometry.faces, geometry.bbox_m, **settings.placement)
-            if face is None:
-                continue  # gone after a re-import: the editor notes it, generation goes on
-        elif face not in model.face_bodies:
-            raise ValueError(f"Size override for unknown face {face}.")
-        own[face] = size
-    face_size = {  # in Gmsh model units, as all sizes below
-        f: sizing.edge_m(
-            sizing.winning(
-                own.get(f),
-                settings.face_group_sizes.get(group_of[f]),
-                [settings.body_sizes.get(b) for b in bodies],
-                targets[f],
-            )
-            or targets[f]
-        )
-        / _MM
-        for f, bodies in model.face_bodies.items()
-    }
-    unknown = sorted(set(settings.volume_sizes) - set(model.volumes))
-    if unknown:
-        raise ValueError(f"Volume size for '{unknown[0]}', which is no air body.")
-    volume_size = {
-        b: sizing.edge_m(settings.volume_sizes.get(b) or settings.body_sizes.get(b)) / _MM for b in model.volumes
-    }
+    targets = sizing.face_targets(model.geometry)
+    plan = size_plan(settings, model.geometry, groups)
+    face_size = {f: edge / _MM for f, edge in plan.face_m.items()}  # in Gmsh model units, as all sizes below
+    volume_size = {b: edge / _MM for b, edge in plan.volume_m.items()}
     # The finest target size in use: the faces' and, with air bodies, the FEM one of their volumes.
     in_use = [sizing.edge_m(targets[f]) for f in face_size] + ([sizing.target_size_m] if volume_size else [])
     target = min(in_use, default=sizing.target_size_m) / _MM

@@ -18,7 +18,7 @@ from .face_refs import ZERO, CadFaceRef, face_ref, match_face_ref
 
 if TYPE_CHECKING:
     from .design import CadFaceGroups
-    from .pipeline import CadGeometry
+    from .pipeline import CadGeometry, CadImportSettings
 
 # Mesh size levels, fine to coarse: elements per wavelength at the maximum frequency (ADR 0002).
 FEM_LEVELS = {"FEM Fine": 6, "FEM Medium": 4, "FEM Coarse": 2}
@@ -227,6 +227,62 @@ class CadSizes:
             "volume_sizes": {name: size.stored() for name, size in self.volumes.items() if name in air},
         }
         return changes, " ".join(notes)
+
+
+@dataclass(frozen=True)
+class CadSizePlan:
+    """The edge length (m) of each face and each air-body volume."""
+
+    face_m: dict[int, float]
+    volume_m: dict[str, float]
+
+
+def size_plan(settings: CadImportSettings, geometry: CadGeometry, groups: Mapping[str, Mapping[str, Sequence[int]]]):
+    """The sizes ``settings`` ask for on the read ``geometry`` and its surface ``groups`` (mesh id -> face group ->
+    faces): on a face the most specific override wins (face, face group, finest body), else its target element size
+    (:meth:`CadSizing.winning`); an air body's volume has its own, else its body's, else the FEM target element size.
+    Raises ``ValueError`` for an override of an unknown body, face group, face or volume."""
+    sizing = settings.sizing
+    air = {body.name for body in geometry.bodies if body.kind == "air"}
+    unknown = sorted(set(settings.body_sizes) - {b.name for b in geometry.bodies})
+    if unknown:
+        raise ValueError(f"Size override for unknown body '{unknown[0]}'.")
+    group_of = {face: name for mesh_groups in groups.values() for name, faces in mesh_groups.items() for face in faces}
+    unknown = sorted(set(settings.face_group_sizes) - set(group_of.values()))
+    if unknown:
+        raise ValueError(f"Size override for unknown face group '{unknown[0]}'.")
+    known = {face.id for face in geometry.faces}
+    own = {}
+    for face, size in settings.face_sizes:
+        if isinstance(face, CadFaceRef):
+            face = match_face_ref(face, geometry.faces, geometry.bbox_m, **settings.placement)
+            if face is None:
+                continue  # gone after a re-import: the editor notes it, generation goes on
+        elif face not in known:
+            raise ValueError(f"Size override for unknown face {face}.")
+        own[face] = size
+    targets = sizing.face_targets(geometry)
+    faces = {
+        face.id: sizing.edge_m(
+            sizing.winning(
+                own.get(face.id),
+                settings.face_group_sizes.get(group_of.get(face.id)),
+                [settings.body_sizes.get(b) for b in face.bodies],
+                targets[face.id],
+            )
+            or targets[face.id]
+        )
+        for face in geometry.faces
+    }
+    unknown = sorted(set(settings.volume_sizes) - air)
+    if unknown:
+        raise ValueError(f"Volume size for '{unknown[0]}', which is no air body.")
+    volumes = {
+        body.name: sizing.edge_m(settings.volume_sizes.get(body.name) or settings.body_sizes.get(body.name))
+        for body in geometry.bodies
+        if body.kind == "air"
+    }
+    return CadSizePlan(faces, volumes)
 
 
 # -- older designs ---------------------------------------------------------------------------------------------------

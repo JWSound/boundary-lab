@@ -11,13 +11,14 @@ from blab.cad_import import (
     LEVELS,
     MIXED,
     CadFaceGroups,
+    CadImportSettings,
     CadSizeOverride,
     CadSizes,
     CadSizing,
     face_ref,
     inspect_step,
 )
-from blab.cad_import.sizing import LEGACY_SIZES, legacy_sizes, migrated, read_face_sizes
+from blab.cad_import.sizing import LEGACY_SIZES, legacy_sizes, migrated, read_face_sizes, size_plan
 from cad_fixtures import vented_box
 
 COARSE, FINE = CadSizeOverride(elements_per_wavelength=2), CadSizeOverride(elements_per_wavelength=6)
@@ -224,25 +225,25 @@ def test_sizes_of_faces_gone_and_volumes_of_bodies_no_longer_air_are_dropped_wit
 
 
 def effective(geometry, source, sizing=SIZING):
-    """``({face: edge length}, {air body: edge length})`` that meshing gives ``source`` (m)."""
+    """``({face: edge length}, {air body: edge length})`` that meshing gives ``source`` (m): its size plan."""
     body_sizes, group_sizes = legacy_sizes(source)
     own = sizes(geometry, source)
-    groups = CadFaceGroups(geometry, {})
-    targets = sizing.face_targets(geometry)
-    faces = {
-        f.id: sizing.edge_m(
-            sizing.winning(
-                own.faces.get(f.id),
-                group_sizes.get(groups.group_of(f.id).name),
-                [body_sizes.get(b) for b in f.bodies],
-                targets[f.id],
-            )
-            or targets[f.id]
-        )
-        for f in geometry.faces
-    }
-    air = [b.name for b in geometry.bodies if b.kind == "air"]
-    return faces, {b: sizing.edge_m(own.volumes.get(b) or body_sizes.get(b)) for b in air}
+    rows = CadFaceGroups(geometry, {})
+    named = {}
+    for f in geometry.faces:
+        named.setdefault(rows.group_of(f.id).name, []).append(f.id)
+    settings = CadImportSettings(
+        sizing.fmax_hz,
+        sizing.sound_speed_m_per_s,
+        sizing.elements_per_wavelength,
+        sizing.bem_elements_per_wavelength,
+        body_sizes=body_sizes,
+        face_group_sizes=group_sizes,
+        face_sizes=tuple(own.faces.items()),
+        volume_sizes=own.volumes,
+    )
+    plan = size_plan(settings, geometry, {"all": named})
+    return plan.face_m, plan.volume_m
 
 
 def test_body_face_group_and_legacy_sizes_become_face_and_volume_sizes_that_mesh_the_same(box):
