@@ -187,7 +187,7 @@ def test_sizing_settings_edit_the_source_and_show_the_target_size(cad_editor, ma
     wait(qapp, lambda: "3430" in editor.target_label.text())
 
     assert host.snapshot().source["elements_per_wavelength"] == 10
-    assert "Target element size 10.0 mm" in editor.target_label.text()
+    assert "Target element size FEM 10.0 mm = c / 3430 Hz / 10, BEM 20.0 mm" in editor.target_label.text()
     editor.spins["growth_rate"].setValue(1.2)
     assert host.snapshot().source["growth_rate"] == 1.2
 
@@ -208,14 +208,15 @@ def test_shown_sizes_use_the_project_sound_speed(cad_editor, main_window, qapp):
     editor.spins["elements_per_wavelength"].setValue(10)  # an edit fetches the project context
     wait(qapp, lambda: "c = 686 m/s" in editor.target_label.text())
 
-    assert "Target element size 20.0 mm = c / 3430 Hz" in editor.target_label.text()
-    walls = size_combo(editor, "walls")
-    assert walls.currentText() == "Global (10 per wavelength)" and "(20 mm)" in walls.toolTip()
+    assert "Target element size FEM 20.0 mm = c / 3430 Hz" in editor.target_label.text()
+    face = cabinet_faces(editor, lambda f: True)[0]
+    walls = size_combo(editor, face_item(editor, face))
+    assert walls.currentText() == "Global (BEM Medium)" and "(40 mm)" in walls.toolTip()
 
     main_window.project.physical_system = None  # no exterior region: the default
     editor.spins["elements_per_wavelength"].setValue(5)
     wait(qapp, lambda: "c = 343 m/s" in editor.target_label.text())
-    assert "Target element size 20.0 mm" in editor.target_label.text()
+    assert "Target element size FEM 20.0 mm" in editor.target_label.text()
 
 
 def test_host_generate_accepts_locked_meshes_and_system_entries(cad_editor, main_window, monkeypatch, qapp, tmp_path):
@@ -547,9 +548,15 @@ def size_entries(combo):
     return [combo.itemText(i) for i in range(combo.count())]
 
 
+def has_size_entries(combo):
+    """The combo offers the Mesh size choices, Global named by the mesh fineness that sizes its row."""
+    entries = size_entries(combo)[: len(SIZE_ENTRIES)]
+    return entries[0].startswith("Global") and entries[1:] == SIZE_ENTRIES[1:]
+
+
 def choose_size(combo, text, qapp):
     """Choose ``text`` in a Mesh size dropdown, as a user does."""
-    assert size_entries(combo)[: len(SIZE_ENTRIES)] == SIZE_ENTRIES
+    assert has_size_entries(combo)
     combo.setCurrentIndex(combo.findText(text))
     combo.activated.emit(combo.currentIndex())
     qapp.processEvents()  # applied once the dropdown has closed
@@ -577,9 +584,10 @@ def test_every_row_has_a_mesh_size_dropdown_showing_global_its_own_size_or_mixed
     editor, host = cad_editor
     rows = tree_rows(editor)
 
-    assert all(size_entries(size_combo(editor, row)) == SIZE_ENTRIES for row in rows)
-    assert {size_combo(editor, row).currentText() for row in rows} == {"Global (FEM Fine)"}
-    assert {size_combo(editor, name).currentText() for name in all_rows(editor)} == {"Global (FEM Fine)"}
+    assert all(has_size_entries(size_combo(editor, row)) for row in rows)
+    levels = {"Global (FEM Fine)", "Global (BEM Medium)", "Global"}  # what sizes each row: see the next test
+    assert {size_combo(editor, row).currentText() for row in rows} <= levels
+    assert {size_combo(editor, name).currentText() for name in all_rows(editor)} <= levels
 
     side = cabinet_faces(editor, lambda f: True)[0]
     editor.set_face_size({side}, COARSE)
@@ -822,6 +830,85 @@ def test_mesh_fineness_levels_set_elements_per_wavelength_and_name_the_frequency
     custom.setValue(9)
     assert host.snapshot().source["elements_per_wavelength"] == 9
     assert "Target element size" in editor.target_label.text()
+
+
+def test_global_names_the_mesh_fineness_that_sizes_the_row(cad_editor, qapp):
+    editor, host = cad_editor
+    cabinet, chamber = body_items(editor)["Cabinet"], body_items(editor)["Chamber"]
+    exterior = set(cabinet_faces(editor, lambda f: True))
+    interface = {f for i in editor.geometry["interfaces"] for f in i["face_ids"]}
+
+    def shown(row):
+        return size_combo(editor, row).currentText()
+
+    assert interface
+    assert {shown(face_item(editor, f)) for f in exterior} == {"Global (BEM Medium)"}
+    assert {shown(face_item(editor, f)) for f in interface} == {"Global (FEM Fine)"}  # the finer on an interface face
+    assert shown(child_row(chamber, "Volume")) == shown(chamber) == shown(faces_row(chamber)) == "Global (FEM Fine)"
+    assert shown(cabinet) == shown(faces_row(cabinet)) == "Global (BEM Medium)"
+    assert shown("walls") == "Global"  # FEM and BEM faces
+
+    port = body_items(editor)["Port"]
+    editor.bem_fineness.setCurrentIndex(0)
+    editor.bem_fineness.activated.emit(0)  # BEM Fine, finer than FEM Fine
+    assert {shown(face_item(editor, f)) for f in exterior | interface} == {"Global (BEM Fine)"}
+    assert shown(cabinet) == shown(faces_row(cabinet)) == "Global (BEM Fine)"
+    assert shown(chamber) == "Global (FEM Fine)"
+    assert shown(port) == shown(faces_row(port)) == "Global"  # its interface face follows BEM, its others FEM
+
+
+def test_bem_mesh_fineness_levels_write_elements_per_wavelength_and_name_their_edge_length(
+    cad_editor, main_window, qapp
+):
+    editor, host = cad_editor
+    main_window.freq_max_spin.setValue(3430)
+    editor.spins["curvature_elements_per_circle"].setValue(13)  # an edit fetches the project context
+    wait(qapp, lambda: "3430" in editor.target_label.text())
+    bem, custom = editor.bem_fineness, editor.spins["bem_elements_per_wavelength"]
+
+    labels = [label.text() for label in editor.sizing_box.findChildren(QLabel)]
+    assert labels.index("BEM mesh fineness") == labels.index("FEM mesh fineness") + 1
+    assert bem.accessibleName() == "BEM mesh fineness"
+    assert [bem.itemText(i) for i in range(bem.count())] == ["BEM Fine", "BEM Medium", "BEM Coarse", "Custom"]
+    assert bem.currentText() == "BEM Medium" and custom.isHidden()  # new designs
+    assert "(8.33 mm)" in bem.itemData(0, Qt.ItemDataRole.ToolTipRole)  # c / fmax / 12 = 0.1 m / 12
+    assert "(20 mm)" in bem.itemData(1, Qt.ItemDataRole.ToolTipRole)
+    assert "(333 mm)" in bem.itemData(2, Qt.ItemDataRole.ToolTipRole)
+    assert "(16.7 mm)" in editor.fineness.itemData(0, Qt.ItemDataRole.ToolTipRole)
+    assert "BEM 20.0 mm = c / 3430 Hz / 5" in editor.target_label.text()
+
+    bem.setCurrentIndex(2)
+    bem.activated.emit(2)
+    assert host.snapshot().source["bem_elements_per_wavelength"] == 0.3
+    assert "BEM 333.3 mm = c / 3430 Hz / 0.3" in editor.target_label.text()
+    bem.setCurrentIndex(3)
+    bem.activated.emit(3)
+    assert not custom.isHidden() and bem.currentText() == "Custom"
+    custom.setValue(7)
+    assert host.snapshot().source["bem_elements_per_wavelength"] == 7
+    assert host.snapshot().source["elements_per_wavelength"] == 6  # the FEM one is untouched
+
+
+def test_a_design_without_a_bem_fineness_shows_its_fem_value_in_the_bem_dropdown(cad_editor):
+    editor, host = cad_editor
+    bem, custom = editor.bem_fineness, editor.spins["bem_elements_per_wavelength"]
+
+    def reload(**changes):
+        source = {k: v for k, v in host.snapshot().source.items() if k != "bem_elements_per_wavelength"} | changes
+        snapshot = host.update_source(source, expected_revision=host.snapshot().revision)
+        editor.apply_source(snapshot.source, snapshot.revision)
+
+    reload(elements_per_wavelength=5.0)
+    assert bem.currentText() == "BEM Medium" and custom.isHidden()
+    reload(elements_per_wavelength=4.0)
+    assert bem.currentText() == "Custom" and custom.value() == 4.0
+    assert "bem_elements_per_wavelength" not in host.snapshot().source  # shown, not written
+
+    snapshot = host.update_source(
+        host.snapshot().source | {"bem_elements_per_wavelength": 12.0}, expected_revision=host.snapshot().revision
+    )
+    editor.apply_source(snapshot.source, snapshot.revision)  # a host revision
+    assert bem.currentText() == "BEM Fine"
 
 
 def chamber_back(editor):

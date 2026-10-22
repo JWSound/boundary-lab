@@ -26,9 +26,10 @@ from .pipeline import (
     result_from_json,
     result_to_json,
 )
-from .sizing import FEM_LEVELS, LEVELS, MIXED, CadSizeOverride, CadSizes, CadSizing
+from .sizing import BEM_LEVELS, FEM_LEVELS, LEVELS, MIXED, CadSizeOverride, CadSizes, CadSizing
 
 __all__ = [
+    "BEM_LEVELS",
     "WALLS",
     "CadBody",
     "CadClosedShell",

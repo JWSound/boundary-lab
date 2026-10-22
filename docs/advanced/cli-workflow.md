@@ -396,7 +396,11 @@ tetrahedral mesh with a volume group per body. Surface bodies together form the
 `exterior.msh` BEM surface. Air faces that fill openings in the exterior get a
 `Interface <n> <body>` surface group in both meshes, node for node; every other face is in
 `walls`. The target element size is sound speed ÷ `--fmax` ÷ elements per wavelength
-(default 6; `--sound-speed`, default 343 m/s), refined on curved edges to about 12 elements per
+(`--sound-speed`, default 343 m/s). `--elements-per-wavelength` (default 6) is the FEM mesh
+fineness, for air-body volumes and faces; `--bem-elements-per-wavelength` is the BEM one, for
+exterior surface faces (default: the FEM value; the desktop app's BEM Fine, Medium and Coarse
+are 12, 5 and 0.3). A face on both, an interface, takes the finer. The command prints both
+target element sizes. Meshes are refined on curved edges to about 12 elements per
 circle. `--rotate X,Y,Z` rotates by those degrees about the X, Y and Z axes (in that order, about
 the origin) and `--translate X,Y,Z` moves by those millimetres (write a leading negative
 value as `--rotate=-90,0,0`). Closed shells

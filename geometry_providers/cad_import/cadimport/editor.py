@@ -44,6 +44,7 @@ from PySide6.QtWidgets import (
 )
 
 from blab.cad_import import (
+    BEM_LEVELS,
     FEM_LEVELS,
     LEVELS,
     MIXED,
@@ -54,7 +55,7 @@ from blab.cad_import import (
     CadSizing,
     place_preview,
 )
-from blab.cad_import.sizing import migrated, size_override
+from blab.cad_import.sizing import migrated, shared, size_override
 from blab.generators.configuration import DEFAULT_SOUND_SPEED_M_PER_S
 from blab.ui.file_dialogs import FileDialogService
 
@@ -487,6 +488,7 @@ class CadImportEditor:
             lambda pos: self.show_row_menu(self.tree.itemAt(pos), self.tree.viewport().mapToGlobal(pos))
         )
         self._size_rows = []  # (Mesh size dropdown, face ids, air-body volumes) of each tree row
+        self._face_targets = (None, None, None)  # (sizing, geometry, face -> mesh fineness sizing it)
         self.tree.itemSelectionChanged.connect(self._selection_changed)
         tree_box_layout.addWidget(self.tree)
         buttons = QHBoxLayout()
@@ -550,25 +552,11 @@ class CadImportEditor:
 
         self.sizing_box = QGroupBox("Mesh sizes")
         form = QFormLayout(self.sizing_box)
-        self.fineness = QComboBox()
-        for name, n in FEM_LEVELS.items():
-            self.fineness.addItem(name, n)
-        self.fineness.addItem("Custom", None)
-        self.fineness.setAccessibleName("FEM mesh fineness")
-        self.fineness.activated.connect(self._fineness_chosen)
-        self._custom_fineness = False  # Custom chosen: it stays while the number is a level's
-        custom = QDoubleSpinBox()
-        custom.setRange(1.0, 50.0)
-        custom.setDecimals(1)
-        custom.setSuffix(" per wavelength")
-        custom.setKeyboardTracking(False)
-        custom.setAccessibleName("Elements per wavelength")
-        custom.valueChanged.connect(lambda value: self.edited({"elements_per_wavelength": value}))
-        fineness_row = QHBoxLayout()
-        fineness_row.addWidget(self.fineness)
-        fineness_row.addWidget(custom, 1)
-        form.addRow("FEM mesh fineness", fineness_row)
-        self.spins = {"elements_per_wavelength": custom}
+        self._custom_fineness = set()  # source keys whose Custom was chosen: it stays while the number is a level's
+        self.spins = {}
+        self._fineness_combos = {}  # source key -> (dropdown, its levels)
+        self.fineness = self._fineness_row(form, "FEM", "elements_per_wavelength", FEM_LEVELS, (1.0, 50.0))
+        self.bem_fineness = self._fineness_row(form, "BEM", "bem_elements_per_wavelength", BEM_LEVELS, (0.1, 50.0))
         for key, label, low, high, decimals, suffix in SIZING:
             spin = QDoubleSpinBox()
             spin.setRange(low, high)
@@ -604,7 +592,7 @@ class CadImportEditor:
         self.step_path.setText(str(source.get("step_path", "")))
         for key, spin in self.spins.items():
             blocked = spin.blockSignals(True)
-            spin.setValue(float(source[key]))
+            spin.setValue(float(source.get(key, source["elements_per_wavelength"])))  # no BEM value: the FEM one
             spin.blockSignals(blocked)
         for key, spins in (("rotation_deg", self.rotation_spins), ("translation_mm", self.translation_spins)):
             for spin, value in zip(spins, source.get(key, (0.0, 0.0, 0.0)), strict=True):
@@ -622,20 +610,46 @@ class CadImportEditor:
             self._show_overrides()
             self._migrate_sizes()
 
-    def _show_fineness(self):
-        """The level of the source's elements per wavelength, else (or while chosen) Custom with its number."""
-        n = float(self.source["elements_per_wavelength"])
-        custom = self._custom_fineness or n not in FEM_LEVELS.values()
-        self.fineness.setCurrentIndex(self.fineness.count() - 1 if custom else self.fineness.findData(n))
-        self.spins["elements_per_wavelength"].setHidden(not custom)
+    def _fineness_row(self, form, method, key, levels, limits):
+        """A ``method`` (FEM or BEM) mesh fineness dropdown of ``levels`` and Custom with a number field, a row of
+        ``form`` writing source ``key``."""
+        combo = QComboBox()
+        for name, n in levels.items():
+            combo.addItem(name, n)
+        combo.addItem("Custom", None)
+        combo.setAccessibleName(f"{method} mesh fineness")
+        combo.activated.connect(lambda index: self._fineness_chosen(key, combo.itemData(index)))
+        custom = QDoubleSpinBox()
+        custom.setRange(*limits)
+        custom.setDecimals(1)
+        custom.setSuffix(" per wavelength")
+        custom.setKeyboardTracking(False)
+        custom.setAccessibleName(f"{method} elements per wavelength")
+        custom.valueChanged.connect(lambda value: self.edited({key: value}))
+        row = QHBoxLayout()
+        row.addWidget(combo)
+        row.addWidget(custom, 1)
+        form.addRow(f"{method} mesh fineness", row)
+        self.spins[key] = custom
+        self._fineness_combos[key] = (combo, levels)
+        return combo
 
-    def _fineness_chosen(self, index):
-        n = self.fineness.itemData(index)
-        self._custom_fineness = n is None
+    def _show_fineness(self):
+        """The level of each source elements per wavelength (BEM: the FEM one when it has none), else (or while
+        chosen) Custom with its number."""
+        for key, (combo, levels) in self._fineness_combos.items():
+            n = float(self.source.get(key, self.source["elements_per_wavelength"]))
+            custom = key in self._custom_fineness or n not in levels.values()
+            combo.setCurrentIndex(combo.count() - 1 if custom else combo.findData(n))
+            self.spins[key].setHidden(not custom)
+
+    def _fineness_chosen(self, key, n):
+        self._custom_fineness.discard(key)
         if n is None:
+            self._custom_fineness.add(key)
             self._show_fineness()
         else:
-            self.edited({"elements_per_wavelength": float(n)})
+            self.edited({key: float(n)})
 
     def edited(self, changes, drop=()):
         """Store ``changes`` in the source, without the keys in ``drop``."""
@@ -1291,15 +1305,22 @@ class CadImportEditor:
         combo.activated.connect(chosen)
         return combo
 
-    def _show_size(self, combo, size):
-        """Show ``size`` (``None``: Global, or :data:`MIXED`) in ``combo``; one no entry names gets an entry of its
-        own, shown but never chosen."""
+    def _show_size(self, combo, faces, volumes=()):
+        """Show the size ``faces`` and air-body ``volumes`` share (``None``: Global, or :data:`MIXED`) in ``combo``;
+        one no entry names gets an entry of its own, shown but never chosen. Global names the mesh fineness that
+        sizes them, if one does."""
+        size = self._sizes.shared(faces, volumes)
         blocked = combo.blockSignals(True)
         fixed = 1 + len(SIZE_CHOICES)
         while combo.count() > fixed:
             combo.removeItem(fixed)
         sizing = self._sizing()
-        combo.setItemText(0, sizing.text(None))
+        geometry = self._sizes.geometry
+        if self._face_targets[0] != sizing or self._face_targets[1] is not geometry:  # per change, not per row
+            self._face_targets = (sizing, geometry, sizing.face_targets(geometry))
+        face_targets = self._face_targets[2]
+        targets = [face_targets[f] for f in faces] + [sizing.fineness] * len(volumes)
+        combo.setItemText(0, sizing.global_text(targets))
         levels = list(LEVELS.values())
         if size is None:
             index = 0
@@ -1311,7 +1332,12 @@ class CadImportEditor:
             index = fixed
         combo.setCurrentIndex(index)
         if size is None:
-            combo.setToolTip(f"The mesh fineness: {sizing.text(sizing.fineness, edge=True)}")
+            level = shared(targets)
+            combo.setToolTip(
+                "Its members follow different mesh finenesses."
+                if level == MIXED
+                else f"The mesh fineness: {sizing.text(level, edge=True)}"
+            )
         else:
             combo.setToolTip("Its members have different sizes." if size == MIXED else sizing.text(size, edge=True))
         combo.blockSignals(blocked)
@@ -1358,7 +1384,7 @@ class CadImportEditor:
             for column, cell in enumerate(cells):
                 self.groups_table.setItem(row, column, cell)
             combo = self._size_combo(faces, ())
-            self._show_size(combo, self._sizes.shared(faces))
+            self._show_size(combo, faces)
             self.groups_table.setCellWidget(row, 2, combo)
         self._syncing = False
         self._group_name_changed(self.group_name.text())
@@ -1368,7 +1394,7 @@ class CadImportEditor:
         """Each row's size in its Mesh size dropdown: a face's or volume's own or Global, a body's, Faces' or face
         group's the one its members share or Mixed."""
         for combo, row_faces, row_volumes in self._size_rows:  # rows exist only with a geometry, and so sizes
-            self._show_size(combo, self._sizes.shared(row_faces, row_volumes))
+            self._show_size(combo, row_faces, row_volumes)
         self._show_groups()
 
     # -- sizing and meshing -------------------------------------------------------------------
@@ -1392,19 +1418,22 @@ class CadImportEditor:
             self.target_label.setText("Target element size: waiting for the project frequency range.")
             return
         sizing = self._sizing()
+        bem = sizing.bem_fineness.elements_per_wavelength
         self.target_label.setText(
-            f"Target element size {sizing.target_size_m * 1000:.1f} mm = c / {self._fmax_hz:g} Hz / "
-            f"{sizing.elements_per_wavelength:g} "
-            f"(c = {self._sound_speed:g} m/s)"
+            f"Target element size FEM {sizing.target_size_m * 1000:.1f} mm = c / {self._fmax_hz:g} Hz / "
+            f"{sizing.elements_per_wavelength:g}, BEM {sizing.bem_target_size_m * 1000:.1f} mm = c / "
+            f"{self._fmax_hz:g} Hz / {bem:g} (c = {self._sound_speed:g} m/s)"
         )
         held = FEM_LEVELS["FEM Fine"]  # the elements per wavelength a level's frequency limit holds
-        for index, level in enumerate(FEM_LEVELS.values()):
-            self.fineness.setItemData(
-                index,
-                f"{level} elements per wavelength at {self._fmax_hz:g} Hz: "
-                f"{held} per wavelength up to {self._fmax_hz * level / held:.0f} Hz",
-                Qt.ItemDataRole.ToolTipRole,
-            )
+        for combo, levels in self._fineness_combos.values():
+            for index, level in enumerate(levels.values()):
+                combo.setItemData(
+                    index,
+                    f"{level:g} elements per wavelength at {self._fmax_hz:g} Hz "
+                    f"({sizing.edge_m(CadSizeOverride(elements_per_wavelength=level)) * 1000:.3g} mm): "
+                    f"{held} per wavelength up to {self._fmax_hz * level / held:.0f} Hz",
+                    Qt.ItemDataRole.ToolTipRole,
+                )
 
     def event(self, event):
         if event.kind == "geometry_accepted":
@@ -1421,6 +1450,7 @@ class CadImportEditor:
             *self.spins.values(),
             *self.kind_combos.values(),
             self.fineness,
+            self.bem_fineness,
         )
         for widget in widgets:
             widget.setEnabled(not state.active)
