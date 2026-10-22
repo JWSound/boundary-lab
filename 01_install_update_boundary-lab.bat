@@ -148,7 +148,7 @@ if errorlevel 1 (
     goto FAILED
 )
 
-"%VENV_PY%" -m pip install -e ".[gui]"
+"%VENV_PY%" -m pip install -e "%PROJECT_DIR%[gui]"
 if errorlevel 1 (
     echo ERROR: Boundary Lab's Python packages could not be installed.
     goto FAILED

@@ -98,9 +98,33 @@ echo.
 :START_BLAB
 echo Starting Boundary Lab...
 echo.
-"%BLAB_EXE%" gui
-set "BLAB_EXIT=%ERRORLEVEL%"
 
+:: 1. Check if 'blab' or 'boundary_lab' is installed in the active environment (e.g. Conda)
+python -c "import blab" >nul 2>&1
+if %ERRORLEVEL%==0 (
+    python -m blab.gui
+    set "BLAB_EXIT=%ERRORLEVEL%"
+    goto AFTER_BLAB
+)
+
+python -c "import boundary_lab" >nul 2>&1
+if %ERRORLEVEL%==0 (
+    python -m boundary_lab.gui
+    set "BLAB_EXIT=%ERRORLEVEL%"
+    goto AFTER_BLAB
+)
+
+:: 2. Fallback to local .venv executable if present
+if exist "%BLAB_EXE%" (
+    "%BLAB_EXE%" gui
+    set "BLAB_EXIT=%ERRORLEVEL%"
+    goto AFTER_BLAB
+)
+
+echo ERROR: Boundary Lab executable or module not found.
+set "BLAB_EXIT=1"
+
+:AFTER_BLAB
 echo.
 if not "%BLAB_EXIT%"=="0" (
     echo ERROR: Boundary Lab exited with status %BLAB_EXIT%.
