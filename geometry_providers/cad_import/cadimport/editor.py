@@ -592,7 +592,7 @@ class CadImportEditor:
         self.step_path.setText(str(source.get("step_path", "")))
         for key, spin in self.spins.items():
             blocked = spin.blockSignals(True)
-            spin.setValue(float(source.get(key, source["elements_per_wavelength"])))  # no BEM value: the FEM one
+            spin.setValue(self._fineness_value(key))
             spin.blockSignals(blocked)
         for key, spins in (("rotation_deg", self.rotation_spins), ("translation_mm", self.translation_spins)):
             for spin, value in zip(spins, source.get(key, (0.0, 0.0, 0.0)), strict=True):
@@ -634,11 +634,14 @@ class CadImportEditor:
         self._fineness_combos[key] = (combo, levels)
         return combo
 
+    def _fineness_value(self, key):
+        """The source elements per wavelength ``key`` (BEM: the FEM one when it has none)."""
+        return float(self.source.get(key, self.source["elements_per_wavelength"]))
+
     def _show_fineness(self):
-        """The level of each source elements per wavelength (BEM: the FEM one when it has none), else (or while
-        chosen) Custom with its number."""
+        """The level of each source elements per wavelength, else (or while chosen) Custom with its number."""
         for key, (combo, levels) in self._fineness_combos.items():
-            n = float(self.source.get(key, self.source["elements_per_wavelength"]))
+            n = self._fineness_value(key)
             custom = key in self._custom_fineness or n not in levels.values()
             combo.setCurrentIndex(combo.count() - 1 if custom else combo.findData(n))
             self.spins[key].setHidden(not custom)
@@ -1425,15 +1428,15 @@ class CadImportEditor:
             f"{self._fmax_hz:g} Hz / {bem:g} (c = {self._sound_speed:g} m/s)"
         )
         held = FEM_LEVELS["FEM Fine"]  # the elements per wavelength a level's frequency limit holds
-        for combo, levels in self._fineness_combos.values():
+        for key, (combo, levels) in self._fineness_combos.items():
             for index, level in enumerate(levels.values()):
-                combo.setItemData(
-                    index,
+                tip = (
                     f"{level:g} elements per wavelength at {self._fmax_hz:g} Hz "
-                    f"({sizing.edge_m(CadSizeOverride(elements_per_wavelength=level)) * 1000:.3g} mm): "
-                    f"{held} per wavelength up to {self._fmax_hz * level / held:.0f} Hz",
-                    Qt.ItemDataRole.ToolTipRole,
+                    f"({sizing.edge_m(CadSizeOverride(elements_per_wavelength=level)) * 1000:.3g} mm)"
                 )
+                if key == "elements_per_wavelength":  # FEM: the frequency up to which the level still holds Fine
+                    tip += f": {held} per wavelength up to {self._fmax_hz * level / held:.0f} Hz"
+                combo.setItemData(index, tip, Qt.ItemDataRole.ToolTipRole)
 
     def event(self, event):
         if event.kind == "geometry_accepted":

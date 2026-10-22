@@ -130,11 +130,11 @@ class CadSizing:
             text += f" ({self.edge_m(size) * 1000:.3g} mm)"
         return text
 
-    def global_text(self, targets: Sequence[CadSizeOverride], *, edge: bool = False) -> str:
+    def global_text(self, targets: Sequence[CadSizeOverride]) -> str:
         """Global, naming the mesh fineness when all of a row's members ``targets`` (see :meth:`face_targets`) share
         it."""
         level = shared(list(targets))
-        return "Global" if level == MIXED or level is None else f"Global ({self.text(level, edge=edge)})"
+        return "Global" if level == MIXED or level is None else f"Global ({self.text(level)})"
 
     def winning(
         self,
