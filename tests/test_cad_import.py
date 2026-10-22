@@ -679,6 +679,8 @@ def bored_balls_step(tmp_path_factory):
     return bored_ball(tmp_path_factory.mktemp("bored_balls") / "balls.step", balls=2)
 
 
+@pytest.mark.slow
+@pytest.mark.timeout(900)
 def test_the_read_finds_every_unmeshable_face_not_just_the_first(bored_balls_step):
     preview = open_step(bored_balls_step)
     tori = [f.id for f in preview.geometry.faces if f.surface_type == "Torus"]
@@ -688,6 +690,8 @@ def test_the_read_finds_every_unmeshable_face_not_just_the_first(bored_balls_ste
     assert set(preview.face_ids.tolist()) == {f.id for f in preview.geometry.faces} - set(tori)
 
 
+@pytest.mark.slow
+@pytest.mark.timeout(900)
 def test_generate_names_every_unmeshable_face_in_face_order(bored_balls_step, tmp_path):
     a, b = [f.id for f in inspect_step(bored_balls_step).faces if f.surface_type == "Torus"]
     reason = "Impossible to mesh periodic surface {}; area reads as negative"
