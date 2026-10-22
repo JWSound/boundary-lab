@@ -461,6 +461,30 @@ def median_edge(response, mesh_id="exterior", group="walls", face=None):
     return np.median(np.linalg.norm(triangles - np.roll(triangles, 1, axis=1), axis=2))
 
 
+def test_the_bem_target_size_is_reported_and_recorded_beside_the_fem_one(plugin, box_step, tmp_path):
+    catalog, backend = plugin
+    request = make_request(
+        make_project(catalog, box_step, elements_per_wavelength=5.0, bem_elements_per_wavelength=2.0), tmp_path
+    )
+    messages = []
+
+    response = backend.create_session(request).generate(status_callback=messages.append)
+
+    metadata = response.geometry.provider_metadata
+    assert metadata["target_size_m"] == pytest.approx(0.02)
+    assert metadata["bem_target_size_m"] == pytest.approx(0.05)
+    assert "FEM 20.0 mm" in messages[0] and "BEM 50.0 mm" in messages[0]
+
+
+def test_a_bem_fineness_given_as_text_is_converted_like_the_fem_one(plugin, box_step, tmp_path):
+    catalog, backend = plugin
+    project = make_project(catalog, box_step, elements_per_wavelength=5.0, bem_elements_per_wavelength="2")
+
+    _, response = generate(backend, project, tmp_path)
+
+    assert response.geometry.provider_metadata["bem_target_size_m"] == pytest.approx(0.05)
+
+
 def test_existing_designs_keep_their_elements_per_wavelength_and_mm_overrides(plugin, box_step, tmp_path):
     catalog, backend = plugin
     legacy = dict(elements_per_wavelength=5.0, face_group_sizes_m={"Driver": 0.008}, body_sizes_m={"Port": 0.01})

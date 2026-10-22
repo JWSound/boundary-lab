@@ -25,6 +25,17 @@ def translation_m(source):
     return tuple(v / 1000 if isinstance(v, int | float) else v for v in source["translation_mm"])
 
 
+def bem_elements_per_wavelength(source):
+    """The BEM mesh fineness as a float; ``None`` (older designs): the FEM value."""
+    value = source.get("bem_elements_per_wavelength")
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("BEM elements per wavelength must be a positive number.") from exc
+
+
 def settings(source, configuration):
     """Pipeline settings for ``source`` with c, fmax and symmetry from the project configuration."""
     try:
@@ -34,7 +45,7 @@ def settings(source, configuration):
             fmax_hz=float(configuration["frequency"]["freq_max_hz"]),
             sound_speed_m_per_s=exterior_sound_speed(configuration),
             elements_per_wavelength=float(source["elements_per_wavelength"]),
-            bem_elements_per_wavelength=source.get("bem_elements_per_wavelength"),  # older designs: the FEM value
+            bem_elements_per_wavelength=bem_elements_per_wavelength(source),
             body_sizes=body_sizes,
             face_group_sizes=face_group_sizes,
             face_sizes=tuple(read_face_sizes(source.get("face_sizes", []))),

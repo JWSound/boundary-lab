@@ -142,7 +142,10 @@ class CadImportSession:
         output = self.request.run_root.resolve() / ("cad_import_" + uuid4().hex)
         output.mkdir(parents=True)
         if status_callback:
-            status_callback(f"Meshing {path.name} (target element size {cad_settings.target_size_m * 1000:.1f} mm)")
+            status_callback(
+                f"Meshing {path.name} (target element size FEM {cad_settings.target_size_m * 1000:.1f} mm, "
+                f"BEM {cad_settings.sizing.bem_target_size_m * 1000:.1f} mm)"
+            )
         result = mesh_in_worker(path, cad_settings, output, cancelled=cancelled, started=self._set_process)
         geometry = result.geometry
         metadata = dict(
@@ -150,6 +153,7 @@ class CadImportSession:
             units="m",
             step_path=str(path),
             target_size_m=result.target_size_m,
+            bem_target_size_m=cad_settings.sizing.bem_target_size_m,
             bbox_m=[list(corner) for corner in geometry.bbox_m],
             suggested_symmetry=geometry.symmetry,
             warnings=list(geometry.warnings),
