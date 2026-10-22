@@ -397,6 +397,11 @@ def _geometry_from_json(g: Mapping) -> CadGeometry:
     )
 
 
+def _set_coarse_size(gmsh, geometry: CadGeometry) -> None:
+    """Cap face sizes at 1/30 of the bounding-box diagonal, as the display tessellation does."""
+    gmsh.option.setNumber("Mesh.MeshSizeMax", math.dist(*geometry.bbox_m) / 30 / _MM)
+
+
 def _tessellate(
     gmsh, geometry: CadGeometry
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, tuple[CadUnmeshableFace, ...]]:
@@ -404,7 +409,7 @@ def _tessellate(
 
     Unmeshable faces whose area reads positive get the triangles of :func:`_fill`, for display only.
     """
-    gmsh.option.setNumber("Mesh.MeshSizeMax", math.dist(*geometry.bbox_m) / 30 / _MM)
+    _set_coarse_size(gmsh, geometry)
     gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 12)
     unmeshable = _mesh_surfaces(gmsh, geometry.faces)
     node_tags, coords, _ = gmsh.model.mesh.getNodes()
@@ -537,7 +542,7 @@ def mesh_step(step_path: str | Path, settings: CadImportSettings, output_dir: st
             )
         groups = face_groups.surface_groups(model.mesh_faces)
         # Gmsh never returns from meshing an unmeshable face once face sizes differ, so find them first, coarsely.
-        gmsh.option.setNumber("Mesh.MeshSizeMax", math.dist(*geometry.bbox_m) / 30 / _MM)
+        _set_coarse_size(gmsh, geometry)
         if unmeshable := _mesh_surfaces(gmsh, geometry.faces):
             raise ValueError(_unmeshable_message(geometry, unmeshable))
         gmsh.model.mesh.clear()

@@ -810,6 +810,7 @@ def test_generate_rejects_an_unmeshable_face_by_name_and_writes_no_meshes(bored_
     ],
     ids=["default-finenesses", "body-override-fem-only"],
 )
+@pytest.mark.timeout(30)
 def test_generate_rejects_an_unmeshable_face_quickly_when_face_sizes_differ(bored_ball_step, tmp_path, settings):
     with pytest.raises(ValueError, match=r"^Face \d+ \(Torus, Ball\) cannot be meshed: Impossible to mesh periodic"):
         mesh_step(bored_ball_step, settings, tmp_path / "out")

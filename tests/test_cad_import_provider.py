@@ -598,6 +598,19 @@ def test_cancel_before_start_and_during_meshing(plugin, box_step, tmp_path):
     assert not list(tmp_path.rglob("*.msh"))
 
 
+@pytest.mark.timeout(30)
+def test_cancel_stops_a_mesh_worker_that_never_returns(plugin, box_step, tmp_path, monkeypatch):
+    catalog, backend = plugin
+    jobs = sys.modules[type(backend).__module__.replace(".backend", ".jobs")]
+    hang = tmp_path / "hang.py"
+    hang.write_text("import time\ntime.sleep(600)\n", encoding="utf-8")
+    monkeypatch.setattr(jobs, "WORKER", hang)
+    session = backend.create_session(make_request(make_project(catalog, box_step), tmp_path / "out"))
+    with pytest.raises(GenerationCancelledError):
+        session.generate(stop_requested=lambda: session.process is not None)
+    assert session.process is None
+
+
 def test_mesh_worker_that_never_returns_times_out(plugin, box_step, tmp_path, monkeypatch):
     catalog, backend = plugin
     jobs = sys.modules[type(backend).__module__.replace(".backend", ".jobs")]
