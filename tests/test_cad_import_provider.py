@@ -708,6 +708,16 @@ def test_regeneration_resends_no_boundary_and_removes_a_gone_group_with_its_comp
     assert (patch["interfaces"]["remove"], patch["regions"]["remove"]) == ([], [])
 
 
+def test_regeneration_keeps_the_id_of_an_interface_the_user_already_built(plugin):
+    first = patch_of(plugin, meshed())
+    built = {**first["interfaces"]["upsert"][0], "id": "interface:interface-1-port"}
+    system = {"boundaries": first["surface_assignments"]["upsert"], "interfaces": [built]}
+
+    patch = patch_of(plugin, meshed(), system)
+
+    assert [i["id"] for i in patch["interfaces"]["upsert"]] == ["interface:interface-1-port"]
+
+
 def with_source(system, mesh_id, group):
     """The user's System step: mark one boundary moving and drive it with an ideal velocity source."""
     boundary = next(b for b in system.boundaries if b.group.mesh_id == mesh_id and b.group.name == group)

@@ -50,13 +50,19 @@ def configuration_patch(request, result: CadImportResult):
                     kind="interface" if group in interface_names else "rigid",
                 )
             )
+    # Build/Identify Interfaces gives its own IDs; a second ID for the same boundaries would pair them twice.
+    existing_ids = {
+        (i["bounded_boundary_id"], i["unbounded_boundary_id"]): i["id"] for i in system.get("interfaces", [])
+    }
     for interface in result.geometry.interfaces:
+        bounded = f"{doc}/{interface.mesh_id}/{interface.name}"
+        unbounded = f"{doc}/exterior/{interface.name}"
         interfaces.append(
             dict(
-                id=f"{doc}/interface/{interface.name}",
+                id=existing_ids.get((bounded, unbounded), f"{doc}/interface/{interface.name}"),
                 name=f"{request.mesh_name} {interface.name}",
-                bounded_boundary_id=f"{doc}/{interface.mesh_id}/{interface.name}",
-                unbounded_boundary_id=f"{doc}/exterior/{interface.name}",
+                bounded_boundary_id=bounded,
+                unbounded_boundary_id=unbounded,
             )
         )
     patch = {
