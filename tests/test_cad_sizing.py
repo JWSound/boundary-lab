@@ -224,15 +224,11 @@ def test_sizes_of_faces_gone_and_volumes_of_bodies_no_longer_air_are_dropped_wit
 # -- older designs ---------------------------------------------------------------------------------------------------
 
 
-def effective(geometry, source, sizing=SIZING):
-    """``({face: edge length}, {air body: edge length})`` that meshing gives ``source`` (m): its size plan."""
+def settings_of(geometry, source, sizing=SIZING):
+    """The pipeline settings of design ``source`` (also its older body and face-group sizes) at ``sizing``."""
     body_sizes, group_sizes = legacy_sizes(source)
     own = sizes(geometry, source)
-    rows = CadFaceGroups(geometry, {})
-    named = {}
-    for f in geometry.faces:
-        named.setdefault(rows.group_of(f.id).name, []).append(f.id)
-    settings = CadImportSettings(
+    return CadImportSettings(
         sizing.fmax_hz,
         sizing.sound_speed_m_per_s,
         sizing.elements_per_wavelength,
@@ -242,8 +238,15 @@ def effective(geometry, source, sizing=SIZING):
         face_sizes=tuple(own.faces.items()),
         volume_sizes=own.volumes,
     )
-    plan = size_plan(settings, geometry, {"all": named})
-    return plan.face_m, plan.volume_m
+
+
+def named_faces(geometry):
+    """The surface groups ``size_plan`` takes: every face under its face group row."""
+    rows = CadFaceGroups(geometry, {})
+    named = {}
+    for f in geometry.faces:
+        named.setdefault(rows.group_of(f.id).name, []).append(f.id)
+    return {"all": named}
 
 
 def test_body_face_group_and_legacy_sizes_become_face_and_volume_sizes_that_mesh_the_same(box):
@@ -262,7 +265,9 @@ def test_body_face_group_and_legacy_sizes_become_face_and_volume_sizes_that_mesh
     assert new["elements_per_wavelength"] == 5.0
     assert new["volume_sizes"] == {"Chamber": {"size_m": 0.04}, "Port": {"size_m": 0.008}}  # the volume's own stays
     assert new["face_sizes"][: len(own["face_sizes"])] == own["face_sizes"]
-    assert effective(box, new) == effective(box, source)
+    assert size_plan(settings_of(box, new), box, named_faces(box)) == size_plan(
+        settings_of(box, source), box, named_faces(box)
+    )
     assert migrated(new, CadFaceGroups(box, {}), sizes(box, new), SIZING) is None
 
 
@@ -275,8 +280,10 @@ def test_migrating_compares_a_body_size_with_each_faces_own_target_size(tmp_path
 
     new = migrated(source, CadFaceGroups(covered, {}), sizes(covered, source), sizing)
 
-    assert effective(covered, new, sizing) == effective(covered, source, sizing)
-    assert effective(covered, new, sizing)[0][shared] == pytest.approx(0.02)
+    groups = named_faces(covered)
+    plan = size_plan(settings_of(covered, new, sizing), covered, groups)
+    assert plan == size_plan(settings_of(covered, source, sizing), covered, groups)
+    assert plan.face_m[shared] == pytest.approx(0.02)
 
 
 def test_designs_without_body_or_face_group_sizes_are_not_migrated(box):

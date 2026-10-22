@@ -264,6 +264,36 @@ def test_deleting_a_picked_group_keeps_the_others(box):
         groups.deleted("Driver")
 
 
+def test_picking_one_of_several_faces_sharing_a_step_name_groups_only_that_face(tmp_path):
+    sided = inspect_step(vented_box(tmp_path / "sides.step", face_names=named_sides))
+    left, right = x_sides(sided)
+    groups = CadFaceGroups(sided, {})
+
+    source, groups = edited(groups, groups.moved_to("Left", {left.id}))
+    source, groups = edited(groups, groups.moved_to("Right", {right.id}), source)
+
+    assert {g["name"]: len(g["faces"]) for g in source["face_groups"]} == {"Left": 1, "Right": 1}
+    assert {name: len(faces) for name, faces in group_faces(groups).items()} == {
+        "Left": 1,
+        "Right": 1,
+        "Side": 2,
+        "Driver": 1,
+    }
+
+
+def test_a_group_whose_faces_are_gone_needs_review_and_re_picking_repairs_it(box):
+    left, right = x_sides(box)
+    lost = asdict(CadFaceRef(None, (1.0, 1.0, 1.0), 0.5, (0.0, 0.0, 1.0), "Plane"))
+    groups = CadFaceGroups(box, {"Back": [lost]})
+    assert groups.needs_review == ("Back",)
+
+    source, groups = edited(groups, groups.moved_to("Back", {left.id}), {"face_groups": [], "interface_names": {}})
+
+    assert groups.needs_review == ()
+    assert [len(g["faces"]) for g in source["face_groups"]] == [1]
+    assert group_faces(groups)["Back"] == {left.id}
+
+
 def test_an_interface_is_renamed_unless_the_name_is_taken_and_an_empty_name_gives_back_the_detected_one(box):
     groups = CadFaceGroups(box, {"A": []}, interface_names={"Interface 9 Gone": "Old"})
 
@@ -379,6 +409,8 @@ def test_the_bem_fineness_falls_back_to_the_fem_one_and_the_sizing_follows_both(
 
     assert design.number(FEM_FINENESS) == design.number(BEM_FINENESS) == 4.0
     assert design.number("growth_rate") == 1.3
+    with pytest.raises(KeyError):
+        CadDesign({"elements_per_wavelength": 4}).number("growth_rate")  # no fallback for other settings
     assert CadDesign(source(bem_elements_per_wavelength=12)).number(BEM_FINENESS) == 12.0
     sizing = CadDesign(source(bem_elements_per_wavelength=12)).sizing(3430.0, 343.0)
     assert sizing == CadSizing(3430.0, 343.0, 6.0, 12)
@@ -414,6 +446,41 @@ def test_sizes_are_set_on_faces_and_volumes_and_a_bad_size_or_stored_size_is_ref
         broken.set_sizes(FINE, chamber[:1])
     assert broken.dropped() == ({}, "")
     assert broken.migrated(CadSizing(1000.0)) is None
+
+
+def test_deleting_a_group_keeps_the_sizes_of_its_faces(box):
+    left, _ = x_sides(box)
+    design = CadDesign(source(), box)
+    sized = source(**design.groups.moved_to("Sides", {left.id}).changes, **design.set_sizes(FINE, [left.id]))
+
+    edit = CadDesign(sized, box).groups.deleted("Sides")
+
+    assert edit.changes == {"face_groups": []}  # the sizes are other fields, stored as they were
+    assert [e["elements_per_wavelength"] for e in sized["face_sizes"]] == [6]
+
+
+def test_sizes_set_on_walls_and_interface_rows_are_written_to_their_faces(box):
+    design = CadDesign(source(), box)
+    walls, interface = (design.groups.rows[0], design.groups.rows[1])
+
+    interface_changes = design.set_sizes(FINE, interface.faces)
+    walls_changes = design.set_sizes(CadSizeOverride(elements_per_wavelength=2), walls.faces)
+
+    assert len(interface_changes["face_sizes"]) == len(interface.faces)
+    assert len(walls_changes["face_sizes"]) == len(walls.faces)
+    assert set(interface_changes) == set(walls_changes) == {"face_sizes", "volume_sizes"}  # no face group sizes
+
+
+def test_a_bem_level_stores_its_elements_per_wavelength_on_faces_and_volumes(box):
+    side = x_sides(box)[0].id
+
+    design = CadDesign(source(), box)
+
+    faces = design.set_sizes(CadSizeOverride(elements_per_wavelength=0.3), [side])
+    volumes = design.set_sizes(CadSizeOverride(elements_per_wavelength=12), [], ["Chamber"])
+
+    assert [e["elements_per_wavelength"] for e in faces["face_sizes"]] == [0.3]
+    assert volumes["volume_sizes"] == {"Chamber": {"elements_per_wavelength": 12}}
 
 
 def test_the_shown_target_of_a_face_is_the_one_the_size_plan_meshes_it_with(box):

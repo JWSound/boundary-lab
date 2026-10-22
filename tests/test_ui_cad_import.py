@@ -20,7 +20,7 @@ from blab.cad_import import inspect_step
 from blab.generators import catalog as catalog_module
 from blab.physical_compiler import PhysicalSystemCompiler
 from blab.ui.settings import load_gui_preferences, save_gui_preferences
-from cad_fixtures import bored_ball, named_sides, strip_names, vented_box, waveguide
+from cad_fixtures import bored_ball, strip_names, vented_box, waveguide
 from conftest import _stub_qt_interactor_class
 from test_cad_import_provider import PROVIDER, ROOT
 from test_ui_settings import MemorySettings
@@ -367,21 +367,6 @@ def group_rows(editor):
     return {name: count for name, count in all_rows(editor).items() if name not in {"walls", *interfaces}}
 
 
-def test_picking_one_of_several_faces_sharing_a_step_name_groups_only_that_face(cad_editor, qapp, tmp_path):
-    editor, host = cad_editor
-    editor.set_step_path(str(vented_box(tmp_path / "sides.step", face_names=named_sides)))
-    wait(qapp, lambda: not editor.loading)
-    left, right = cabinet_faces(editor, lambda f: abs(abs(f["normal"][0]) - 1) < 1e-9)
-
-    editor.pick_face(left)
-    editor.group_selection("Left")
-    editor.pick_face(right)
-    editor.group_selection("Right")
-
-    assert {g["name"]: len(g["faces"]) for g in host.snapshot().source["face_groups"]} == {"Left": 1, "Right": 1}
-    assert group_rows(editor) == {"Left": 1, "Right": 1, "Side": 2, "Driver": 1}
-
-
 def test_placement_fields_edit_the_source_and_move_the_display_without_reading(cad_editor, monkeypatch):
     editor, host = cad_editor
     editor.pick_face(chamber_back(editor))
@@ -509,20 +494,6 @@ def test_reserved_names_and_interface_faces_cannot_be_grouped(cad_editor, name, 
     assert re.search(message, editor.status.text())
 
 
-def test_deleting_a_group_keeps_the_sizes_of_its_faces(cad_editor):
-    editor, host = cad_editor
-    face = cabinet_faces(editor, lambda f: True)[0]
-    editor.add_to_group("Sides", {face})
-    editor.set_face_group_size("Sides", FINE)
-
-    editor.groups_table.selectRow(row_of(editor, "Sides"))
-    editor.delete_group_button.click()
-
-    assert host.snapshot().source["face_groups"] == []
-    assert [e["elements_per_wavelength"] for e in host.snapshot().source["face_sizes"]] == [6]
-    assert size_combo(editor, face_item(editor, face)).currentText() == "FEM Fine"
-
-
 FINE = {"elements_per_wavelength": 6}
 COARSE = {"elements_per_wavelength": 2}
 SIZE_ENTRIES = [
@@ -633,33 +604,19 @@ def test_a_body_size_sets_its_volume_and_faces_and_a_volume_size_only_the_volume
     assert (host.snapshot().source["volume_sizes"], host.snapshot().source["face_sizes"]) == ({}, [])
 
 
-def test_face_group_sizes_are_written_to_their_faces_even_on_walls_and_interfaces(cad_editor, qapp):
-    editor, host = cad_editor
-    (interface,) = editor.geometry["interfaces"]
-
-    choose_size(size_combo(editor, "Interface 1 Port"), "FEM Fine", qapp)
-    choose_size(size_combo(editor, "walls"), "FEM Coarse", qapp)
-
-    source = host.snapshot().source
-    assert len(source["face_sizes"]) == len(interface["face_ids"]) + all_rows(editor)["walls"]
-    assert size_combo(editor, "Interface 1 Port").currentText() == "FEM Fine"
-    assert size_combo(editor, "walls").currentText() == "FEM Coarse"
-    assert "face_group_sizes" not in source
-
-
-def test_a_bem_level_stores_its_elements_per_wavelength_on_faces_and_volumes(cad_editor, qapp):
+def test_a_size_chosen_in_a_row_dropdown_shows_in_the_dropdown(cad_editor, qapp):
     editor, host = cad_editor
     side = cabinet_faces(editor, lambda f: True)[0]
     volume = child_row(body_items(editor)["Chamber"], "Volume")
 
+    choose_size(size_combo(editor, "walls"), "FEM Coarse", qapp)
     choose_size(size_combo(editor, face_item(editor, side)), "BEM Coarse", qapp)
     choose_size(size_combo(editor, volume), "BEM Fine", qapp)
 
-    source = host.snapshot().source
-    assert [e["elements_per_wavelength"] for e in source["face_sizes"]] == [0.3]
-    assert source["volume_sizes"] == {"Chamber": {"elements_per_wavelength": 12}}
+    assert host.snapshot().source["face_sizes"]
     assert size_combo(editor, face_item(editor, side)).currentText() == "BEM Coarse"
     assert size_combo(editor, volume).currentText() == "BEM Fine"
+    assert size_combo(editor, "walls").currentText() == "Mixed"  # one of its faces has its own size
 
 
 def face_item(editor, face_id):
@@ -705,19 +662,6 @@ def test_mesh_size_from_the_face_menu_sets_a_face_override_on_the_selection(cad_
     assert len(host.snapshot().source["face_sizes"]) == 1
 
 
-def test_face_overrides_whose_faces_are_gone_are_dropped_with_a_note(cad_editor, qapp, tmp_path):
-    editor, host = cad_editor
-    editor.set_step_path(str(strip_names(vented_box(tmp_path / "named.step"), tmp_path / "stripped.step")))
-    wait(qapp, lambda: not editor.loading)
-    editor.set_face_size({chamber_back(editor)}, FINE)
-
-    editor.set_step_path(str(strip_names(vented_box(tmp_path / "named.step", depth=230), tmp_path / "deep.step")))
-    wait(qapp, lambda: not editor.loading)
-
-    assert host.snapshot().source["face_sizes"] == []
-    assert "1 face size override dropped" in editor.status.text()
-
-
 def test_designs_with_no_body_or_face_group_sizes_are_left_as_they_are(
     cad_editor, main_window, monkeypatch, qapp, tmp_path
 ):
@@ -741,23 +685,6 @@ def test_designs_with_no_body_or_face_group_sizes_are_left_as_they_are(
 
     assert len(stored) == 2
     assert "sizes are now set" not in editor.status.text()
-
-
-def test_an_invalid_stored_face_size_is_shown_as_generate_rejects_it_and_sizes_are_not_written(cad_editor, tmp_path):
-    from test_cad_import_provider import bad_face_size
-
-    editor, host = cad_editor
-    entry, message = bad_face_size(editor.source["step_path"])
-    snapshot = host.update_source(
-        host.snapshot().source | {"face_sizes": [entry]}, expected_revision=host.snapshot().revision
-    )
-
-    editor.apply_source(snapshot.source, snapshot.revision)
-    assert editor.status.text() == message
-
-    editor.set_face_size([editor.geometry["faces"][0]["id"]], FINE)
-    assert editor.status.text() == message
-    assert host.snapshot().source["face_sizes"] == snapshot.source["face_sizes"]
 
 
 def test_existing_designs_get_the_face_and_volume_sizes_that_applied_before(cad_editor, main_window, qapp, tmp_path):
@@ -919,7 +846,7 @@ def chamber_back(editor):
     return face
 
 
-def test_group_whose_faces_are_gone_needs_review_and_re_picking_repairs_it(cad_editor, qapp, tmp_path):
+def test_group_whose_faces_are_gone_is_listed_as_needing_review(cad_editor, qapp, tmp_path):
     editor, host = cad_editor
     editor.set_step_path(str(strip_names(vented_box(tmp_path / "named.step"), tmp_path / "stripped.step")))
     wait(qapp, lambda: not editor.loading)
@@ -933,12 +860,6 @@ def test_group_whose_faces_are_gone_needs_review_and_re_picking_repairs_it(cad_e
     assert editor.groups_needing_review() == ["Back"]
     row = next(r for r in range(editor.groups_table.rowCount()) if editor.groups_table.item(r, 0).text() == "Back")
     assert "needs review" in editor.groups_table.item(row, 1).text()
-    editor.pick_face(chamber_back(editor))
-    editor.group_selection("Back")
-
-    assert editor.groups_needing_review() == []
-    assert [len(g["faces"]) for g in host.snapshot().source["face_groups"]] == [1]
-    assert group_rows(editor)["Back"] == 1
 
 
 @pytest.mark.parametrize("answer", [True, False])

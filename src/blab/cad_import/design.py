@@ -235,8 +235,13 @@ def source_placement(source: Mapping) -> dict:
     """The placement of design ``source`` as the pipeline functions take it (translation in metres)."""
     return dict(
         rotation_deg=tuple(source.get("rotation_deg", ZERO)),
-        translation_m=tuple(v / 1000 for v in source.get("translation_mm", ZERO)),
+        translation_m=_mm_to_m(source.get("translation_mm", ZERO)),
     )
+
+
+def _mm_to_m(values: Sequence) -> tuple:
+    """``values`` (millimetres) in metres; values that are no numbers are left for the check."""
+    return tuple(v / 1000 if isinstance(v, int | float) else v for v in values)
 
 
 class CadDesign:
@@ -285,9 +290,11 @@ class CadDesign:
         return {g["name"] for g in self.source.get("face_groups", [])}
 
     def number(self, key: str) -> float:
-        """The numeric setting ``key`` (a fineness, :data:`FEM_FINENESS` or :data:`BEM_FINENESS`, curvature or growth
-        rate); the BEM fineness is the FEM one when the source has none."""
-        return float(self.source.get(key, self.source[FEM_FINENESS]))
+        """The numeric setting ``key`` (a fineness, curvature or growth rate); the BEM fineness
+        (:data:`BEM_FINENESS`) is the FEM one (:data:`FEM_FINENESS`) when the source has none."""
+        if key == BEM_FINENESS:
+            return float(self.source.get(key, self.source[FEM_FINENESS]))
+        return float(self.source[key])
 
     def sizing(self, fmax_hz: float | None, sound_speed_m_per_s: float) -> CadSizing:
         """The design's sizing at the project's maximum frequency (``None`` while unknown) and sound speed."""
@@ -356,7 +363,7 @@ def design_settings(source: Mapping, configuration: Mapping) -> CadImportSetting
             symmetry=configuration.get("symmetry_config", {}).get("mode", "off"),
             closed_shells=dict(source.get("closed_shells", {})),
             rotation_deg=tuple(source["rotation_deg"]),
-            translation_m=_translation_m(source),
+            translation_m=_mm_to_m(source["translation_mm"]),
             interface_names=dict(source.get("interface_names", {})),
         )
     except (KeyError, TypeError) as exc:
@@ -374,11 +381,6 @@ def _face_groups(source: Mapping) -> dict:
             raise ValueError(f"Face group '{group['name']}' is defined twice.")
         result[group["name"]] = tuple(group["faces"])
     return result
-
-
-def _translation_m(source: Mapping) -> tuple:
-    """The source's translation (millimetres) in metres; values that are no numbers are left for the check."""
-    return tuple(v / 1000 if isinstance(v, int | float) else v for v in source["translation_mm"])
 
 
 def _bem_elements_per_wavelength(source: Mapping) -> float | None:
