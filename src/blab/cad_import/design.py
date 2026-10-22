@@ -11,7 +11,7 @@ from dataclasses import asdict
 from typing import TYPE_CHECKING, NamedTuple
 
 from .face_refs import ZERO, CadFaceRef, face_ref, match_face_ref
-from .sizing import CadSizes, CadSizing, migrated, size_override
+from .sizing import CadSizeOverride, CadSizes, CadSizing, migrated, size_override
 
 if TYPE_CHECKING:
     from .pipeline import CadGeometry, CadImportSettings
@@ -254,6 +254,7 @@ class CadDesign:
         self.placement = dict(placement or source_placement(source))
         self.groups = self.sizes = None
         self.size_error = ""
+        self._targets = None  # (sizing, face -> target fineness)
         if geometry is None:
             return
         self.groups = CadFaceGroups(
@@ -293,6 +294,13 @@ class CadDesign:
         return CadSizing(
             fmax_hz, sound_speed_m_per_s, float(self.source[FEM_FINENESS]), self.source.get(BEM_FINENESS)
         )
+
+    def targets(self, sizing: CadSizing, faces=(), volumes=()) -> list[CadSizeOverride]:
+        """The mesh fineness of the target element size of each of ``faces`` then each air-body ``volumes``: what the
+        size plan meshes them with unless an override wins."""
+        if self._targets is None or self._targets[0] != sizing:  # per change, not per row
+            self._targets = (sizing, sizing.face_targets(self.geometry))
+        return [self._targets[1][f] for f in faces] + [sizing.fineness] * len(volumes)
 
     def set_sizes(self, size, faces=(), volumes=()) -> dict:
         """The size fields with ``size`` (an override or its stored fields; ``None``: Global) on each of ``faces``

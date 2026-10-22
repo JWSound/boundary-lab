@@ -489,7 +489,6 @@ class CadImportEditor:
             lambda pos: self.show_row_menu(self.tree.itemAt(pos), self.tree.viewport().mapToGlobal(pos))
         )
         self._size_rows = []  # (Mesh size dropdown, face ids, air-body volumes) of each tree row
-        self._face_targets = (None, None, None)  # (sizing, geometry, face -> mesh fineness sizing it)
         self.tree.itemSelectionChanged.connect(self._selection_changed)
         tree_box_layout.addWidget(self.tree)
         buttons = QHBoxLayout()
@@ -1292,11 +1291,7 @@ class CadImportEditor:
         while combo.count() > fixed:
             combo.removeItem(fixed)
         sizing = self._sizing()
-        geometry = self._sizes.geometry
-        if self._face_targets[0] != sizing or self._face_targets[1] is not geometry:  # per change, not per row
-            self._face_targets = (sizing, geometry, sizing.face_targets(geometry))
-        face_targets = self._face_targets[2]
-        targets = [face_targets[f] for f in faces] + [sizing.fineness] * len(volumes)
+        targets = self._design.targets(sizing, faces, volumes)
         combo.setItemText(0, sizing.global_text(targets))
         levels = list(LEVELS.values())
         if size is None:

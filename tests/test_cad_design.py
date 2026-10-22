@@ -416,6 +416,27 @@ def test_sizes_are_set_on_faces_and_volumes_and_a_bad_size_or_stored_size_is_ref
     assert broken.migrated(CadSizing(1000.0)) is None
 
 
+def test_the_shown_target_of_a_face_is_the_one_the_size_plan_meshes_it_with(box):
+    from blab.cad_import.sizing import size_plan
+
+    design = CadDesign(source(elements_per_wavelength=6, bem_elements_per_wavelength=2), box)
+    settings = design_settings(design.source, CONFIGURATION)
+    sizing = design.sizing(settings.fmax_hz, settings.sound_speed_m_per_s)
+    named = {}
+    for face in box.faces:
+        named.setdefault(design.groups.group_of(face.id).name, []).append(face.id)
+    plan = size_plan(settings, box, {"all": named})
+    air = {f for b in box.bodies if b.kind == "air" for f in b.face_ids}
+    exterior = {f for b in box.bodies if b.kind == "exterior" for f in b.face_ids}
+    faces = [min(air - exterior), min(exterior - air)]
+
+    shown = design.targets(sizing, faces, ["Chamber"])
+
+    assert [sizing.edge_m(t) for t in shown[:2]] == [pytest.approx(plan.face_m[f]) for f in faces]
+    assert sizing.edge_m(shown[2]) == pytest.approx(plan.volume_m["Chamber"])
+    assert shown[0] != shown[1]
+
+
 def test_lost_sizes_are_dropped_with_a_note(box):
     lost = {"face": asdict(face_ref(replace(box.faces[0], centre=(1.0, 1.0, 1.0)))), "size_m": 0.01}
 
