@@ -405,8 +405,7 @@ def test_rejected_regeneration_keeps_the_previous_meshes_and_system(plugin, tmp_
 def test_unmeshable_face_rejects_regeneration_by_name_and_keeps_the_previous_meshes_and_system(plugin, tmp_path):
     catalog, backend = plugin
     step = vented_box(tmp_path / "box.step")
-    # One fineness everywhere: Gmsh does not return from meshing the unmeshable ball once face sizes differ.
-    project, _ = generate(backend, make_project(catalog, step, bem_elements_per_wavelength=6.0), tmp_path / "runs")
+    project, _ = generate(backend, make_project(catalog, step), tmp_path / "runs")
     before = deepcopy(project)
     meshes = [m.mesh_path for m in project.generator_documents[0].artifact.meshes]
 
@@ -436,7 +435,7 @@ def test_invalid_face_groups_are_rejected_before_meshing(plugin, box_step, tmp_p
 
 def test_target_size_follows_project_sound_speed_and_maximum_frequency(plugin, box_step, tmp_path):
     catalog, backend = plugin
-    project, first = generate(backend, make_project(catalog, box_step, bem_elements_per_wavelength=6.0), tmp_path)
+    project, first = generate(backend, make_project(catalog, box_step), tmp_path)
     system = project.physical_system
     project.physical_system = replace(
         system, regions=tuple(replace(r, sound_speed_m_per_s=686.0) for r in system.regions)
@@ -447,8 +446,9 @@ def test_target_size_follows_project_sound_speed_and_maximum_frequency(plugin, b
     # New designs are Fine: 343 / 3430 / 6 = 16.7 mm, then 686 / 3430 / 6 = 33.3 mm.
     assert first.geometry.provider_metadata["target_size_m"] == pytest.approx(0.343 / 3430 * 1000 / 6)
     assert second.geometry.provider_metadata["target_size_m"] == pytest.approx(0.686 / 3430 * 1000 / 6)
-    # The 120 mm cabinet faces hold only a few 33 mm elements, so edges grow less than 2x.
-    assert median_edge(second) > 1.25 * median_edge(first)
+    # The exterior is BEM, 5 per wavelength by default (20 mm, then 40 mm). The 120 mm cabinet faces hold only
+    # a few such elements, so edges grow much less than 2x.
+    assert median_edge(second) > 1.15 * median_edge(first)
 
 
 def median_edge(response, mesh_id="exterior", group="walls", face=None):

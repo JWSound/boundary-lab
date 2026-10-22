@@ -802,6 +802,21 @@ def test_generate_rejects_an_unmeshable_face_by_name_and_writes_no_meshes(bored_
     assert not list((tmp_path / "out").glob("*.msh"))
 
 
+@pytest.mark.parametrize(
+    "settings",
+    [
+        replace(SETTINGS, elements_per_wavelength=6.0, bem_elements_per_wavelength=5.0),
+        replace(SETTINGS, elements_per_wavelength=6.0, body_sizes={"Ball": CadSizeOverride(size_m=0.04)}),
+    ],
+    ids=["default-finenesses", "body-override-fem-only"],
+)
+def test_generate_rejects_an_unmeshable_face_quickly_when_face_sizes_differ(bored_ball_step, tmp_path, settings):
+    with pytest.raises(ValueError, match=r"^Face \d+ \(Torus, Ball\) cannot be meshed: Impossible to mesh periodic"):
+        mesh_step(bored_ball_step, settings, tmp_path / "out")
+
+    assert not list((tmp_path / "out").glob("*.msh"))
+
+
 def test_a_good_file_has_no_unmeshable_faces_and_every_face_is_tessellated(tmp_path):
     preview = open_step(vented_box(tmp_path / "box.step"))
 

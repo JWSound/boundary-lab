@@ -536,6 +536,11 @@ def mesh_step(step_path: str | Path, settings: CadImportSettings, output_dir: st
                 f"which suggests symmetry {SYMMETRY_LABELS[geometry.symmetry]}."
             )
         groups = face_groups.surface_groups(model.mesh_faces)
+        # Gmsh never returns from meshing an unmeshable face once face sizes differ, so find them first, coarsely.
+        gmsh.option.setNumber("Mesh.MeshSizeMax", math.dist(*geometry.bbox_m) / 30 / _MM)
+        if unmeshable := _mesh_surfaces(gmsh, geometry.faces):
+            raise ValueError(_unmeshable_message(geometry, unmeshable))
+        gmsh.model.mesh.clear()
         _apply_sizes(gmsh, model, settings, groups)
         try:
             gmsh.model.mesh.generate(3)
