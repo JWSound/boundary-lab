@@ -74,7 +74,10 @@ in **Edit > Generator Plugins...** and add a design.
    these levels keep their elements per wavelength (shown as Custom) and their
    mm overrides.
 6. Set the project symmetry to the suggested one, then **Generate** (F7);
-   cancelling geometry generation stops it.
+   cancelling geometry generation stops it. A mesh job still running after
+   one hour (`MESH_TIMEOUT_S` in `jobs.py`) is stopped and reported as timed
+   out; real designs mesh in minutes, so this only catches a Gmsh that no
+   longer returns.
 
 Each generation creates one tetrahedral mesh per touching group of air bodies
 (one volume group per body), one exterior surface mesh, a region for each, a

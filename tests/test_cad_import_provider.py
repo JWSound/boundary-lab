@@ -598,6 +598,19 @@ def test_cancel_before_start_and_during_meshing(plugin, box_step, tmp_path):
     assert not list(tmp_path.rglob("*.msh"))
 
 
+def test_mesh_worker_that_never_returns_times_out(plugin, box_step, tmp_path, monkeypatch):
+    catalog, backend = plugin
+    jobs = sys.modules[type(backend).__module__.replace(".backend", ".jobs")]
+    hang = tmp_path / "hang.py"
+    hang.write_text("import time\ntime.sleep(600)\n", encoding="utf-8")
+    monkeypatch.setattr(jobs, "WORKER", hang)
+    monkeypatch.setattr(jobs, "MESH_TIMEOUT_S", 0.5)
+    session = backend.create_session(make_request(make_project(catalog, box_step), tmp_path / "out"))
+    with pytest.raises(ValueError, match="timed out after 0.5 s"):
+        session.generate()
+    assert session.process is None
+
+
 @pytest.mark.parametrize(
     "change,match",
     [

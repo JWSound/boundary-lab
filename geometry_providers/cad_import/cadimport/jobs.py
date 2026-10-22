@@ -6,6 +6,7 @@ A rejection by the pipeline (``ValueError``) comes back as ``ValueError`` with t
 import json
 import subprocess
 import sys
+import time
 from dataclasses import asdict
 from pathlib import Path
 
@@ -16,6 +17,8 @@ from blab.generators.base import GenerationCancelledError
 from .worker import ERROR, RESULT
 
 BLAB_PATH = str(Path(blab.__file__).resolve().parents[1])
+WORKER = Path(__file__).with_name("worker.py")
+MESH_TIMEOUT_S = 3600
 
 
 def preview_in_worker(step_path, output, *, rotation_deg, translation_m, closed_shells, cancelled) -> CadPreview:
@@ -35,27 +38,33 @@ def mesh_in_worker(
 ) -> CadImportResult:
     """Mesh ``step_path`` into ``output``; ``started`` gets the worker process, then ``None`` once it ended."""
     job = dict(mode="mesh", step_path=str(step_path), settings=asdict(settings))
-    return result_from_json(_run(job, output, cancelled=cancelled, started=started))
+    return result_from_json(_run(job, output, cancelled=cancelled, started=started, timeout_s=MESH_TIMEOUT_S))
 
 
-def _run(job, output, *, cancelled, started=lambda process: None):
+def _run(job, output, *, cancelled, started=lambda process: None, timeout_s=None):
     """Run ``worker.py`` on ``job`` in ``output`` and return its JSON result; ``cancelled()`` is polled and
-    terminates it."""
+    terminates it, as does running past ``timeout_s`` seconds (a ``ValueError`` naming the limit)."""
     job_path = output / "job.json"
     job_path.write_text(json.dumps(job | {"blab_path": BLAB_PATH, "output": str(output)}, indent=2), encoding="utf-8")
     log_path = output / "meshing.log"
     with log_path.open("w", encoding="utf-8") as log:
         process = subprocess.Popen(
-            [sys.executable, "-I", "-B", "-X", "utf8", str(Path(__file__).with_name("worker.py")), str(job_path)],
+            [sys.executable, "-I", "-B", "-X", "utf8", str(WORKER), str(job_path)],
             stdout=log,
             stderr=subprocess.STDOUT,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         started(process)
+        deadline = None if timeout_s is None else time.monotonic() + timeout_s
         try:
             while True:
                 if cancelled():
                     raise GenerationCancelledError("CAD import cancelled.")
+                if deadline is not None and time.monotonic() > deadline:
+                    raise ValueError(
+                        f"CAD import meshing timed out after {timeout_s:g} s and was stopped. "
+                        f"Coarsen the mesh sizes or simplify the geometry. Details: {log_path}"
+                    )
                 try:
                     code = process.wait(timeout=0.1)
                     break
