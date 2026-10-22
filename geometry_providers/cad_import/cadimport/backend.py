@@ -3,12 +3,12 @@
 from threading import Event
 from uuid import uuid4
 
-from blab.cad_import import CadImportResult
+from blab.cad_import import CadImportResult, design_settings
 from blab.generators import GeneratedGeometry, GeneratedMesh, GenerationResponse, generated_mesh_id
 from blab.generators.base import GenerationCancelledError
 
 from .jobs import mesh_in_worker
-from .parameters import settings, step_path
+from .parameters import step_path
 
 
 def configuration_patch(request, result: CadImportResult):
@@ -144,7 +144,7 @@ class CadImportSession:
         if cancelled():
             raise GenerationCancelledError("CAD import cancelled.")
         path = step_path(self.request.source)
-        cad_settings = settings(self.request.source, self.request.configuration)
+        cad_settings = design_settings(self.request.source, self.request.configuration)
         output = self.request.run_root.resolve() / ("cad_import_" + uuid4().hex)
         output.mkdir(parents=True)
         message = (

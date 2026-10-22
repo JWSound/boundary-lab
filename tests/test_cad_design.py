@@ -6,7 +6,7 @@ from dataclasses import asdict
 
 import pytest
 
-from blab.cad_import import CadFaceGroups, CadFaceRef, face_ref, inspect_step
+from blab.cad_import import CadFaceGroups, CadFaceRef, CadSizeOverride, design_settings, face_ref, inspect_step
 from cad_fixtures import named_sides, vented_box
 
 
@@ -267,3 +267,81 @@ def test_an_interface_is_renamed_unless_the_name_is_taken_and_an_empty_name_give
             renamed.renamed_interface("Mouth", taken)
     assert renamed.renamed_interface("Mouth", "").changes == {"interface_names": {"Interface 9 Gone": "Old"}}
     assert renamed.renamed_interface("Mouth", "Mouth").changes == {}
+
+
+# -- design source -> pipeline settings, without the provider or Gmsh ---------------------------------------------------
+
+CONFIGURATION = {"frequency": {"freq_max_hz": 1000.0}, "symmetry_config": {"mode": "off"}}
+FACE = asdict(CadFaceRef("X", (0.0, 0.0, 0.0), 1.0, (0.0, 0.0, 1.0), "Plane"))
+
+
+def source(**fields):
+    return {
+        "elements_per_wavelength": 6,
+        "curvature_elements_per_circle": 12,
+        "growth_rate": 1.3,
+        "rotation_deg": [0, 0, 90],
+        "translation_mm": [10, 0, -20],
+    } | fields
+
+
+def test_settings_come_from_the_source_with_the_project_frequency_and_symmetry():
+    settings = design_settings(
+        source(face_groups=[{"name": "A", "faces": [3, 4]}], interface_names={"Interface 1 Port": "Port"}),
+        CONFIGURATION | {"symmetry_config": {"mode": "xy"}},
+    )
+
+    assert settings.fmax_hz == 1000.0
+    assert settings.symmetry == "xy"
+    assert settings.face_groups == {"A": (3, 4)}
+    assert settings.interface_names == {"Interface 1 Port": "Port"}
+    assert settings.rotation_deg == (0, 0, 90)
+    assert settings.translation_m == (0.01, 0.0, -0.02)
+
+
+def test_an_older_design_without_a_bem_fineness_uses_the_fem_one_for_both():
+    settings = design_settings(source(), CONFIGURATION)
+
+    assert settings.bem_elements_per_wavelength is None
+    assert settings.sizing.bem_target_size_m == settings.sizing.target_size_m
+
+
+def test_a_bem_fineness_is_read_as_a_number():
+    assert design_settings(source(bem_elements_per_wavelength="5"), CONFIGURATION).bem_elements_per_wavelength == 5.0
+
+
+def test_older_body_and_face_group_sizes_are_read_with_the_face_and_volume_sizes():
+    settings = design_settings(
+        source(
+            body_sizes_m={"Cabinet": 0.01},
+            face_group_sizes={"A": {"elements_per_wavelength": 12}},
+            volume_sizes={"Cabinet": {"size_m": 0.02}},
+            face_sizes=[{"face": FACE, "size_m": 0.005}],
+        ),
+        CONFIGURATION,
+    )
+
+    assert settings.body_sizes == {"Cabinet": CadSizeOverride(size_m=0.01)}
+    assert settings.face_group_sizes == {"A": CadSizeOverride(elements_per_wavelength=12)}
+    assert settings.volume_sizes == {"Cabinet": CadSizeOverride(size_m=0.02)}
+    assert [size for _, size in settings.face_sizes] == [CadSizeOverride(size_m=0.005)]
+
+
+@pytest.mark.parametrize(
+    "fields,match",
+    [
+        ({"bem_elements_per_wavelength": "fine"}, "BEM elements per wavelength must be a positive number"),
+        ({"face_groups": {"Baffle": []}}, "Face groups must be a list"),
+        (
+            {"face_groups": [{"name": "A", "faces": []}, {"name": "A", "faces": []}]},
+            "Face group 'A' is defined twice",
+        ),
+        ({"face_groups": [{"faces": []}]}, "Invalid CAD import source"),
+        ({"face_sizes": [{"face": FACE, "size_m": -1}]}, "Invalid face size"),
+        ({"growth_rate": None}, "Invalid CAD import source"),
+        ({"rotation_deg": None}, "Invalid CAD import source"),
+    ],
+)
+def test_an_invalid_source_is_rejected(fields, match):
+    with pytest.raises(ValueError, match=match):
+        design_settings(source(**fields), CONFIGURATION)

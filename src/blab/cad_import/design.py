@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, NamedTuple
 from .face_refs import ZERO, CadFaceRef, face_ref, match_face_ref
 
 if TYPE_CHECKING:
-    from .pipeline import CadGeometry
+    from .pipeline import CadGeometry, CadImportSettings
 
 WALLS = "walls"
 
@@ -222,6 +222,76 @@ class CadFaceGroups:
                 groups.setdefault(self._row_of[face].name, []).append(face)
             result[mesh_id] = dict(sorted(groups.items()))
         return result
+
+
+# -- the design source -> pipeline settings ----------------------------------------------------------------------------
+
+
+def design_settings(source: Mapping, configuration: Mapping) -> CadImportSettings:
+    """Pipeline settings of design ``source`` with the maximum frequency, sound speed and symmetry of the project
+    ``configuration`` snapshot.
+
+    The one reader of the source's keys: face groups, mesh finenesses, size overrides (also the older body and
+    face-group sizes), placement (translation in millimetres there, metres in the settings) and closed shells.
+    Faces and sizes resolve against the read geometry in :func:`mesh_step`, with :class:`CadFaceGroups` and
+    :class:`CadSizes`. Rejects what generation cannot take (``ValueError``) before any meshing.
+    """
+    from blab.generators.configuration import exterior_sound_speed
+
+    from .pipeline import CadImportSettings
+    from .sizing import legacy_sizes, read_face_sizes
+
+    try:
+        body_sizes, face_group_sizes = legacy_sizes(source)  # older designs, until the editor converts them
+        return CadImportSettings(
+            face_groups=_face_groups(source),
+            fmax_hz=float(configuration["frequency"]["freq_max_hz"]),
+            sound_speed_m_per_s=exterior_sound_speed(configuration),
+            elements_per_wavelength=float(source["elements_per_wavelength"]),
+            bem_elements_per_wavelength=_bem_elements_per_wavelength(source),
+            body_sizes=body_sizes,
+            face_group_sizes=face_group_sizes,
+            face_sizes=tuple(read_face_sizes(source.get("face_sizes", []))),
+            volume_sizes=dict(source.get("volume_sizes", {})),
+            curvature_elements_per_circle=float(source["curvature_elements_per_circle"]),
+            growth_rate=float(source["growth_rate"]),
+            symmetry=configuration.get("symmetry_config", {}).get("mode", "off"),
+            closed_shells=dict(source.get("closed_shells", {})),
+            rotation_deg=tuple(source["rotation_deg"]),
+            translation_m=_translation_m(source),
+            interface_names=dict(source.get("interface_names", {})),
+        )
+    except (KeyError, TypeError) as exc:
+        raise ValueError(f"Invalid CAD import source: {exc}") from exc
+
+
+def _face_groups(source: Mapping) -> dict:
+    """``{name: faces}`` from the source's list of ``{"name", "faces": [CadFaceRef fields]}``."""
+    groups = source.get("face_groups", [])
+    if not isinstance(groups, list):
+        raise ValueError("Face groups must be a list.")
+    result = {}
+    for group in groups:
+        if group["name"] in result:
+            raise ValueError(f"Face group '{group['name']}' is defined twice.")
+        result[group["name"]] = tuple(group["faces"])
+    return result
+
+
+def _translation_m(source: Mapping) -> tuple:
+    """The source's translation (millimetres) in metres; values that are no numbers are left for the check."""
+    return tuple(v / 1000 if isinstance(v, int | float) else v for v in source["translation_mm"])
+
+
+def _bem_elements_per_wavelength(source: Mapping) -> float | None:
+    """The BEM mesh fineness as a float; ``None`` (older designs): the FEM value."""
+    value = source.get("bem_elements_per_wavelength")
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("BEM elements per wavelength must be a positive number.") from exc
 
 
 def _stored(ref):

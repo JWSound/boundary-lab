@@ -1,65 +1,6 @@
-"""Qt-free design source: the STEP file, placement and sizing, turned into pipeline settings."""
+"""The STEP file of a CAD import design source; the rest of the source is read by ``blab.cad_import.design``."""
 
 from pathlib import Path
-
-from blab.cad_import import CadImportSettings
-from blab.cad_import.sizing import legacy_sizes, read_face_sizes
-from blab.generators.configuration import exterior_sound_speed
-
-
-def face_groups(source):
-    """``{name: faces}`` from the source's list of ``{"name", "faces": [CadFaceRef fields]}``."""
-    groups = source.get("face_groups", [])
-    if not isinstance(groups, list):
-        raise ValueError("Face groups must be a list.")
-    result = {}
-    for group in groups:
-        if group["name"] in result:
-            raise ValueError(f"Face group '{group['name']}' is defined twice.")
-        result[group["name"]] = tuple(group["faces"])
-    return result
-
-
-def translation_m(source):
-    """The source's translation (millimetres) in metres; values that are no numbers are left for the check."""
-    return tuple(v / 1000 if isinstance(v, int | float) else v for v in source["translation_mm"])
-
-
-def bem_elements_per_wavelength(source):
-    """The BEM mesh fineness as a float; ``None`` (older designs): the FEM value."""
-    value = source.get("bem_elements_per_wavelength")
-    if value is None:
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("BEM elements per wavelength must be a positive number.") from exc
-
-
-def settings(source, configuration):
-    """Pipeline settings for ``source`` with c, fmax and symmetry from the project configuration."""
-    try:
-        body_sizes, face_group_sizes = legacy_sizes(source)  # older designs, until the editor converts them
-        return CadImportSettings(
-            face_groups=face_groups(source),
-            fmax_hz=float(configuration["frequency"]["freq_max_hz"]),
-            sound_speed_m_per_s=exterior_sound_speed(configuration),
-            elements_per_wavelength=float(source["elements_per_wavelength"]),
-            bem_elements_per_wavelength=bem_elements_per_wavelength(source),
-            body_sizes=body_sizes,
-            face_group_sizes=face_group_sizes,
-            face_sizes=tuple(read_face_sizes(source.get("face_sizes", []))),
-            volume_sizes=dict(source.get("volume_sizes", {})),
-            curvature_elements_per_circle=float(source["curvature_elements_per_circle"]),
-            growth_rate=float(source["growth_rate"]),
-            symmetry=configuration.get("symmetry_config", {}).get("mode", "off"),
-            closed_shells=dict(source.get("closed_shells", {})),
-            rotation_deg=tuple(source["rotation_deg"]),
-            translation_m=translation_m(source),
-            interface_names=dict(source.get("interface_names", {})),
-        )
-    except (KeyError, TypeError) as exc:
-        raise ValueError(f"Invalid CAD import source: {exc}") from exc
 
 
 def step_path(source):
