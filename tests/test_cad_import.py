@@ -258,24 +258,38 @@ def face_edges_and_tets(result):
     return faces, tets
 
 
-def test_a_migrated_legacy_design_meshes_like_the_legacy_design(tmp_path):
-    step = vented_box(tmp_path / "box.step")
+LEGACY = {
+    "body_sizes_m": {"Chamber": 0.04},  # coarser: its faces shared with no other body only
+    "face_group_sizes_m": {"Driver": 0.008},
+    "body_sizes": {"Port": {"size_m": 0.03}, "Cabinet": {"size_m": 0.01}},
+    "face_group_sizes": {"walls": {"elements_per_wavelength": 2}},
+}
+
+
+@pytest.mark.parametrize(
+    ("covered", "settings", "legacy"),
+    [
+        (False, SETTINGS, LEGACY),
+        # The covered port mouth is on the Port and the Cabinet: its 20 mm BEM target is finer than the Port's size.
+        (
+            True,
+            replace(SETTINGS, elements_per_wavelength=2.0, bem_elements_per_wavelength=5.0),
+            {"body_sizes": {"Port": {"size_m": 0.03}}},
+        ),
+    ],
+)
+def test_a_migrated_legacy_design_meshes_like_the_legacy_design(tmp_path, covered, settings, legacy):
+    step = vented_box(tmp_path / "box.step", covered=covered)
     geometry = inspect_step(step)
-    legacy = {
-        "body_sizes_m": {"Chamber": 0.04},  # coarser: its faces shared with no other body only
-        "face_group_sizes_m": {"Driver": 0.008},
-        "body_sizes": {"Port": {"size_m": 0.03}, "Cabinet": {"size_m": 0.01}},
-        "face_group_sizes": {"walls": {"elements_per_wavelength": 2}},
-    }
-    new = migrated(legacy, CadFaceGroups(geometry, {}), CadSizes(geometry, [], {}), SETTINGS.sizing)
+    new = migrated(legacy, CadFaceGroups(geometry, {}), CadSizes(geometry, [], {}), settings.sizing)
     body_sizes, face_group_sizes = legacy_sizes(legacy)
 
     before = mesh_step(
-        step, replace(SETTINGS, body_sizes=body_sizes, face_group_sizes=face_group_sizes), tmp_path / "legacy"
+        step, replace(settings, body_sizes=body_sizes, face_group_sizes=face_group_sizes), tmp_path / "legacy"
     )
     after = mesh_step(
         step,
-        replace(SETTINGS, face_sizes=tuple(read_face_sizes(new["face_sizes"])), volume_sizes=new["volume_sizes"]),
+        replace(settings, face_sizes=tuple(read_face_sizes(new["face_sizes"])), volume_sizes=new["volume_sizes"]),
         tmp_path / "migrated",
     )
 
@@ -322,6 +336,52 @@ def test_a_face_sized_bem_fine_meshes_at_twelve_elements_per_wavelength(vented, 
 
     (face,) = [f.id for f in result.geometry.faces if np.allclose(f.centre, side.centre)]
     assert 0.0065 < face_edge_median(read(result, "exterior"), face) < 0.0095  # 343 / 3430 / 12 = 8.3 mm
+
+
+def test_exterior_faces_mesh_at_the_bem_size_air_bodies_at_the_fem_size_and_interfaces_at_the_finer(tmp_path):
+    # 343 / 6860 = 50 mm per wavelength: FEM 5 gives 10 mm, BEM 2 gives 25 mm.
+    settings = CadImportSettings(
+        fmax_hz=6860.0, sound_speed_m_per_s=343.0, elements_per_wavelength=5.0, bem_elements_per_wavelength=2.0
+    )
+
+    result = mesh_step(vented_box(tmp_path / "box.step", port_radius=40), settings, tmp_path / "out")
+
+    chamber, exterior = read(result, "chamber"), read(result, "exterior")
+    (mouth,) = result.geometry.interfaces[0].face_ids  # an 80 mm disc
+    assert 0.02 < np.median(edge_lengths(exterior, group="walls")) < 0.03
+    assert 0.008 < np.median(edge_lengths(chamber, group="walls")) < 0.011
+    assert 0.008 < np.median(edge_lengths(chamber, "tetra")) < 0.013
+    assert 0.008 < face_edge_median(exterior, mouth) < 0.011
+    assert result.target_size_m == pytest.approx(0.01)
+
+
+def test_overrides_replace_the_faces_own_target_size_and_a_volume_one_sizes_the_interior_only(vented, tmp_path):
+    side = next(f for f in vented.geometry.faces if f.bodies == ("Cabinet",) and abs(abs(f.normal[0]) - 1) < 1e-9)
+    settings = replace(
+        SETTINGS,
+        bem_elements_per_wavelength=2.0,  # 50 mm on the exterior, 20 mm in the air bodies
+        face_sizes=((face_ref(side), CadSizeOverride(size_m=0.008)),),
+        volume_sizes={"Chamber": CadSizeOverride(elements_per_wavelength=2)},  # 50 mm
+    )
+
+    result = mesh_step(vented_box(tmp_path / "box.step"), settings, tmp_path / "out")
+
+    (face,) = [f.id for f in result.geometry.faces if np.allclose(f.centre, side.centre)]
+    assert 0.0065 < face_edge_median(read(result, "exterior"), face) < 0.0095
+    chamber, before = read(result, "chamber"), read(vented, "chamber")
+    assert len(edge_lengths(chamber, "tetra", "Chamber")) < 0.85 * len(edge_lengths(before, "tetra", "Chamber"))
+    walls = np.median(edge_lengths(before, "triangle", "walls"))
+    assert np.median(edge_lengths(chamber, "triangle", "walls")) == pytest.approx(walls, rel=0.1)
+
+
+def test_without_a_bem_fineness_the_fem_one_sizes_the_exterior_too(vented, tmp_path):
+    settings = replace(SETTINGS, bem_elements_per_wavelength=SETTINGS.elements_per_wavelength)
+
+    result = mesh_step(vented_box(tmp_path / "box.step"), settings, tmp_path / "out")
+
+    assert SETTINGS.bem_elements_per_wavelength is None
+    for before, after in zip(vented.meshes, result.meshes, strict=True):
+        assert after.path.read_bytes() == before.path.read_bytes()
 
 
 @pytest.mark.parametrize(
@@ -807,13 +867,29 @@ def test_cli_writes_the_same_meshes_as_the_pipeline(vented, tmp_path, capsys):
     for mesh in vented.meshes:
         assert (tmp_path / "cli" / mesh.path.name).read_bytes() == mesh.path.read_bytes()
     output = capsys.readouterr().out
-    assert "Target element size: 20.0 mm" in output
+    assert "FEM target element size: 20.0 mm" in output
+    assert "BEM target element size: 20.0 mm" in output  # no BEM fineness: the FEM one
     assert (
         "chamber.msh (fem_volume): volume groups Chamber, Port; surface groups Driver, Interface 1 Port, walls"
         in output
     )
     assert "Interface: Interface 1 Port (chamber <-> exterior)" in output
     assert "Suggested symmetry: Off" in output
+
+
+def test_cli_takes_a_bem_fineness_and_meshes_as_the_pipeline_does(tmp_path, capsys):
+    step = vented_box(tmp_path / "box.step")
+    settings = replace(SETTINGS, bem_elements_per_wavelength=2.0)
+    expected = mesh_step(step, settings, tmp_path / "pipeline")
+    args = ["--fmax", "3430", "--elements-per-wavelength", "5", "--bem-elements-per-wavelength", "2"]
+
+    cad_cli.main([str(step), *args, "--output", str(tmp_path / "cli")], prog="blab cad-import")
+
+    for mesh in expected.meshes:
+        assert (tmp_path / "cli" / mesh.path.name).read_bytes() == mesh.path.read_bytes()
+    output = capsys.readouterr().out
+    assert "FEM target element size: 20.0 mm" in output
+    assert "BEM target element size: 50.0 mm" in output
 
 
 def test_cli_places_the_geometry_with_rotate_and_translate(tmp_path, capsys):

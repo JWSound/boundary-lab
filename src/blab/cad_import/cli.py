@@ -20,7 +20,15 @@ def _build_arg_parser(prog: str | None = None) -> argparse.ArgumentParser:
     parser.add_argument("step", help="STEP file (units are taken from the file)")
     parser.add_argument("--fmax", type=float, required=True, help="Maximum frequency in Hz")
     parser.add_argument(
-        "--elements-per-wavelength", type=float, default=6.0, help="Elements per wavelength at --fmax (default: 6)"
+        "--elements-per-wavelength",
+        type=float,
+        default=6.0,
+        help="FEM elements per wavelength at --fmax, for air bodies (default: 6)",
+    )
+    parser.add_argument(
+        "--bem-elements-per-wavelength",
+        type=float,
+        help="BEM elements per wavelength at --fmax, for the exterior (default: --elements-per-wavelength)",
     )
     parser.add_argument("--output", required=True, help="Output folder for <mesh id>.msh files (metres)")
     parser.add_argument(
@@ -79,6 +87,7 @@ def main(argv: Sequence[str] | None = None, prog: str | None = None) -> None:
             fmax_hz=args.fmax,
             sound_speed_m_per_s=args.sound_speed,
             elements_per_wavelength=args.elements_per_wavelength,
+            bem_elements_per_wavelength=args.bem_elements_per_wavelength,
             closed_shells=_closed_shells(parser, args.closed_shell),
             rotation_deg=_triple(parser, "--rotate", args.rotate),
             translation_m=tuple(v / 1000 for v in _triple(parser, "--translate", args.translate)),
@@ -90,7 +99,8 @@ def main(argv: Sequence[str] | None = None, prog: str | None = None) -> None:
     geometry = result.geometry
     low, high = geometry.bbox_m
     size_mm = " x ".join(f"{(b - a) * 1000:.1f}" for a, b in zip(low, high, strict=True))
-    print(f"Target element size: {result.target_size_m * 1000:.1f} mm")
+    print(f"FEM target element size: {settings.sizing.target_size_m * 1000:.1f} mm")
+    print(f"BEM target element size: {settings.sizing.bem_target_size_m * 1000:.1f} mm")
     print(f"Bounding box: {size_mm} mm")
     for mesh in result.meshes:
         volumes = f"volume groups {', '.join(mesh.volume_groups)}; " if mesh.volume_groups else ""

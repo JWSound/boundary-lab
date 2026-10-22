@@ -405,7 +405,8 @@ def test_rejected_regeneration_keeps_the_previous_meshes_and_system(plugin, tmp_
 def test_unmeshable_face_rejects_regeneration_by_name_and_keeps_the_previous_meshes_and_system(plugin, tmp_path):
     catalog, backend = plugin
     step = vented_box(tmp_path / "box.step")
-    project, _ = generate(backend, make_project(catalog, step), tmp_path / "runs")
+    # One fineness everywhere: Gmsh does not return from meshing the unmeshable ball once face sizes differ.
+    project, _ = generate(backend, make_project(catalog, step, bem_elements_per_wavelength=6.0), tmp_path / "runs")
     before = deepcopy(project)
     meshes = [m.mesh_path for m in project.generator_documents[0].artifact.meshes]
 
@@ -435,7 +436,7 @@ def test_invalid_face_groups_are_rejected_before_meshing(plugin, box_step, tmp_p
 
 def test_target_size_follows_project_sound_speed_and_maximum_frequency(plugin, box_step, tmp_path):
     catalog, backend = plugin
-    project, first = generate(backend, make_project(catalog, box_step), tmp_path)
+    project, first = generate(backend, make_project(catalog, box_step, bem_elements_per_wavelength=6.0), tmp_path)
     system = project.physical_system
     project.physical_system = replace(
         system, regions=tuple(replace(r, sound_speed_m_per_s=686.0) for r in system.regions)
@@ -516,11 +517,31 @@ def test_volume_size_for_no_air_body_is_rejected(plugin, box_step, tmp_path, nam
         generate(backend, project, tmp_path)
 
 
-def test_new_designs_are_fine():
+def test_the_bem_fineness_from_the_source_sizes_the_exterior_and_without_it_the_fem_one_does(
+    plugin, box_step, tmp_path
+):
+    catalog, backend = plugin
+    project = make_project(catalog, box_step, elements_per_wavelength=10.0, bem_elements_per_wavelength=3.0)
+    _, split = generate(backend, project, tmp_path / "split")
+    project = make_project(catalog, box_step, elements_per_wavelength=10.0)
+    del project.generator_documents[0].source["bem_elements_per_wavelength"]  # saved before it existed
+
+    _, fem = generate(backend, project, tmp_path / "fem")
+
+    assert 0.008 < median_edge(fem) < 0.011  # 343 / 3430 / 10 = 10 mm on the exterior too
+    # The cabinet back lies beyond the growth from the finer port mouth: 33 mm asked for on a 120 mm face.
+    (back,) = [f.id for f in inspect_step(box_step).faces if f.bodies == ("Cabinet",) and f.centre[2] < -0.209]
+    assert median_edge(split, face=back) > 2 * median_edge(fem, face=back)
+    chamber = median_edge(fem, "chamber", "walls")
+    assert median_edge(split, "chamber", "walls") == pytest.approx(chamber, rel=0.1)
+
+
+def test_new_designs_are_fem_fine_and_bem_medium():
     catalog = ProviderCatalog([ROOT], enabled=[PROVIDER])
     catalog.scan()
     source = catalog.source_defaults(PROVIDER)
     assert source["elements_per_wavelength"] == 6
+    assert source["bem_elements_per_wavelength"] == 5
     assert (source["face_sizes"], source["volume_sizes"]) == ([], {})
 
 
@@ -559,6 +580,8 @@ def test_cancel_before_start_and_during_meshing(plugin, box_step, tmp_path):
         ({"step_path": ""}, "Choose a STEP file"),
         ({"step_path": "missing.step"}, "not found"),
         ({"elements_per_wavelength": 0}, "Elements per wavelength"),
+        ({"bem_elements_per_wavelength": 0}, "BEM elements per wavelength"),
+        ({"bem_elements_per_wavelength": "x"}, "BEM elements per wavelength"),
         ({"rotation_deg": [0, "x", 0]}, "Rotation must be three finite numbers"),
         ({"translation_mm": [0, 0]}, "Translation must be three finite numbers"),
     ],

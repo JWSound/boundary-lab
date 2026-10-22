@@ -1318,7 +1318,12 @@ class CadImportEditor:
 
     def _sizing(self):
         """The design's sizing at the project's maximum frequency and sound speed (once they are known)."""
-        return CadSizing(self._fmax_hz, self._sound_speed, float(self.source["elements_per_wavelength"]))
+        return CadSizing(
+            self._fmax_hz,
+            self._sound_speed,
+            float(self.source["elements_per_wavelength"]),
+            self.source.get("bem_elements_per_wavelength"),
+        )
 
     def _group_selected(self):
         """A clicked row selects its faces; a single row other than an interface becomes the current group."""

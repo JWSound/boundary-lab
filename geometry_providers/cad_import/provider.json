@@ -12,6 +12,7 @@
     "rotation_deg": [0.0, 0.0, 0.0],
     "translation_mm": [0.0, 0.0, 0.0],
     "elements_per_wavelength": 6.0,
+    "bem_elements_per_wavelength": 5.0,
     "face_sizes": [],
     "volume_sizes": {},
     "curvature_elements_per_circle": 12.0,

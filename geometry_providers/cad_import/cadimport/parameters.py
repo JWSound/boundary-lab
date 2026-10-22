@@ -34,6 +34,7 @@ def settings(source, configuration):
             fmax_hz=float(configuration["frequency"]["freq_max_hz"]),
             sound_speed_m_per_s=exterior_sound_speed(configuration),
             elements_per_wavelength=float(source["elements_per_wavelength"]),
+            bem_elements_per_wavelength=source.get("bem_elements_per_wavelength"),  # older designs: the FEM value
             body_sizes=body_sizes,
             face_group_sizes=face_group_sizes,
             face_sizes=tuple(read_face_sizes(source.get("face_sizes", []))),

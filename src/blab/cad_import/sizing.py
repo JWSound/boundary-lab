@@ -67,23 +67,47 @@ def read_face_sizes(stored: Sequence[Mapping]) -> list[tuple[CadFaceRef, CadSize
 
 @dataclass(frozen=True)
 class CadSizing:
-    """Edge lengths from the sound speed and the maximum frequency (``None`` while unknown) at a mesh fineness."""
+    """Edge lengths from the sound speed and the maximum frequency (``None`` while unknown) at the FEM and BEM mesh
+    finenesses (ADR 0002); without a BEM fineness the FEM one serves both."""
 
     fmax_hz: float | None
     sound_speed_m_per_s: float = DEFAULT_SOUND_SPEED_M_PER_S
     elements_per_wavelength: float = 6.0
+    bem_elements_per_wavelength: float | None = None
 
     @property
     def fineness(self) -> CadSizeOverride:
+        """The FEM mesh fineness."""
         return CadSizeOverride(elements_per_wavelength=self.elements_per_wavelength)
 
     @property
+    def bem_fineness(self) -> CadSizeOverride:
+        n = self.bem_elements_per_wavelength
+        return CadSizeOverride(elements_per_wavelength=self.elements_per_wavelength if n is None else n)
+
+    @property
     def target_size_m(self) -> float:
-        """Sound speed / maximum frequency / elements per wavelength."""
+        """The FEM target element size: sound speed / maximum frequency / elements per wavelength."""
         return self.edge_m(self.fineness)
 
+    @property
+    def bem_target_size_m(self) -> float:
+        return self.edge_m(self.bem_fineness)
+
+    def face_targets(self, geometry: CadGeometry) -> dict[int, CadSizeOverride]:
+        """Face -> the mesh fineness of its target element size: FEM on air-body faces, BEM on exterior surface
+        faces, the finer of the two on a face on both (an interface)."""
+        air = {f for body in geometry.bodies if body.kind == "air" for f in body.face_ids}
+        exterior = {f for body in geometry.bodies if body.kind == "exterior" for f in body.face_ids}
+        exterior |= {f for interface in geometry.interfaces for f in interface.face_ids}
+        both = max(self.fineness, self.bem_fineness, key=lambda size: size.elements_per_wavelength)
+        return {
+            f.id: both if f.id in air and f.id in exterior else self.bem_fineness if f.id in exterior else self.fineness
+            for f in geometry.faces
+        }
+
     def edge_m(self, size: CadSizeOverride | None) -> float:
-        """The edge length ``size`` asks for; ``None``: the target element size."""
+        """The edge length ``size`` asks for; ``None``: the FEM target element size."""
         size = size or self.fineness
         if size.size_m is not None:
             return size.size_m
@@ -107,16 +131,20 @@ class CadSizing:
         return text
 
     def winning(
-        self, face: CadSizeOverride | None, group: CadSizeOverride | None, bodies: Sequence[CadSizeOverride | None]
+        self,
+        face: CadSizeOverride | None,
+        group: CadSizeOverride | None,
+        bodies: Sequence[CadSizeOverride | None],
+        target: CadSizeOverride | None = None,
     ) -> CadSizeOverride | None:
         """The override that sizes a face with its own ``face`` override, its face group's and its ``bodies``' (one
         per body, ``None`` for none): the most specific, else the finest body's; a body without one counts as the
-        target element size, so ``None`` when that is finer."""
+        face's ``target`` (see :meth:`face_targets`; ``None``: the FEM one), so ``None`` when that is finer."""
         if face is not None or group is not None:
             return face or group
         sized = [size for size in bodies if size is not None]
         finest = min(sized, key=self.edge_m, default=None)
-        if finest is not None and (len(sized) == len(bodies) or self.edge_m(finest) < self.target_size_m):
+        if finest is not None and (len(sized) == len(bodies) or self.edge_m(finest) < self.edge_m(target)):
             return finest
         return None
 
@@ -215,18 +243,19 @@ def migrated(source: Mapping, groups: CadFaceGroups, sizes: CadSizes, sizing: Ca
     ``None`` when it has none (ADR 0001).
 
     Each face without its own size gets the one that won on it (face group, then the finest body), unless that is
-    the target element size; an air body's size becomes its volume size unless the volume has its own. ``groups``
-    (:class:`CadFaceGroups`) and ``sizes`` are the design's on the read geometry; ``sizing`` needs the maximum
-    frequency, which compares levels with edge lengths.
+    the face's own target element size; an air body's size becomes its volume size unless the volume has its own.
+    ``groups`` (:class:`CadFaceGroups`) and ``sizes`` are the design's on the read geometry; ``sizing`` needs the
+    maximum frequency, which compares levels with edge lengths.
     """
     if not any(source.get(key) for key in LEGACY_SIZES):
         return None
     bodies, group_sizes = legacy_sizes(source)
+    targets = sizing.face_targets(sizes.geometry)
     added = []
     for face in sizes.geometry.faces:
         if face.id not in sizes.faces:
             group = group_sizes.get(groups.group_of(face.id).name)
-            size = sizing.winning(None, group, [bodies.get(body) for body in face.bodies])
+            size = sizing.winning(None, group, [bodies.get(body) for body in face.bodies], targets[face.id])
             if size is not None:
                 added.append(sizes.entry(face.id, size))
     air = {body.name for body in sizes.geometry.bodies if body.kind == "air"}

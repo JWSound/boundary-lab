@@ -144,8 +144,9 @@ def vented_box(
     cad_axes: tuple[str, str] = ("+Z", "+Y"),
     depth: float = 180,
     shift_mm: tuple[float, float, float] = (0, 0, 0),
+    port_radius: float = 10,
 ) -> Path:
-    """Chamber (100x100x``depth`` mm) joined by a port (r=10 mm) to a hole in a cabinet surface.
+    """Chamber (100x100x``depth`` mm) joined by a port (r=``port_radius`` mm) to a hole in a cabinet surface.
 
     The cabinet front lies at z=0 and the port mouth fills its hole; the cabinet is 30 mm
     deeper than the chamber. ``covered``
@@ -158,8 +159,8 @@ def vented_box(
     def build():
         occ = gmsh.model.occ
         chamber = _cut_to_symmetry([(3, occ.addBox(-50, -50, -20 - depth, 100, 100, depth))], symmetry)
-        port = _cut_to_symmetry([(3, occ.addCylinder(0, 0, -20, 0, 0, 20, 10))], symmetry)
-        cabinet = _cut_to_symmetry(_cabinet(60, 60, depth + 30, () if covered else [(0, 0, 10)]), symmetry)
+        port = _cut_to_symmetry([(3, occ.addCylinder(0, 0, -20, 0, 0, 20, port_radius))], symmetry)
+        cabinet = _cut_to_symmetry(_cabinet(60, 60, depth + 30, () if covered else [(0, 0, port_radius)]), symmetry)
         if open_back:
             occ.synchronize()
             back = [f for f in cabinet if abs(occ.getCenterOfMass(*f)[2] + depth + 30) < 1e-9]

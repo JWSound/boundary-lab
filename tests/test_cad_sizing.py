@@ -41,6 +41,43 @@ def test_edge_lengths_follow_sound_speed_maximum_frequency_and_fineness():
         CadSizing(None).edge_m(COARSE)
 
 
+def test_the_bem_target_element_size_follows_the_bem_fineness_else_the_fem_one():
+    assert CadSizing(3430.0, 343.0, 5.0, 2.0).bem_target_size_m == pytest.approx(0.05)
+    assert CadSizing(3430.0, 343.0, 5.0, 2.0).target_size_m == pytest.approx(0.02)
+    assert SIZING.bem_target_size_m == pytest.approx(0.02)  # no BEM fineness: the FEM one
+
+
+def face_kinds(geometry):
+    """``{face: "air" | "exterior" | "interface"}``."""
+    interface = {f for i in geometry.interfaces for f in i.face_ids}
+    exterior = {b for b in geometry.bodies if b.kind == "exterior"}
+    exterior = {f for b in exterior for f in b.face_ids}
+    return {
+        f.id: "interface" if f.id in interface else "exterior" if f.id in exterior else "air" for f in geometry.faces
+    }
+
+
+@pytest.mark.parametrize(("bem", "interface"), [(2.0, 5.0), (12.0, 12.0)])
+def test_each_face_targets_its_method_and_an_interface_face_the_finer(box, bem, interface):
+    sizing = CadSizing(3430.0, 343.0, 5.0, bem)
+
+    targets = sizing.face_targets(box)
+
+    kinds = face_kinds(box)
+    assert set(kinds.values()) == {"air", "exterior", "interface"}
+    n = {"air": 5.0, "exterior": bem, "interface": interface}
+    expected = {kind: CadSizeOverride(elements_per_wavelength=v) for kind, v in n.items()}
+    assert targets == {f: expected[kind] for f, kind in kinds.items()}
+
+
+def test_a_body_without_a_size_counts_as_the_faces_own_target_size():
+    sizing = CadSizing(3430.0, 343.0, 5.0, 2.0)  # FEM 20 mm, BEM 50 mm
+    bem = CadSizeOverride(elements_per_wavelength=2.0)
+
+    assert sizing.winning(None, None, [MM_30, None], bem) == MM_30  # finer than the face's 50 mm
+    assert sizing.winning(None, None, [MM_30, None]) is None  # coarser than the FEM 20 mm
+
+
 def test_texts_name_levels_custom_numbers_edge_lengths_global_and_mixed():
     assert SIZING.text(None) == "Global (BEM Medium)"  # N = 5 is BEM Medium's
     assert CadSizing(3430.0, 343.0, 3.0).text(None) == "Global (3 per wavelength)"
@@ -186,23 +223,26 @@ def test_sizes_of_faces_gone_and_volumes_of_bodies_no_longer_air_are_dropped_wit
 # -- older designs ---------------------------------------------------------------------------------------------------
 
 
-def effective(geometry, source):
+def effective(geometry, source, sizing=SIZING):
     """``({face: edge length}, {air body: edge length})`` that meshing gives ``source`` (m)."""
     body_sizes, group_sizes = legacy_sizes(source)
     own = sizes(geometry, source)
     groups = CadFaceGroups(geometry, {})
+    targets = sizing.face_targets(geometry)
     faces = {
-        f.id: SIZING.edge_m(
-            SIZING.winning(
+        f.id: sizing.edge_m(
+            sizing.winning(
                 own.faces.get(f.id),
                 group_sizes.get(groups.group_of(f.id).name),
                 [body_sizes.get(b) for b in f.bodies],
+                targets[f.id],
             )
+            or targets[f.id]
         )
         for f in geometry.faces
     }
     air = [b.name for b in geometry.bodies if b.kind == "air"]
-    return faces, {b: SIZING.edge_m(own.volumes.get(b) or body_sizes.get(b)) for b in air}
+    return faces, {b: sizing.edge_m(own.volumes.get(b) or body_sizes.get(b)) for b in air}
 
 
 def test_body_face_group_and_legacy_sizes_become_face_and_volume_sizes_that_mesh_the_same(box):
@@ -223,6 +263,19 @@ def test_body_face_group_and_legacy_sizes_become_face_and_volume_sizes_that_mesh
     assert new["face_sizes"][: len(own["face_sizes"])] == own["face_sizes"]
     assert effective(box, new) == effective(box, source)
     assert migrated(new, CadFaceGroups(box, {}), sizes(box, new), SIZING) is None
+
+
+def test_migrating_compares_a_body_size_with_each_faces_own_target_size(tmp_path):
+    # The cabinet front covers the port mouth: that face is on the Port and the Cabinet.
+    covered = inspect_step(vented_box(tmp_path / "covered.step", covered=True))
+    (shared,) = [f.id for f in covered.faces if set(f.bodies) == {"Port", "Cabinet"}]
+    sizing = CadSizing(3430.0, 343.0, 2.0, 5.0)  # FEM 50 mm, BEM 20 mm: 20 mm on the shared face
+    source = {"body_sizes": {"Port": {"size_m": 0.03}}}  # finer than FEM, coarser than the shared face's target
+
+    new = migrated(source, CadFaceGroups(covered, {}), sizes(covered, source), sizing)
+
+    assert effective(covered, new, sizing) == effective(covered, source, sizing)
+    assert effective(covered, new, sizing)[0][shared] == pytest.approx(0.02)
 
 
 def test_designs_without_body_or_face_group_sizes_are_not_migrated(box):

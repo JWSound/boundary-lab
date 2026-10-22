@@ -52,16 +52,21 @@ class CadImportSettings:
     :class:`CadClosedShell`). ``interface_names`` renames interfaces by
     their detected name; names of interfaces not detected are ignored.
 
-    Size overrides (:class:`CadSizeOverride` or mappings of its fields) replace the target element
+    ``elements_per_wavelength`` is the FEM mesh fineness, sizing air-body volumes and faces;
+    ``bem_elements_per_wavelength`` the BEM one, sizing exterior surface faces (``None``: the FEM
+    one). A face on both takes the finer target element size.
+
+    Size overrides (:class:`CadSizeOverride` or mappings of its fields) replace the face's target element
     size per body, per face group or, in ``face_sizes`` as ``(face, override)`` pairs, per face (a
     ``CadFaceRef`` that no longer matches a face is ignored). On a face the most specific one wins:
-    face, face group, the finest of its bodies, then the target element size. ``volume_sizes`` sizes
+    face, face group, the finest of its bodies, then the face's target element size. ``volume_sizes`` sizes
     only the interior of an air body, never its faces; it wins over the body's override there.
     """
 
     fmax_hz: float
     sound_speed_m_per_s: float = DEFAULT_SOUND_SPEED_M_PER_S
     elements_per_wavelength: float = 6.0
+    bem_elements_per_wavelength: float | None = None
     face_groups: Mapping[str, tuple[int | CadFaceRef, ...]] = field(default_factory=dict)
     body_sizes: Mapping[str, CadSizeOverride] = field(default_factory=dict)
     face_group_sizes: Mapping[str, CadSizeOverride] = field(default_factory=dict)
@@ -76,10 +81,12 @@ class CadImportSettings:
     interface_names: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        bem = self.bem_elements_per_wavelength
         for label, value in (
             ("Maximum frequency", self.fmax_hz),
             ("Sound speed", self.sound_speed_m_per_s),
             ("Elements per wavelength", self.elements_per_wavelength),
+            ("BEM elements per wavelength", self.elements_per_wavelength if bem is None else bem),
             ("Curvature elements per circle", self.curvature_elements_per_circle),
         ):
             if not (isinstance(value, int | float) and math.isfinite(value) and value > 0):
@@ -106,11 +113,13 @@ class CadImportSettings:
 
     @property
     def sizing(self) -> CadSizing:
-        return CadSizing(self.fmax_hz, self.sound_speed_m_per_s, self.elements_per_wavelength)
+        return CadSizing(
+            self.fmax_hz, self.sound_speed_m_per_s, self.elements_per_wavelength, self.bem_elements_per_wavelength
+        )
 
     @property
     def target_size_m(self) -> float:
-        """Sound speed / maximum frequency / elements per wavelength."""
+        """The FEM target element size: sound speed / maximum frequency / elements per wavelength."""
         return self.sizing.target_size_m
 
     @property
@@ -1026,11 +1035,11 @@ def _step_face_vertices(path) -> list[tuple[str, np.ndarray]]:
 
 
 def _apply_sizes(gmsh, model: _Model, settings: CadImportSettings, groups) -> None:
-    """Target size everywhere, overrides per body / face group / face (the most specific wins) and air-body
-    interiors, graded by the growth rate."""
+    """Target sizes everywhere (FEM, BEM, the finer on interface faces), overrides per body / face group / face
+    (the most specific wins) and air-body interiors, graded by the growth rate."""
     sizing = settings.sizing
-    target = sizing.target_size_m / _MM  # sizes below are in Gmsh model units
     geometry = model.geometry
+    targets = sizing.face_targets(geometry)
     unknown = sorted(set(settings.body_sizes) - {b.name for b in geometry.bodies})
     if unknown:
         raise ValueError(f"Size override for unknown body '{unknown[0]}'.")
@@ -1047,13 +1056,15 @@ def _apply_sizes(gmsh, model: _Model, settings: CadImportSettings, groups) -> No
         elif face not in model.face_bodies:
             raise ValueError(f"Size override for unknown face {face}.")
         own[face] = size
-    face_size = {
+    face_size = {  # in Gmsh model units, as all sizes below
         f: sizing.edge_m(
             sizing.winning(
                 own.get(f),
                 settings.face_group_sizes.get(group_of[f]),
                 [settings.body_sizes.get(b) for b in bodies],
+                targets[f],
             )
+            or targets[f]
         )
         / _MM
         for f, bodies in model.face_bodies.items()
@@ -1064,10 +1075,13 @@ def _apply_sizes(gmsh, model: _Model, settings: CadImportSettings, groups) -> No
     volume_size = {
         b: sizing.edge_m(settings.volume_sizes.get(b) or settings.body_sizes.get(b)) / _MM for b in model.volumes
     }
+    # The finest target size in use: the faces' and, with air bodies, the FEM one of their volumes.
+    in_use = [sizing.edge_m(targets[f]) for f in face_size] + ([sizing.target_size_m] if volume_size else [])
+    target = min(in_use, default=sizing.target_size_m) / _MM
     sizes = [*face_size.values(), *volume_size.values()] or [target]
     smallest, largest = min(sizes), max(sizes)
     option = gmsh.option.setNumber
-    # Curvature may refine below the target size; only a finer override sets a floor.
+    # Curvature may refine below the target sizes; only a finer override sets a floor.
     option("Mesh.MeshSizeMin", smallest if smallest < target else 0)
     option("Mesh.MeshSizeMax", largest)
     option("Mesh.MeshSizeFromCurvature", settings.curvature_elements_per_circle)
