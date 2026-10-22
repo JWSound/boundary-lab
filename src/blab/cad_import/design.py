@@ -11,6 +11,7 @@ from dataclasses import asdict
 from typing import TYPE_CHECKING, NamedTuple
 
 from .face_refs import ZERO, CadFaceRef, face_ref, match_face_ref
+from .sizing import CadSizes, CadSizing, migrated, size_override
 
 if TYPE_CHECKING:
     from .pipeline import CadGeometry, CadImportSettings
@@ -222,6 +223,95 @@ class CadFaceGroups:
                 groups.setdefault(self._row_of[face].name, []).append(face)
             result[mesh_id] = dict(sorted(groups.items()))
         return result
+
+
+# -- the design source as the editor edits it --------------------------------------------------------------------------
+
+FEM_FINENESS = "elements_per_wavelength"  # design source keys of the mesh finenesses
+BEM_FINENESS = "bem_elements_per_wavelength"
+
+
+def source_placement(source: Mapping) -> dict:
+    """The placement of design ``source`` as the pipeline functions take it (translation in metres)."""
+    return dict(
+        rotation_deg=tuple(source.get("rotation_deg", ZERO)),
+        translation_m=tuple(v / 1000 for v in source.get("translation_mm", ZERO)),
+    )
+
+
+class CadDesign:
+    """A design ``source`` on the read ``geometry`` (``None`` before one is read): the one place the editor reads
+    its face groups, sizes, fineness and placement, and the one that says what an edit changes.
+
+    ``placement`` is the one ``geometry`` was read with (default: the source's). Edits return the design source
+    fields they change; the editor stores them. ``groups`` (:class:`CadFaceGroups`) is ``None`` without a geometry.
+    Stored sizes that cannot be read leave ``size_error`` set and ``sizes`` empty: shown Global, never written over.
+    """
+
+    def __init__(self, source: Mapping, geometry: CadGeometry | None = None, *, placement: Mapping | None = None):
+        self.source = dict(source)
+        self.geometry = geometry
+        self.placement = dict(placement or source_placement(source))
+        self.groups = self.sizes = None
+        self.size_error = ""
+        if geometry is None:
+            return
+        self.groups = CadFaceGroups(
+            geometry,
+            {g["name"]: g["faces"] for g in self.source.get("face_groups", [])},
+            interface_names=self.source.get("interface_names", {}),
+            **self.placement,
+        )
+        try:
+            self.sizes = CadSizes(
+                geometry, self.source.get("face_sizes", []), self.source.get("volume_sizes", {}), **self.placement
+            )
+        except ValueError as exc:  # as Generate rejects it
+            self.sizes = CadSizes(geometry, [], {}, **self.placement)
+            self.size_error = str(exc)
+
+    @property
+    def rotation_deg(self) -> tuple:
+        return tuple(self.source.get("rotation_deg", ZERO))
+
+    @property
+    def translation_mm(self) -> tuple:
+        return tuple(self.source.get("translation_mm", ZERO))
+
+    @property
+    def stored_groups(self) -> set[str]:
+        """The names of the face groups the source stores (not those only named in the STEP file)."""
+        return {g["name"] for g in self.source.get("face_groups", [])}
+
+    def number(self, key: str) -> float:
+        """The numeric setting ``key`` (a fineness, :data:`FEM_FINENESS` or :data:`BEM_FINENESS`, curvature or growth
+        rate); the BEM fineness is the FEM one when the source has none."""
+        return float(self.source.get(key, self.source[FEM_FINENESS]))
+
+    def sizing(self, fmax_hz: float | None, sound_speed_m_per_s: float) -> CadSizing:
+        """The design's sizing at the project's maximum frequency (``None`` while unknown) and sound speed."""
+        return CadSizing(
+            fmax_hz, sound_speed_m_per_s, float(self.source[FEM_FINENESS]), self.source.get(BEM_FINENESS)
+        )
+
+    def set_sizes(self, size, faces=(), volumes=()) -> dict:
+        """The size fields with ``size`` (an override or its stored fields; ``None``: Global) on each of ``faces``
+        and air-body ``volumes``. Raises ``ValueError`` for a bad size, or for stored sizes that cannot be read."""
+        if self.size_error:
+            raise ValueError(self.size_error)
+        return self.sizes.written(None if size is None else size_override(size), faces, volumes)
+
+    def dropped(self) -> tuple[dict, str]:
+        """The size fields without sizes of faces the geometry no longer has and of bodies that are no air bodies,
+        and a note saying so; ``({}, "")`` when there is none (or the stored sizes cannot be read)."""
+        return ({}, "") if self.size_error or self.sizes is None else self.sizes.dropped()
+
+    def migrated(self, sizing: CadSizing) -> dict | None:
+        """The whole source with older body and face-group sizes turned into face and volume sizes (see
+        :func:`blab.cad_import.sizing.migrated`), else ``None``; ``sizing`` needs the maximum frequency."""
+        if self.groups is None or self.size_error or sizing.fmax_hz is None:
+            return None
+        return migrated(self.source, self.groups, self.sizes, sizing)
 
 
 # -- the design source -> pipeline settings ----------------------------------------------------------------------------

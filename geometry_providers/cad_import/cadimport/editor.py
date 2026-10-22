@@ -49,13 +49,13 @@ from blab.cad_import import (
     LEVELS,
     MIXED,
     WALLS,
+    CadDesign,
     CadFaceGroups,
     CadSizeOverride,
-    CadSizes,
-    CadSizing,
     place_preview,
 )
-from blab.cad_import.sizing import migrated, shared, size_override
+from blab.cad_import.design import BEM_FINENESS, FEM_FINENESS, source_placement
+from blab.cad_import.sizing import shared
 from blab.generators.configuration import DEFAULT_SOUND_SPEED_M_PER_S
 from blab.ui.file_dialogs import FileDialogService
 
@@ -382,7 +382,8 @@ class CadImportEditor:
         self._face_items = {}
         self._body_items = {}
         self._geometry = None  # the CadGeometry shown
-        self._groups = self._sizes = None  # its CadFaceGroups and CadSizes under the source
+        self._design = CadDesign({})  # the source on that geometry
+        self._groups = self._sizes = None  # its CadFaceGroups and CadSizes
         self._size_error = ""  # why the source's sizes cannot be read
         self._interface_note = ""  # last shown: which stored faces stay in their interface face groups
         self._syncing = False
@@ -555,8 +556,8 @@ class CadImportEditor:
         self._custom_fineness = set()  # source keys whose Custom was chosen: it stays while the number is a level's
         self.spins = {}
         self._fineness_combos = {}  # source key -> (dropdown, its levels)
-        self.fineness = self._fineness_row(form, "FEM", "elements_per_wavelength", FEM_LEVELS, (1.0, 50.0))
-        self.bem_fineness = self._fineness_row(form, "BEM", "bem_elements_per_wavelength", BEM_LEVELS, (0.1, 50.0))
+        self.fineness = self._fineness_row(form, "FEM", FEM_FINENESS, FEM_LEVELS, (1.0, 50.0))
+        self.bem_fineness = self._fineness_row(form, "BEM", BEM_FINENESS, BEM_LEVELS, (0.1, 50.0))
         for key, label, low, high, decimals, suffix in SIZING:
             spin = QDoubleSpinBox()
             spin.setRange(low, high)
@@ -592,10 +593,13 @@ class CadImportEditor:
         self.step_path.setText(str(source.get("step_path", "")))
         for key, spin in self.spins.items():
             blocked = spin.blockSignals(True)
-            spin.setValue(self._fineness_value(key))
+            spin.setValue(self._design.number(key))
             spin.blockSignals(blocked)
-        for key, spins in (("rotation_deg", self.rotation_spins), ("translation_mm", self.translation_spins)):
-            for spin, value in zip(spins, source.get(key, (0.0, 0.0, 0.0)), strict=True):
+        for spins, values in (
+            (self.rotation_spins, self._design.rotation_deg),
+            (self.translation_spins, self._design.translation_mm),
+        ):
+            for spin, value in zip(spins, values, strict=True):
                 blocked = spin.blockSignals(True)
                 spin.setValue(float(value))
                 spin.blockSignals(blocked)
@@ -604,7 +608,7 @@ class CadImportEditor:
         key = (str(source.get("step_path") or ""), json.dumps(source.get("closed_shells", {}), sort_keys=True))
         if key != self._key:
             self._load(key)
-        elif self._placement_of(source) != self._placement:
+        elif source_placement(source) != self._placement:
             self._place()
         else:
             self._show_overrides()
@@ -634,14 +638,10 @@ class CadImportEditor:
         self._fineness_combos[key] = (combo, levels)
         return combo
 
-    def _fineness_value(self, key):
-        """The source elements per wavelength ``key`` (BEM: the FEM one when it has none)."""
-        return float(self.source.get(key, self.source["elements_per_wavelength"]))
-
     def _show_fineness(self):
         """The level of each source elements per wavelength, else (or while chosen) Custom with its number."""
         for key, (combo, levels) in self._fineness_combos.items():
-            n = self._fineness_value(key)
+            n = self._design.number(key)
             custom = key in self._custom_fineness or n not in levels.values()
             combo.setCurrentIndex(combo.count() - 1 if custom else combo.findData(n))
             self.spins[key].setHidden(not custom)
@@ -684,7 +684,7 @@ class CadImportEditor:
         self._cancel_preview.set()
         self._cancel_preview = cancel = threading.Event()
         path, closed_shells = key
-        placement = self._placement_of(self.source)
+        placement = source_placement(self.source)
         # Taken before reading: an edit while the file loads changes it, so the next focus asks.
         self._stamp = _file_stamp(path) if path else None
         if not path:
@@ -728,20 +728,13 @@ class CadImportEditor:
         self._read = preview
         self._place(reset_camera=True)
 
-    @staticmethod
-    def _placement_of(source):
-        return dict(
-            rotation_deg=tuple(source.get("rotation_deg", (0.0, 0.0, 0.0))),
-            translation_m=tuple(v / 1000 for v in source.get("translation_mm", (0.0, 0.0, 0.0))),
-        )
-
     def _place(self, *, reset_camera=False):
         """Show the read preview with the source's placement, moved without reading the STEP file again."""
         if self._read is None:
             if not self.loading and self._key is not None and self._key[0]:
                 self._load(self._key)  # nothing read yet, e.g. the last read failed
             return
-        placement = self._placement_of(self.source)
+        placement = source_placement(self.source)
         try:
             placed = place_preview(self._read, **placement)
         except ValueError as exc:
@@ -1142,26 +1135,9 @@ class CadImportEditor:
 
     def _resolve(self):
         """Resolve the source's face groups and sizes on the shown geometry, once per change of either."""
-        if self._geometry is None:
-            self._groups = self._sizes = None
-            return
-        self._groups = CadFaceGroups(
-            self._geometry,
-            {g["name"]: g["faces"] for g in self.source.get("face_groups", [])},
-            interface_names=self.source.get("interface_names", {}),
-            **self._placement,
-        )
-        try:
-            self._sizes = CadSizes(
-                self._geometry,
-                self.source.get("face_sizes", []),
-                self.source.get("volume_sizes", {}),
-                **self._placement,
-            )
-            self._size_error = ""
-        except ValueError as exc:  # as Generate rejects it; shown Global, never written over
-            self._sizes = CadSizes(self._geometry, [], {}, **self._placement)
-            self._size_error = str(exc)
+        self._design = CadDesign(self.source, self._geometry, placement=self._placement)
+        self._groups, self._sizes, self._size_error = self._design.groups, self._design.sizes, self._design.size_error
+        if self._size_error:  # as Generate rejects it; shown Global, never written over
             self.status.setText(self._size_error)
 
     def groups_needing_review(self):
@@ -1242,18 +1218,18 @@ class CadImportEditor:
             self.status.setText(self._size_error)
             return
         try:
-            size = None if size is None else size_override(size)
+            changes = self._design.set_sizes(size, face_ids, volumes)
         except ValueError as exc:
             self.status.setText(str(exc))
             return
-        self.edited(self._sizes.written(size, face_ids, volumes))
+        self.edited(changes)
 
     def _drop_lost_sizes(self):
         """Drop the face sizes whose faces the loaded STEP file no longer has, and volume sizes of bodies that are no
         air bodies; the note saying so, else empty."""
         if self._size_error:
             return ""
-        changes, note = self._sizes.dropped()
+        changes, note = self._design.dropped()
         if changes:
             self.edited(changes)
         return note
@@ -1261,9 +1237,7 @@ class CadImportEditor:
     def _migrate_sizes(self):
         """Convert an older design's body and face group sizes once its geometry and the maximum frequency, which
         compares levels with edge lengths, are known."""
-        if self._groups is None or self._fmax_hz is None or self._size_error:
-            return
-        source = migrated(self.source, self._groups, self._sizes, self._sizing())
+        source = self._design.migrated(self._sizing())
         if source is not None:
             self.edited(source, drop=self.source)  # the whole new source
             self.status.setText("Body and face group sizes are now set on their faces and volumes.")
@@ -1347,12 +1321,7 @@ class CadImportEditor:
 
     def _sizing(self):
         """The design's sizing at the project's maximum frequency and sound speed (once they are known)."""
-        return CadSizing(
-            self._fmax_hz,
-            self._sound_speed,
-            float(self.source["elements_per_wavelength"]),
-            self.source.get("bem_elements_per_wavelength"),
-        )
+        return self._design.sizing(self._fmax_hz, self._sound_speed)
 
     def _group_selected(self):
         """A clicked row selects its faces; a single row other than an interface becomes the current group."""
@@ -1366,7 +1335,7 @@ class CadImportEditor:
 
     def _show_groups(self):
         self._syncing = True
-        stored = {g["name"] for g in self.source.get("face_groups", [])}
+        stored = self._design.stored_groups
         rows = self.rows()
         review = set(self.groups_needing_review())
         colours = self.group_colours()
@@ -1434,7 +1403,7 @@ class CadImportEditor:
                     f"{level:g} elements per wavelength at {self._fmax_hz:g} Hz "
                     f"({sizing.edge_m(CadSizeOverride(elements_per_wavelength=level)) * 1000:.3g} mm)"
                 )
-                if key == "elements_per_wavelength":  # FEM: the frequency up to which the level still holds Fine
+                if key == FEM_FINENESS:  # FEM: the frequency up to which the level still holds Fine
                     tip += f": {held} per wavelength up to {self._fmax_hz * level / held:.0f} Hz"
                 combo.setItemData(index, tip, Qt.ItemDataRole.ToolTipRole)
 

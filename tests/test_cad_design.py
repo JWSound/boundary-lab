@@ -2,11 +2,21 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 
 import pytest
 
-from blab.cad_import import CadFaceGroups, CadFaceRef, CadSizeOverride, design_settings, face_ref, inspect_step
+from blab.cad_import import (
+    CadDesign,
+    CadFaceGroups,
+    CadFaceRef,
+    CadSizeOverride,
+    CadSizing,
+    design_settings,
+    face_ref,
+    inspect_step,
+)
+from blab.cad_import.design import BEM_FINENESS, FEM_FINENESS
 from cad_fixtures import named_sides, vented_box
 
 
@@ -345,3 +355,84 @@ def test_older_body_and_face_group_sizes_are_read_with_the_face_and_volume_sizes
 def test_an_invalid_source_is_rejected(fields, match):
     with pytest.raises(ValueError, match=match):
         design_settings(source(**fields), CONFIGURATION)
+
+
+# -- the editor's view of the design source: placement, fineness, sizing, size edits ------------------------------------
+
+FINE = CadSizeOverride(elements_per_wavelength=6)
+
+
+def test_the_placement_is_the_sources_with_the_translation_in_metres_and_defaults_to_none():
+    design = CadDesign(source())
+
+    assert design.rotation_deg == (0, 0, 90)
+    assert design.translation_mm == (10, 0, -20)
+    assert design.placement == {"rotation_deg": (0, 0, 90), "translation_m": (0.01, 0.0, -0.02)}
+    assert CadDesign({"elements_per_wavelength": 6}).placement == {
+        "rotation_deg": (0.0, 0.0, 0.0),
+        "translation_m": (0.0, 0.0, 0.0),
+    }
+
+
+def test_the_bem_fineness_falls_back_to_the_fem_one_and_the_sizing_follows_both():
+    design = CadDesign(source(elements_per_wavelength=4))
+
+    assert design.number(FEM_FINENESS) == design.number(BEM_FINENESS) == 4.0
+    assert design.number("growth_rate") == 1.3
+    assert CadDesign(source(bem_elements_per_wavelength=12)).number(BEM_FINENESS) == 12.0
+    sizing = CadDesign(source(bem_elements_per_wavelength=12)).sizing(3430.0, 343.0)
+    assert sizing == CadSizing(3430.0, 343.0, 6.0, 12)
+
+
+def test_the_design_names_its_stored_face_groups(box):
+    design = CadDesign(source(face_groups=[{"name": "A", "faces": []}]), box)
+
+    assert design.stored_groups == {"A"}
+    assert "A" in [row.name for row in design.groups.rows]
+    assert CadDesign(source(), None).groups is None
+
+
+def test_sizes_are_set_on_faces_and_volumes_and_a_bad_size_or_stored_size_is_refused(box):
+    chamber = [f.id for f in box.faces if "Chamber" in f.bodies]
+    design = CadDesign(source(), box)
+
+    changes = design.set_sizes(FINE, chamber[:1], ["Chamber"])
+    assert changes["volume_sizes"] == {"Chamber": {"elements_per_wavelength": 6}}
+    assert [e["elements_per_wavelength"] for e in changes["face_sizes"]] == [6]
+    assert CadDesign(source() | changes, box).set_sizes(None, chamber[:1], []) == {
+        "face_sizes": [],
+        "volume_sizes": {"Chamber": {"elements_per_wavelength": 6}},
+    }
+    assert design.set_sizes({"size_m": 0.01}, chamber[:1])["face_sizes"][0]["size_m"] == 0.01
+    with pytest.raises(ValueError, match="positive"):
+        design.set_sizes({"size_m": -1}, chamber[:1])
+
+    entry = {"face": asdict(face_ref(box.faces[0])), "size_m": -1}
+    broken = CadDesign(source(face_sizes=[entry]), box)
+    assert broken.size_error == "Invalid face size: Size override edge length must be a positive number."
+    with pytest.raises(ValueError, match="Invalid face size"):
+        broken.set_sizes(FINE, chamber[:1])
+    assert broken.dropped() == ({}, "")
+    assert broken.migrated(CadSizing(1000.0)) is None
+
+
+def test_lost_sizes_are_dropped_with_a_note(box):
+    lost = {"face": asdict(face_ref(replace(box.faces[0], centre=(1.0, 1.0, 1.0)))), "size_m": 0.01}
+
+    changes, note = CadDesign(source(face_sizes=[lost]), box).dropped()
+
+    assert changes == {"face_sizes": [], "volume_sizes": {}}
+    assert "1 face size override dropped" in note
+    assert CadDesign(source(face_sizes=[]), box).dropped() == ({}, "")
+
+
+def test_older_body_and_face_group_sizes_migrate_once_to_a_whole_new_source(box):
+    old = source(elements_per_wavelength=5.0, body_sizes={"Port": {"size_m": 0.03}}, face_group_sizes={})
+    sizing = CadSizing(3430.0, 343.0, 5.0)
+
+    new = CadDesign(old, box).migrated(sizing)
+
+    assert "body_sizes" not in new and new["volume_sizes"] == {"Port": {"size_m": 0.03}}
+    assert CadDesign(new, box).migrated(sizing) is None
+    assert CadDesign(source(body_sizes={}, face_group_sizes={}), box).migrated(sizing) is None
+    assert CadDesign(old, None).migrated(sizing) is None
