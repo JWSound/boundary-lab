@@ -1,0 +1,25 @@
+{
+  "manifest_version": 1,
+  "id": "blab.cad_import",
+  "name": "CAD Import",
+  "version": "0.1.0",
+  "provider_api": 1,
+  "source_schema_version": 2,
+  "backend": "cadimport.backend:create_backend",
+  "editor": "cadimport.editor:create_editor",
+  "default_source": {
+    "step_path": "",
+    "rotation_deg": [0.0, 0.0, 0.0],
+    "translation_mm": [0.0, 0.0, 0.0],
+    "elements_per_wavelength": 6.0,
+    "bem_elements_per_wavelength": 5.0,
+    "face_sizes": [],
+    "volume_sizes": {},
+    "curvature_elements_per_circle": 12.0,
+    "growth_rate": 1.3,
+    "face_groups": [],
+    "closed_shells": {},
+    "interface_names": {}
+  },
+  "mesh_scale_factor": 1.0
+}

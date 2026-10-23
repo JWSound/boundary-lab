@@ -2,10 +2,12 @@
 
 from dataclasses import replace
 
+from blab.config import MeshConfig
 from blab.generators.base import GeneratedGeometry, GeneratorDocument, generated_mesh_id
 from blab.generators.configuration import _check_references, _owned_entities
 from blab.mesh_inventory import InventoryEntry
 from blab.project.model import generator_mesh_name
+from blab.symmetry import validate_reduced_mesh_configs
 
 
 def generated_mesh_name(document: GeneratorDocument, local_id: str) -> str:
@@ -27,10 +29,8 @@ def generated_mesh_entries(document: GeneratorDocument, result: GeneratedGeometr
         assembly_id=document.id if result.meshes else None,
     )
     if result.meshes:
-        if symmetry != "off" and document.mesh_enabled:
-            raise ValueError(
-                "Generated mesh assemblies currently require symmetry Off; automatic coupled reduction is unsupported."
-            )
+        if document.mesh_enabled:
+            validate_reduced_assembly(document, result, symmetry)
         return tuple(
             InventoryEntry(
                 name=generated_mesh_name(document, mesh.id),
@@ -47,6 +47,30 @@ def generated_mesh_entries(document: GeneratorDocument, result: GeneratedGeometr
             mesh_data=result.solver_mesh_data_for_symmetry(symmetry),
             **options,
         ),
+    )
+
+
+def validate_reduced_assembly(document: GeneratorDocument, result: GeneratedGeometry, symmetry: str) -> None:
+    """Accept an assembly under symmetry only if already reduced into the positive region; never cut it."""
+    if symmetry == "off":
+        return
+    if not result.reduced:
+        raise ValueError(
+            "Generated mesh assemblies require symmetry Off unless the provider declares them already reduced; "
+            "automatic coupled reduction is unsupported."
+        )
+    validate_reduced_mesh_configs(
+        tuple(
+            MeshConfig(
+                name=generated_mesh_name(document, mesh.id),
+                file="" if mesh.mesh_data is not None else str(mesh.mesh_path),
+                scale_factor=document.mesh_scale_factor,
+                translation_m=tuple(value / 1000 for value in document.mesh_translation_mm),
+                mesh_data=mesh.mesh_data,
+            )
+            for mesh in result.meshes
+        ),
+        symmetry,
     )
 
 

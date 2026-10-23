@@ -1,8 +1,8 @@
 """Qt-free, transactional configuration patches for geometry providers.
 
 Only explicit fields change. Collections use upsert/remove operations; nested
-objects merge, while supplied arrays replace. Frequency settings are deliberately
-absent. Mesh files remain owned by the generation/artifact path.
+objects merge, while supplied arrays replace. Frequency settings are exposed
+read-only in the snapshot and cannot be patched. Mesh files remain owned by the generation/artifact path.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from blab.config import ChannelConfig, CrossoverConfig, normalize_symmetry
+from blab.defaults import DEFAULT_SOUND_SPEED_M_PER_S
 from blab.mesh_data import MeshData
 from blab.physical_model import (
     AcousticInterface,
@@ -48,8 +49,14 @@ PATCH_SECTIONS = frozenset(ENTITY_SECTIONS) | {
 
 
 def configuration_snapshot(project: ProjectDocument) -> dict[str, Any]:
-    """Editable configuration exposed to providers, with host entity IDs."""
+    """Configuration exposed to providers, with host entity IDs; ``frequency`` is read-only."""
+    preferences = project.project_preferences or ProjectPreferencesState()
     return {
+        "frequency": {
+            "freq_min_hz": preferences.freq_min_hz,
+            "freq_max_hz": preferences.freq_max_hz,
+            "freq_count": preferences.freq_count,
+        },
         "physical_system": (
             None if project.physical_system is None else physical_system_to_dict(project.physical_system)
         ),
@@ -58,9 +65,18 @@ def configuration_snapshot(project: ProjectDocument) -> dict[str, Any]:
         "symmetry_config": {"mode": project.symmetry},
         "stitching_config": {
             "enabled": project.stitch_imported_meshes,
-            "tolerance_mm": (project.project_preferences or ProjectPreferencesState()).stitch_tolerance_mm,
+            "tolerance_mm": preferences.stitch_tolerance_mm,
         },
     }
+
+
+def exterior_sound_speed(configuration: Mapping[str, Any]) -> float:
+    """Sound speed (m/s) of the exterior air region of a configuration snapshot, else the default."""
+    system = configuration.get("physical_system") or {}
+    for region in system.get("regions", []):
+        if region.get("kind") == "unbounded_air":
+            return float(region.get("sound_speed_m_per_s", DEFAULT_SOUND_SPEED_M_PER_S))
+    return DEFAULT_SOUND_SPEED_M_PER_S
 
 
 def project_revision(project: ProjectDocument) -> str:

@@ -636,7 +636,7 @@ class MeshConfigDialog(QDialog):
         self.name_items.append(name_item)
         name_item.setData(Qt.ItemDataRole.UserRole, mesh.assembly_id)
         if mesh.assembly_id:
-            name_item.setToolTip("Generated assembly: enabling, scale and position apply to all of its meshes.")
+            name_item.setToolTip("Generated assembly: enabling applies to all of its meshes; its design places it.")
 
         file_item = QTableWidgetItem(mesh.source_file)
         file_item.setFlags(file_item.flags() & ~Qt.ItemIsEditable)
@@ -669,21 +669,18 @@ class MeshConfigDialog(QDialog):
             widgets.append(spin)
 
         if mesh.assembly_id:
-            for column in (0, 3, 4, 5, 6):
-                widget = self.table.cellWidget(row, column)
-                signal = widget.toggled if column == 0 else widget.valueChanged
-                signal.connect(lambda value, group=mesh.assembly_id, col=column: self._sync_assembly(group, col, value))
+            # Scale and position stay at the design's values: a generated geometry is placed by its design.
+            for column in (3, 4, 5, 6):
+                self.table.cellWidget(row, column).setEnabled(False)
+            enabled_check.toggled.connect(lambda value, group=mesh.assembly_id: self._sync_assembly(group, value))
 
-    def _sync_assembly(self, assembly_id, column, value):
+    def _sync_assembly(self, assembly_id, enabled):
         for row, item in enumerate(self.name_items):
             if item.data(Qt.ItemDataRole.UserRole) != assembly_id:
                 continue
-            widget = self.table.cellWidget(row, column)
+            widget = self.enabled_widgets[row]
             blocked = widget.blockSignals(True)
-            if column == 0:
-                widget.setChecked(value)
-            else:
-                widget.setValue(value)
+            widget.setChecked(enabled)
             widget.blockSignals(blocked)
 
     def _add_mesh(self) -> None:

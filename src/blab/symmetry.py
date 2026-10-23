@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import meshio
 import numpy as np
 
 from blab.config import MeshConfig, normalize_symmetry
+from blab.mesh_data import read_resource_mesh
 from blab.solvers.registry import backend_info
 
 _SYMMETRY_AXES = {
@@ -99,7 +99,7 @@ def validate_reduced_mesh_config(
     if not axes:
         return
 
-    mesh = meshio.read(mesh_config.file)
+    mesh = read_resource_mesh(mesh_config)
     scale_factor = 0.001 if mesh_config.scale_factor is None else float(mesh_config.scale_factor)
     points_m = np.asarray(mesh.points, dtype=float) * scale_factor + np.asarray(mesh_config.translation_m, dtype=float)
     resolved_tolerance = symmetry_plane_tolerance_m(points_m) if tolerance_m is None else float(tolerance_m)
