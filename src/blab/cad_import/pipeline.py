@@ -719,11 +719,27 @@ def _find_openings(openings: _Openings, faces: Mapping[int, CadFace], air_bodies
     def on_plane(edge):
         return any(np.all(np.abs(points[edge][:, a]) <= tol) for a in (0, 1))
 
-    fillers = {
-        f
-        for f in openings.air_body
-        if f not in exterior and face_edges[f] & free and not _on_symmetry_plane(faces[f], tol)
-    }
+    candidates = {f for f in openings.air_body if f not in exterior and not _on_symmetry_plane(faces[f], tol)}
+    fillers = {f for f in candidates if face_edges[f] & free}
+    # Extend planar mouths across coplanar faces that do not touch the rim (e.g.
+    # an annulus around a disk). Crossing a bend could wrap down a real gap into
+    # the chamber and falsely turn its inner walls into a cap.
+    while True:
+        planar = [faces[f] for f in fillers if faces[f].surface_type == "Plane"]
+        added = {
+            f
+            for f in candidates - fillers
+            if faces[f].surface_type == "Plane"
+            and any(
+                face_edges[f] & face_edges[other.id]
+                and abs(abs(np.dot(faces[f].normal, other.normal)) - 1) < 1e-9
+                and abs(np.dot(np.subtract(faces[f].centre, other.centre), other.normal)) <= tol
+                for other in planar
+            )
+        }
+        if not added:
+            break
+        fillers.update(added)
     while True:
         shared = Counter(e for f in fillers for e in face_edges[f])
         keep = {f for f in fillers if all(e in free or shared[e] > 1 or on_plane(e) for e in face_edges[f])}

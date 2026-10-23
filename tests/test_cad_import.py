@@ -38,7 +38,7 @@ from blab.cad_import import (
 from blab.cad_import import cli as cad_cli
 from blab.cad_import.sizing import legacy_sizes, migrated, read_face_sizes
 from blab.interface_conform import validate_conforming_interfaces
-from cad_fixtures import bored_ball, named_sides, strip_names, two_chambers, vented_box, waveguide
+from cad_fixtures import bored_ball, multipart_port, named_sides, strip_names, two_chambers, vented_box, waveguide
 
 # Target element size 343 / 3430 / 5 = 20 mm.
 SETTINGS = CadImportSettings(fmax_hz=3430.0, sound_speed_m_per_s=343.0, elements_per_wavelength=5.0)
@@ -98,6 +98,33 @@ def test_duplicate_body_names_keep_the_interface_on_both_meshes(tmp_path):
         fem_interface_name="Interface 1 Port",
         bem_interface_name="Interface 1 Port",
     )
+
+
+def test_multipart_port_closes_the_exterior_with_every_mouth_face(tmp_path):
+    step = multipart_port(tmp_path / "multipart.step")
+    geometry = inspect_step(step)
+    region = next(r for r in geometry.regions if r.kind == "bounded_air")
+    assert set(region.bodies) == {"Chamber", "Annulus", "Core"}
+    mouth = {f.id for f in geometry.faces if abs(f.centre[2]) < 1e-9 and f.bodies in (("Annulus",), ("Core",))}
+    assert len(mouth) == 2
+    assert {f for i in geometry.interfaces for f in i.face_ids} == mouth
+    assert geometry.warnings == ()
+
+    result = mesh_step(step, SETTINGS, tmp_path / "out")
+    fem, bem = read(result, region.mesh_id), read(result, "exterior")
+    for interface in result.geometry.interfaces:
+        assert interface.name in fem.field_data and interface.name in bem.field_data
+        validate_conforming_interfaces(fem, bem, fem_interface_name=interface.name, bem_interface_name=interface.name)
+
+
+@pytest.mark.parametrize("fault", ["gap", "overlap"])
+def test_multipart_port_does_not_hide_exterior_gaps_or_overlaps(tmp_path, fault):
+    geometry = inspect_step(multipart_port(tmp_path / "fault.step", **{fault: True}))
+    if fault == "gap":
+        assert geometry.interfaces == ()
+        assert any("open edge" in warning for warning in geometry.warnings)
+    else:
+        assert any("overlap" in warning for warning in geometry.warnings)
 
 
 def edge_lengths(mesh, cell_type="triangle", group=None):

@@ -181,6 +181,26 @@ def vented_box(
     return write_step(path, build, face_names=face_names or default_names)
 
 
+def multipart_port(path: Path, *, gap: bool = False, overlap: bool = False) -> Path:
+    """A cabinet opening filled by touching annular and core air bodies."""
+
+    def build():
+        occ = gmsh.model.occ
+        chamber = [(3, occ.addBox(-50, -50, -200, 100, 100, 180))]
+        outer = occ.addCylinder(0, 0, -20, 0, 0, 20, 10)
+        bore = occ.addCylinder(0, 0, -20, 0, 0, 20, 5)
+        annulus = occ.cut([(3, outer)], [(3, bore)])[0]
+        core = [] if gap else [(3, occ.addCylinder(0, 0, -20, 0, 0, 20, 5))]
+        cabinet = _cabinet(60, 60, 210, [(0, 0, 10)])
+        if overlap:
+            # A sheet branching from the cabinet's rear edge makes that edge non-manifold.
+            cabinet.append((2, occ.addRectangle(-60, -180, -210, 120, 120)))
+        names = ["Chamber", "Annulus"] + ["Core"] * len(core) + ["Cabinet"] * len(cabinet)
+        return chamber + annulus + core + cabinet, names
+
+    return write_step(path, build)
+
+
 def named_sides(centre):
     """``vented_box`` face names: the four cabinet sides share the name "Side"."""
     if abs(abs(centre[0]) - 60) < 1e-6 or abs(abs(centre[1]) - 60) < 1e-6:
