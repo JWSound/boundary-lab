@@ -145,7 +145,7 @@ def conform_bem_interface_to_fem(
     if resolved_geometry_tolerance <= 0.0:
         raise InterfaceConformError("geometry_tolerance must be greater than zero.")
     resolved_seam_tolerance = (
-        max(interface_diameter * 5e-5, merge_tolerance) if seam_tolerance is None else float(seam_tolerance)
+        max(interface_diameter * 5e-4, merge_tolerance) if seam_tolerance is None else float(seam_tolerance)
     )
     if resolved_seam_tolerance <= 0.0:
         raise InterfaceConformError("seam_tolerance must be greater than zero.")
@@ -199,7 +199,20 @@ def conform_bem_interface_to_fem(
         tolerance=resolved_seam_tolerance,
         closed=not interface_symmetry_axes,
     )
-    if direct_seam_mapping is not None:
+    # Direct replacement moves shared seam nodes. A disconnected patch needs
+    # the planar fallback to reconnect its perimeter to the surrounding shell.
+    surrounding_edges = {
+        tuple(sorted((int(a), int(b))))
+        for triangle in bem_data.triangles[~bem_interface_mask]
+        for a, b in zip(triangle, np.roll(triangle, -1), strict=True)
+    }
+    seam_edges = zip(old_bem_opening_path[:-1], old_bem_opening_path[1:], strict=True)
+    seam_attached = all(tuple(sorted((int(a), int(b)))) in surrounding_edges for a, b in seam_edges)
+    if not interface_symmetry_axes:
+        seam_attached &= (
+            tuple(sorted((int(old_bem_opening_path[-1]), int(old_bem_opening_path[0])))) in surrounding_edges
+        )
+    if direct_seam_mapping is not None and seam_attached:
         output_mesh, interface_orientation_flipped = _replace_bem_interface_directly(
             fem_mesh,
             bem_mesh,
@@ -314,6 +327,11 @@ def conform_bem_interface_to_fem(
         closed=not interface_symmetry_axes,
     )
     if not np.any(adjacent_mask):
+        if direct_seam_mapping is not None and not seam_attached:
+            raise InterfaceConformError(
+                "BEM interface has open boundary edges away from the active symmetry planes, "
+                "and no planar surrounding surface is available to reconnect them."
+            )
         raise InterfaceConformError(
             "Could not find a planar non-interface BEM surface surrounding the interface perimeter. "
             "A curved interface seam can be replaced only when its FEM and BEM vertices and edges "
@@ -1652,7 +1670,7 @@ def _build_arg_parser(prog: str | None = None) -> argparse.ArgumentParser:
         "--seam-tol",
         type=float,
         default=None,
-        help=("Maximum targeted curved-seam snap in mesh units (default: 0.005%% of interface diameter)"),
+        help=("Maximum targeted curved-seam snap in mesh units (default: 0.05%% of interface diameter)"),
     )
     parser.add_argument(
         "--symmetry",

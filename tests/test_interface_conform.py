@@ -112,7 +112,7 @@ def test_fixture_interfaces_are_made_connectivity_identical_and_watertight() -> 
     fem_mesh = meshio.read(FEM_FIXTURE)
     bem_mesh = meshio.read(BEM_FIXTURE)
 
-    conformed_mesh, result = conform_bem_interface_to_fem(fem_mesh, bem_mesh)
+    conformed_mesh, result = conform_bem_interface_to_fem(fem_mesh, bem_mesh, seam_tolerance=1e-8)
 
     assert result.fem_interface_triangles == 180
     assert result.original_bem_interface_triangles == 196
@@ -159,7 +159,7 @@ def test_disconnected_coplanar_shell_is_preserved(different_tag: bool) -> None:
         field_data={**bem_mesh.field_data, "Remote": np.asarray((remote_tag, 2))},
     )
 
-    conformed, result = conform_bem_interface_to_fem(fem_mesh, combined)
+    conformed, result = conform_bem_interface_to_fem(fem_mesh, combined, seam_tolerance=1e-8)
 
     assert result.original_adjacent_triangles == 670
     assert result.identity.bem_boundary_edges == 0
@@ -226,6 +226,7 @@ def test_closed_interface_away_from_global_symmetry_planes_is_conformed_as_close
     conformed_mesh, result = conform_bem_interface_to_fem(
         fem_mesh,
         bem_mesh,
+        seam_tolerance=1e-8,
         symmetry_mode="xy",
     )
     report = validate_conforming_interfaces(
@@ -296,6 +297,35 @@ def test_curved_interface_with_disconnected_perimeter_and_split_geometry_is_conf
         np.abs((conformed_mesh.points[np.unique(conformed_interface)] - plane_origin) @ plane_normal)
     )
     assert interface_deviation > 0.5
+
+
+def test_default_seam_allowance_snaps_near_matching_curved_seam() -> None:
+    fem_mesh = meshio.read(CURVED_FEM_FIXTURE)
+    bem_mesh = meshio.read(CURVED_BEM_FIXTURE)
+    data = _triangle_data(bem_mesh, require_geometrical=True)
+    faces = data.triangles[data.physical_tags == _physical_surface_tag(bem_mesh, "INTERFACE")]
+    loop = _boundary_loops(faces)[0]
+    diameter = float(np.linalg.norm(np.ptp(bem_mesh.points[np.unique(faces)], axis=0)))
+    vertex = next(int(i) for i in loop if np.all(bem_mesh.points[i, :2] > diameter * 1e-3))
+    bem_mesh.points[vertex, 2] += diameter * 2e-4
+
+    conformed, result = conform_bem_interface_to_fem(
+        fem_mesh,
+        bem_mesh,
+        fem_interface_name="INTERFACE",
+        bem_interface_name="INTERFACE",
+        symmetry_mode="xy",
+    )
+    assert result.original_adjacent_triangles == 0
+    assert result.max_original_boundary_deviation > diameter * 5e-5
+    identity = validate_conforming_interfaces(
+        fem_mesh,
+        conformed,
+        fem_interface_name="INTERFACE",
+        bem_interface_name="INTERFACE",
+        symmetry_mode="xy",
+    )
+    assert identity.max_coordinate_error <= 1e-8
 
 
 def test_nonplanar_curved_interface_with_matching_discrete_seam_is_replaced_directly(
