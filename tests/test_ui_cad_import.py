@@ -310,11 +310,17 @@ def test_preview_is_smooth_shaded_with_face_outlines_and_no_triangle_edges(cad_e
 
 def test_face_outlines_are_the_edges_between_faces(blank_cad_editor):
     editor, _ = blank_cad_editor
-    outline_edges = sys.modules[type(editor).__module__].outline_edges  # the provider package loads with the editor
-    triangles = np.array([[0, 1, 2], [0, 2, 3], [1, 4, 2]])  # face 1: a square of two triangles; face 2 beside it
+    preview = {
+        "points": np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0], [2, 0, 0]], dtype=float),
+        "triangles": np.array([[0, 1, 2], [0, 2, 3], [1, 4, 2]]),  # a square face and a triangular face beside it
+        "face_ids": np.array([1, 1, 2]),
+    }
 
-    edges = outline_edges(triangles, np.array([1, 1, 2]))
+    editor.viewport.show_faces(preview, {1, 2})
 
+    (outlines,) = [mesh for mesh, kwargs in editor.viewport.plotter.meshes if mesh.n_lines]
+    edges = outlines.lines.reshape(-1, 3)[:, 1:]
+    # Includes the shared face boundary (1, 2), but not the square's triangle diagonal (0, 2).
     assert sorted(map(tuple, edges)) == [(0, 1), (0, 3), (1, 2), (1, 4), (2, 3), (2, 4)]
 
 
