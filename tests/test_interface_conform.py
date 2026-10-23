@@ -310,14 +310,20 @@ def test_default_seam_allowance_snaps_near_matching_curved_seam() -> None:
     bem_mesh.points[vertex, 2] += diameter * 2e-4
 
     conformed, result = conform_bem_interface_to_fem(
-        fem_mesh, bem_mesh,
-        fem_interface_name="INTERFACE", bem_interface_name="INTERFACE", symmetry_mode="xy",
+        fem_mesh,
+        bem_mesh,
+        fem_interface_name="INTERFACE",
+        bem_interface_name="INTERFACE",
+        symmetry_mode="xy",
     )
     assert result.original_adjacent_triangles == 0
     assert result.max_original_boundary_deviation > diameter * 5e-5
     identity = validate_conforming_interfaces(
-        fem_mesh, conformed,
-        fem_interface_name="INTERFACE", bem_interface_name="INTERFACE", symmetry_mode="xy",
+        fem_mesh,
+        conformed,
+        fem_interface_name="INTERFACE",
+        bem_interface_name="INTERFACE",
+        symmetry_mode="xy",
     )
     assert identity.max_coordinate_error <= 1e-8
 

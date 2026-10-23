@@ -209,7 +209,9 @@ def conform_bem_interface_to_fem(
     seam_edges = zip(old_bem_opening_path[:-1], old_bem_opening_path[1:], strict=True)
     seam_attached = all(tuple(sorted((int(a), int(b)))) in surrounding_edges for a, b in seam_edges)
     if not interface_symmetry_axes:
-        seam_attached &= tuple(sorted((int(old_bem_opening_path[-1]), int(old_bem_opening_path[0])))) in surrounding_edges
+        seam_attached &= (
+            tuple(sorted((int(old_bem_opening_path[-1]), int(old_bem_opening_path[0])))) in surrounding_edges
+        )
     if direct_seam_mapping is not None and seam_attached:
         output_mesh, interface_orientation_flipped = _replace_bem_interface_directly(
             fem_mesh,
@@ -325,6 +327,11 @@ def conform_bem_interface_to_fem(
         closed=not interface_symmetry_axes,
     )
     if not np.any(adjacent_mask):
+        if direct_seam_mapping is not None and not seam_attached:
+            raise InterfaceConformError(
+                "BEM interface has open boundary edges away from the active symmetry planes, "
+                "and no planar surrounding surface is available to reconnect them."
+            )
         raise InterfaceConformError(
             "Could not find a planar non-interface BEM surface surrounding the interface perimeter. "
             "A curved interface seam can be replaced only when its FEM and BEM vertices and edges "
