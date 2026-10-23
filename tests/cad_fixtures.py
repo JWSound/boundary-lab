@@ -134,6 +134,21 @@ def _name_faces(text, face_names):
 CAD_ROTATIONS = {("+Z", "+Y"): None, ("-Y", "+Z"): (1, 0, 0, math.pi / 2)}
 
 
+def single_solid(path: Path, shape: str) -> Path:
+    """A standalone air body: a 100×80×60 mm box or a sphere of radius 30 mm."""
+
+    def build():
+        occ = gmsh.model.occ
+        tag = occ.addBox(0, 0, 0, 100, 80, 60) if shape == "box" else occ.addSphere(0, 0, 0, 30)
+        return [(3, tag)], ["Air"]
+
+    write_step(path, build)
+    # A single shape is exported as the root product, without an assembly wrapper.
+    text = re.sub(r"PRODUCT\('[^']*',\s*'[^']*'", "PRODUCT('Air','Air'", path.read_text(encoding="utf-8"))
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
 def vented_box(
     path: Path,
     *,

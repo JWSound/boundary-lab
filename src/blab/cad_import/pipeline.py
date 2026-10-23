@@ -570,7 +570,10 @@ def _analyse(gmsh, path: Path, placement: tuple[np.ndarray, np.ndarray], closed_
         occ.rotate(inputs, 0, 0, 0, *axis, angle)
     if offset.any():
         occ.translate(inputs, *offset / _MM)
-    _, children = occ.fragment(inputs, [])
+    if len(inputs) == 1:
+        children = [inputs]  # A sole shape has nothing to fragment against; OCC returns no mapping.
+    else:
+        _, children = occ.fragment(inputs, [])
     occ.synchronize()
 
     volumes: dict[str, list[int]] = {}

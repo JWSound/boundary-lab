@@ -38,7 +38,16 @@ from blab.cad_import import (
 from blab.cad_import import cli as cad_cli
 from blab.cad_import.sizing import legacy_sizes, migrated, read_face_sizes
 from blab.interface_conform import validate_conforming_interfaces
-from cad_fixtures import bored_ball, multipart_port, named_sides, strip_names, two_chambers, vented_box, waveguide
+from cad_fixtures import (
+    bored_ball,
+    multipart_port,
+    named_sides,
+    single_solid,
+    strip_names,
+    two_chambers,
+    vented_box,
+    waveguide,
+)
 
 # Target element size 343 / 3430 / 5 = 20 mm.
 SETTINGS = CadImportSettings(fmax_hz=3430.0, sound_speed_m_per_s=343.0, elements_per_wavelength=5.0)
@@ -50,6 +59,33 @@ def groups(path):
     """Physical group names by dimension, read back from a written mesh file."""
     mesh = meshio.read(path)
     return {dim: sorted(n for n, (_, d) in mesh.field_data.items() if d == dim) for dim in (2, 3)}
+
+
+@pytest.mark.parametrize("shape,face_count", [("box", 6), ("sphere", 1)])
+def test_a_standalone_solid_retains_its_air_body_and_bounded_region(tmp_path, shape, face_count):
+    geometry = inspect_step(single_solid(tmp_path / "air.step", shape))
+
+    (body,) = geometry.bodies
+    (region,) = geometry.regions
+    assert body.kind == "air" and len(body.face_ids) == face_count
+    assert len(geometry.faces) == face_count
+    assert all(face.bodies == (body.name,) for face in geometry.faces)
+    assert region.kind == "bounded_air" and region.bodies == (body.name,)
+    assert geometry.interfaces == ()
+
+
+@pytest.mark.parametrize("shape,volume_m3", [("box", 0.00048), ("sphere", 0.00011309733552923255)])
+def test_a_standalone_solid_generates_a_nonempty_air_mesh(tmp_path, shape, volume_m3):
+    result = mesh_step(single_solid(tmp_path / "air.step", shape), SETTINGS, tmp_path / "out")
+
+    (mesh,) = result.meshes
+    assert mesh.purpose == "fem_volume"
+    assert groups(mesh.path) == {2: ["walls"], 3: ["Air"]}
+    written = meshio.read(mesh.path)
+    corners = written.points[written.cells_dict["tetra"]]
+    assert len(corners) > 0 and len(written.cells_dict["triangle"]) > 0
+    volumes = np.abs(np.linalg.det(corners[:, 1:] - corners[:, :1])) / 6
+    assert volumes.sum() == pytest.approx(volume_m3, rel=0.08)
 
 
 @pytest.fixture(scope="module")
