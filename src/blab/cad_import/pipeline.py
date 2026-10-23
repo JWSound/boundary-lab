@@ -679,6 +679,8 @@ def _analyse(gmsh, path: Path, placement: tuple[np.ndarray, np.ndarray], closed_
 
     edges = {f: _edges(gmsh, f) for _, f in gmsh.model.getEntities(2)}
     exterior_bodies = _exterior_bodies(sheet_names, sheet_children, edges)
+    used_names = set(solid_names)
+    exterior_bodies = {_unique_id(name, used_names, sep=" "): faces for name, faces in exterior_bodies.items()}
     face_volumes = {f: [v for v in gmsh.model.getAdjacencies(2, f)[0] if v in body_of_volume] for f in edges}
     outer_air = sorted(f for f, vols in face_volumes.items() if len(vols) == 1)
 

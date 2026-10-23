@@ -71,6 +71,35 @@ def test_vented_box_becomes_one_air_mesh_and_one_exterior_mesh(vented):
     assert np.allclose(vented.geometry.bbox_m, [(-0.06, -0.06, -0.21), (0.06, 0.06, 0.0)], atol=1e-6)
 
 
+def test_air_and_exterior_with_the_same_step_name_have_distinct_body_identities(tmp_path):
+    step = vented_box(tmp_path / "box.step", cabinet_name="Port")
+
+    geometry = inspect_step(step)
+
+    assert [(b.name, b.kind) for b in geometry.bodies] == [("Chamber", "air"), ("Port", "air"), ("Port 2", "exterior")]
+    assert all(len(f.bodies) == 1 for f in geometry.faces)
+    assert {f.id for f in geometry.faces if f.bodies == ("Port 2",)} == set(geometry.bodies[2].face_ids)
+    (interface,) = geometry.interfaces
+    assert interface.mesh_id == "chamber"
+    assert all(next(f for f in geometry.faces if f.id == face).bodies == ("Port",) for face in interface.face_ids)
+
+
+def test_duplicate_body_names_keep_the_interface_on_both_meshes(tmp_path):
+    step = vented_box(tmp_path / "box.step", cabinet_name="Port")
+
+    result = mesh_step(step, SETTINGS, tmp_path / "out")
+
+    assert [(m.id, m.purpose) for m in result.meshes] == [("chamber", "fem_volume"), ("exterior", "bem_surface")]
+    (interface,) = result.geometry.interfaces
+    assert interface.mesh_id == "chamber"
+    validate_conforming_interfaces(
+        read(result, "chamber"),
+        read(result, "exterior"),
+        fem_interface_name="Interface 1 Port",
+        bem_interface_name="Interface 1 Port",
+    )
+
+
 def edge_lengths(mesh, cell_type="triangle", group=None):
     """Mesh edge lengths in metres, optionally of the cells of one physical group."""
     lengths = []

@@ -145,6 +145,7 @@ def vented_box(
     depth: float = 180,
     shift_mm: tuple[float, float, float] = (0, 0, 0),
     port_radius: float = 10,
+    cabinet_name: str = "Cabinet",
 ) -> Path:
     """Chamber (100x100x``depth`` mm) joined by a port (r=``port_radius`` mm) to a hole in a cabinet surface.
 
@@ -172,7 +173,7 @@ def vented_box(
         rotation = CAD_ROTATIONS[cad_axes]
         if rotation:
             occ.rotate(entities, 0, 0, 0, *rotation)
-        return entities, ["Chamber", "Port"] + ["Cabinet"] * len(cabinet)
+        return entities, ["Chamber", "Port"] + [cabinet_name] * len(cabinet)
 
     def default_names(centre):
         return "Driver" if abs(centre[2] + 20 + depth) < 1e-6 else None

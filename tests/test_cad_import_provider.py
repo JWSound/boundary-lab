@@ -187,9 +187,11 @@ def test_symmetry_mismatch_is_rejected_with_the_suggestion(plugin, tmp_path):
         generate(backend, make_project(catalog, step), tmp_path / "runs")
 
 
-def test_regeneration_keeps_mesh_ids_and_user_edits(plugin, box_step, tmp_path):
+@pytest.mark.parametrize("cabinet_name", ["Cabinet", "Port"])
+def test_regeneration_keeps_mesh_ids_and_user_edits(plugin, tmp_path, cabinet_name):
     catalog, backend = plugin
-    project, first = generate(backend, make_project(catalog, box_step), tmp_path)
+    step = vented_box(tmp_path / "box.step", cabinet_name=cabinet_name)
+    project, first = generate(backend, make_project(catalog, step), tmp_path)
     doc = project.generator_documents[0].id
     system = with_source(project.physical_system, f"{doc}/mesh/chamber", "walls")
     walls = next(b for b in system.boundaries if b.kind == "moving")
@@ -218,6 +220,12 @@ def test_regeneration_keeps_mesh_ids_and_user_edits(plugin, box_step, tmp_path):
     assert component.parameters["boundary_motion_weights"] == {walls.id: 0.5}
     assert regenerated.component_channel_by_id == {"source": "woofer"}
     assert {r.density_kg_per_m3 for r in regenerated.physical_system.regions} == {1.19}
+    assert regenerated.physical_system.interfaces == system.interfaces
+    (interface,) = regenerated.physical_system.interfaces
+    by_id = {b.id: b for b in regenerated.physical_system.boundaries}
+    assert by_id[interface.bounded_boundary_id].group.mesh_id == f"{doc}/mesh/chamber"
+    assert by_id[interface.unbounded_boundary_id].group.mesh_id == f"{doc}/mesh/exterior"
+    assert len(PhysicalSystemCompiler().compile(regenerated.physical_system).interfaces) == 1
 
 
 def stored_group(name, step, predicate):
