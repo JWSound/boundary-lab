@@ -10,11 +10,14 @@ from collections.abc import Mapping, Sequence
 from dataclasses import asdict
 from typing import TYPE_CHECKING, NamedTuple
 
+from blab.generators.configuration import exterior_sound_speed
+
 from .face_refs import ZERO, CadFaceRef, face_ref, match_face_ref
-from .sizing import CadSizeOverride, CadSizes, CadSizing, migrated, size_override
+from .settings import CadImportSettings
+from .sizing import CadSizeOverride, CadSizes, CadSizing, legacy_sizes, migrated, read_face_sizes, size_override
 
 if TYPE_CHECKING:
-    from .pipeline import CadGeometry, CadImportSettings
+    from .pipeline import CadGeometry
 
 WALLS = "walls"
 
@@ -341,11 +344,6 @@ def design_settings(source: Mapping, configuration: Mapping) -> CadImportSetting
     Faces and sizes resolve against the read geometry in :func:`mesh_step`, with :class:`CadFaceGroups` and
     :class:`CadSizes`. Rejects what generation cannot take (``ValueError``) before any meshing.
     """
-    from blab.generators.configuration import exterior_sound_speed
-
-    from .pipeline import CadImportSettings
-    from .sizing import legacy_sizes, read_face_sizes
-
     try:
         body_sizes, face_group_sizes = legacy_sizes(source)  # older designs, until the editor converts them
         return CadImportSettings(

@@ -18,7 +18,8 @@ from .face_refs import ZERO, CadFaceRef, face_ref, match_face_ref
 
 if TYPE_CHECKING:
     from .design import CadFaceGroups
-    from .pipeline import CadGeometry, CadImportSettings
+    from .pipeline import CadGeometry
+    from .settings import CadImportSettings
 
 # Mesh size levels, fine to coarse: elements per wavelength at the maximum frequency (ADR 0002).
 FEM_LEVELS = {"FEM Fine": 6, "FEM Medium": 4, "FEM Coarse": 2}
