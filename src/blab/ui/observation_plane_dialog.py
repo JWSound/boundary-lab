@@ -24,7 +24,6 @@ from PySide6.QtWidgets import (
 )
 
 from blab.observation_planes import (
-    EVALUATION_POINT_WARNING_THRESHOLD,
     InteriorRenderingMode,
     ObservationPlane,
     ObservationPlaneDisplay,
@@ -37,6 +36,7 @@ PLANE_TYPE_LABELS = {
     ObservationPlaneType.COMBINED: "Combined",
 }
 DISPLAY_LABELS = {
+    ObservationPlaneDisplay.FLOW_ARROWS: "Acoustic Flow Arrows",
     ObservationPlaneDisplay.SPL: "SPL",
     ObservationPlaneDisplay.PHASE: "Phase",
     ObservationPlaneDisplay.REAL_PRESSURE: "Real Pressure",
@@ -94,15 +94,39 @@ class ObservationPlanePropertiesDialog(QDialog):
         self.resolution_spin = _millimetre_spin(self._plane.resolution_m * 1000.0, minimum=0.01)
         form.addRow("Resolution (mm)", self.resolution_spin)
 
-        self.point_count_label = QLabel()
-        self.point_count_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        form.addRow("Evaluation points", self.point_count_label)
-
         self.display_combo = QComboBox()
         for value, label in DISPLAY_LABELS.items():
             self.display_combo.addItem(label, value.value)
         self._select_data(self.display_combo, self._plane.display.value)
         form.addRow("Display", self.display_combo)
+
+        self.arrow_density_slider = QSlider(Qt.Horizontal)
+        self.arrow_density_slider.setRange(5, 60)
+        self.arrow_density_slider.setValue(self._plane.arrow_density)
+        self.arrow_density_slider.setToolTip(
+            "Arrows across the longer side of the plane. Static: active intensity; animated: particle velocity."
+        )
+        form.addRow("Arrow density", self.arrow_density_slider)
+
+        for prefix, label, unit, initial in (
+            ("velocity", "Instantaneous velocity scale", " m/s", self._plane.velocity_scale_m_per_s),
+            ("intensity", "Active intensity scale", " W/m^2", self._plane.intensity_scale_w_per_m2),
+        ):
+            automatic = QCheckBox("Automatic")
+            automatic.setChecked(initial is None)
+            limit = QDoubleSpinBox()
+            limit.setDecimals(2)
+            limit.setRange(0.01, 1e9)
+            limit.setSingleStep(0.01)
+            limit.setSuffix(unit)
+            limit.setValue(1.0 if initial is None else initial)
+            limit.setToolTip("Full-scale magnitude for arrow length and colour. Values above this limit are saturated.")
+            setattr(self, f"{prefix}_scale_auto_check", automatic)
+            setattr(self, f"{prefix}_scale_spin", limit)
+            row = QHBoxLayout()
+            row.addWidget(automatic)
+            row.addWidget(limit, 1)
+            form.addRow(label, row)
 
         self.pressure_range_auto_check = QCheckBox("Automatic")
         self.pressure_range_auto_check.setChecked(self._plane.pressure_color_limit_pa is None)
@@ -196,9 +220,8 @@ class ObservationPlanePropertiesDialog(QDialog):
         self.rendering_combo.currentIndexChanged.connect(self._refresh_dependent_controls)
         self.display_combo.currentIndexChanged.connect(self._refresh_dependent_controls)
         self.pressure_range_auto_check.toggled.connect(self._refresh_dependent_controls)
-        self.width_spin.valueChanged.connect(self._refresh_point_count)
-        self.height_spin.valueChanged.connect(self._refresh_point_count)
-        self.resolution_spin.valueChanged.connect(self._refresh_point_count)
+        self.velocity_scale_auto_check.toggled.connect(self._refresh_dependent_controls)
+        self.intensity_scale_auto_check.toggled.connect(self._refresh_dependent_controls)
         self.frequency_slider.valueChanged.connect(self._refresh_frequency_label)
         self._frequency_preview_timer = QTimer(self)
         self._frequency_preview_timer.setSingleShot(True)
@@ -222,6 +245,11 @@ class ObservationPlanePropertiesDialog(QDialog):
             self.height_spin.valueChanged,
             self.resolution_spin.valueChanged,
             self.display_combo.currentIndexChanged,
+            self.arrow_density_slider.valueChanged,
+            self.velocity_scale_auto_check.toggled,
+            self.velocity_scale_spin.valueChanged,
+            self.intensity_scale_auto_check.toggled,
+            self.intensity_scale_spin.valueChanged,
             self.pressure_range_auto_check.toggled,
             self.pressure_limit_spin.valueChanged,
             self.rendering_combo.currentIndexChanged,
@@ -233,7 +261,6 @@ class ObservationPlanePropertiesDialog(QDialog):
         for signal in preview_controls:
             signal.connect(self._emit_preview)
         self._refresh_dependent_controls()
-        self._refresh_point_count()
         self._refresh_frequency_label()
         self._refresh_animation_controls()
         self._refresh_frequency_sweep_controls()
@@ -249,6 +276,13 @@ class ObservationPlanePropertiesDialog(QDialog):
             resolution_m=self.resolution_spin.value() / 1000.0,
             plane_type=ObservationPlaneType(self.type_combo.currentData()),
             display=ObservationPlaneDisplay(self.display_combo.currentData()),
+            arrow_density=self.arrow_density_slider.value(),
+            velocity_scale_m_per_s=(
+                None if self.velocity_scale_auto_check.isChecked() else self.velocity_scale_spin.value()
+            ),
+            intensity_scale_w_per_m2=(
+                None if self.intensity_scale_auto_check.isChecked() else self.intensity_scale_spin.value()
+            ),
             interior_rendering=InteriorRenderingMode(self.rendering_combo.currentData()),
             invert_clip_side=self.invert_clip_check.isChecked(),
             response_id=str(self.response_combo.currentData() or "system"),
@@ -277,7 +311,6 @@ class ObservationPlanePropertiesDialog(QDialog):
         self.width_spin.setValue(plane.width_m * 1000.0)
         self.height_spin.setValue(plane.height_m * 1000.0)
         del width_blocker, height_blocker
-        self._refresh_point_count()
 
     def set_solved_results(
         self,
@@ -328,18 +361,19 @@ class ObservationPlanePropertiesDialog(QDialog):
     def _refresh_dependent_controls(self) -> None:
         plane_type = self.type_combo.currentData()
         interior_only = plane_type == ObservationPlaneType.INTERIOR.value
-        velocity_index = self.display_combo.findData(ObservationPlaneDisplay.PARTICLE_VELOCITY.value)
-        if velocity_index >= 0:
-            velocity_item = self.display_combo.model().item(velocity_index)
-            if velocity_item is not None:
-                velocity_item.setEnabled(interior_only)
-                velocity_item.setToolTip(
-                    "Available for Interior observation planes only."
-                    if not interior_only
-                    else "Derived from the complex FEM pressure gradient."
-                )
-        if not interior_only and self.display_combo.currentData() == ObservationPlaneDisplay.PARTICLE_VELOCITY.value:
+        interior_displays = (ObservationPlaneDisplay.PARTICLE_VELOCITY, ObservationPlaneDisplay.FLOW_ARROWS)
+        for display in interior_displays:
+            item = self.display_combo.model().item(self.display_combo.findData(display.value))
+            if item is not None:
+                item.setEnabled(interior_only)
+        if not interior_only and self.display_combo.currentData() in {d.value for d in interior_displays}:
             self._select_data(self.display_combo, ObservationPlaneDisplay.SPL.value)
+        flow = self.display_combo.currentData() == ObservationPlaneDisplay.FLOW_ARROWS.value
+        self.arrow_density_slider.setEnabled(flow)
+        for prefix in ("velocity", "intensity"):
+            automatic = getattr(self, f"{prefix}_scale_auto_check")
+            automatic.setEnabled(flow)
+            getattr(self, f"{prefix}_scale_spin").setEnabled(flow and not automatic.isChecked())
         supports_interior = plane_type in {
             ObservationPlaneType.INTERIOR.value,
             ObservationPlaneType.COMBINED.value,
@@ -350,44 +384,24 @@ class ObservationPlanePropertiesDialog(QDialog):
         # A combined element view would mix FEM cell shading with a sampled
         # exterior surface. Keep the first implementation as one continuous,
         # consistently scaled smooth field.
-        self.rendering_combo.setEnabled(supports_interior and not combined)
+        self.rendering_combo.setEnabled(supports_interior and not combined and not flow)
         self.invert_clip_check.setEnabled(supports_interior)
         element_field = (
             supports_interior and self.rendering_combo.currentData() == InteriorRenderingMode.ELEMENT_FIELD.value
         )
-        self.resolution_spin.setEnabled(not element_field)
+        self.resolution_spin.setEnabled(not element_field and not flow)
         pressure_display = self.display_combo.currentData() in {
             ObservationPlaneDisplay.REAL_PRESSURE.value,
             ObservationPlaneDisplay.IMAGINARY_PRESSURE.value,
         }
         velocity_display = self.display_combo.currentData() == ObservationPlaneDisplay.PARTICLE_VELOCITY.value
-        pressure_controls_available = not velocity_display and (pressure_display or self.animate_button.isChecked())
+        pressure_controls_available = (
+            not flow and not velocity_display and (pressure_display or self.animate_button.isChecked())
+        )
         self.pressure_range_auto_check.setEnabled(pressure_controls_available)
         self.pressure_limit_spin.setEnabled(
             pressure_controls_available and not self.pressure_range_auto_check.isChecked()
         )
-        self._refresh_point_count()
-
-    def _refresh_point_count(self) -> None:
-        preview = replace(
-            self._plane,
-            width_m=self.width_spin.value() / 1000.0,
-            height_m=self.height_spin.value() / 1000.0,
-            resolution_m=self.resolution_spin.value() / 1000.0,
-        ).validated()
-        if not self.resolution_spin.isEnabled():
-            self.point_count_label.setText("Not used by Element Field")
-            self.point_count_label.setStyleSheet("")
-            return
-        count = preview.evaluation_point_count
-        self.point_count_label.setText(f"{count:,}")
-        if count > EVALUATION_POINT_WARNING_THRESHOLD:
-            self.point_count_label.setText(
-                f"{count:,} — warning: more than {EVALUATION_POINT_WARNING_THRESHOLD:,} evaluation points"
-            )
-            self.point_count_label.setStyleSheet("color: #e6a23c;")
-        else:
-            self.point_count_label.setStyleSheet("")
 
     def _refresh_frequency_label(self) -> None:
         if not self._solved_frequencies_hz:

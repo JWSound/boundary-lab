@@ -1785,18 +1785,16 @@ def test_move_gizmo_refresh_reuses_actor_instances_and_updates_transforms() -> N
     )
 
 
-def test_properties_dialog_warns_above_point_budget_and_disables_resolution_for_element_field(qapp) -> None:
+def test_properties_dialog_omits_point_readout_and_disables_resolution_for_element_field(qapp) -> None:
     from blab.ui.observation_plane_dialog import ObservationPlanePropertiesDialog
 
     plane = replace(new_observation_plane("Plane"), width_m=1.0, height_m=1.0, resolution_m=0.01)
     dialog = ObservationPlanePropertiesDialog(plane)
     try:
-        assert "10,201" in dialog.point_count_label.text()
-        assert "warning" in dialog.point_count_label.text()
+        assert not hasattr(dialog, "point_count_label")
         index = dialog.rendering_combo.findData(InteriorRenderingMode.ELEMENT_FIELD.value)
         dialog.rendering_combo.setCurrentIndex(index)
         assert not dialog.resolution_spin.isEnabled()
-        assert dialog.point_count_label.text() == "Not used by Element Field"
     finally:
         dialog.close()
         dialog.deleteLater()

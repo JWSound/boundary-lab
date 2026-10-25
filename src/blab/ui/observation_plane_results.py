@@ -8,6 +8,7 @@ import numpy as np
 
 from blab.channel_synthesis import channel_drive, channel_voltage_gain, flat_target_corrections
 from blab.config import ChannelConfig
+from blab.fem_fields import sample_pressure_velocity
 from blab.observation_planes import ObservationPlaneDisplay, ObservationPlaneType
 from blab.physical_model import AcousticRegionKind, ExcitationPortKind
 from blab.solve_results import (
@@ -53,6 +54,7 @@ class InteriorFieldResults:
     flat_target_enabled: bool = False
     flat_target_reference_angle_deg: float = 0.0
     symmetry: str = "off"
+    tetrahedra10: np.ndarray | None = None
 
     @property
     def response_options(self) -> tuple[tuple[str, str], ...]:
@@ -86,20 +88,23 @@ class InteriorFieldResults:
         return np.sum(basis * weights[:, np.newaxis], axis=0).astype(np.complex64, copy=False)
 
     def particle_velocity(self, frequency_hz: float | None, response_id: str) -> np.ndarray:
-        """Return the complex P1 particle-velocity vector in each tetrahedron."""
+        """Return complex velocity at each tetrahedron's centroid (P1 is constant)."""
 
-        available_index = self.frequency_index(frequency_hz)
-        frequency = float(self.frequencies_hz[available_index])
-        pressure = self.pressure(frequency, response_id)
-        pressure_gradient = np.einsum(
-            "ti,tij->tj",
-            pressure[np.asarray(self.tetrahedra, dtype=np.int64)],
+        ids = np.arange(len(self.tetrahedra))
+        return self.sample_fields(frequency_hz, response_id, ids, np.full((len(ids), 4), 0.25))[1]
+
+    def sample_fields(self, frequency_hz, response_id, cell_ids, barycentric):
+        """Sample complex pressure and velocity using the retained element order."""
+        frequency = float(self.frequencies_hz[self.frequency_index(frequency_hz)])
+        return sample_pressure_velocity(
+            self.pressure(frequency_hz, response_id),
+            self.tetrahedra if self.tetrahedra10 is None else self.tetrahedra10,
             self.pressure_shape_gradients,
-            optimize=True,
+            self.tetrahedron_density_kg_per_m3,
+            frequency,
+            cell_ids,
+            barycentric,
         )
-        omega = 2.0 * np.pi * frequency
-        velocity = pressure_gradient / (-1j * omega * self.tetrahedron_density_kg_per_m3[:, np.newaxis])
-        return velocity.astype(np.complex64, copy=False)
 
 
 @dataclass(frozen=True)
@@ -227,6 +232,13 @@ def interior_field_results_from_solved_system(
     if pressure.shape != (solved.frequencies_hz.size, len(solved.excitation_ids), points.shape[0]):
         raise ValueError("FEM nodal pressure does not align with the solved frequencies, excitations, and nodes.")
     shape_gradients = tetrahedral_shape_gradients(points, tetrahedra)
+    tetrahedra10 = domain.topology.get("tetrahedra10")
+    if tetrahedra10 is not None:
+        tetrahedra10 = np.asarray(tetrahedra10, dtype=np.int64)
+        if tetrahedra10.shape != (len(tetrahedra), 10) or not np.array_equal(tetrahedra10[:, :4], tetrahedra):
+            raise ValueError("Quadratic FEM topology must align with the corner tetrahedra.")
+        if np.any(tetrahedra10 < 0) or np.any(tetrahedra10 >= len(points)):
+            raise ValueError("Quadratic FEM topology references unavailable pressure nodes.")
     tetrahedron_density = _tetrahedron_density_kg_per_m3(solved, domain, tetrahedra.shape[0])
 
     availability = np.asarray(solved.completion_mask, dtype=bool) & np.asarray(
@@ -252,6 +264,7 @@ def interior_field_results_from_solved_system(
         frequency_indices=frequency_indices,
         points_m=points,
         tetrahedra=tetrahedra,
+        tetrahedra10=tetrahedra10,
         tetrahedron_density_kg_per_m3=tetrahedron_density,
         pressure_shape_gradients=shape_gradients,
         pressure_by_frequency=pressure,
