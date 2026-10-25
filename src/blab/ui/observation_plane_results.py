@@ -22,8 +22,6 @@ from blab.solve_results import (
     pressure_spl_db,
 )
 
-PARTICLE_VELOCITY_COLOR_LIMIT_M_PER_S = 35.0
-
 
 @dataclass(frozen=True)
 class FieldScalarProjection:
@@ -537,9 +535,15 @@ def project_field_scalars(
     animation_phase_deg: float | None = None,
     normalized_reference_db: float | None = None,
     pressure_color_limit_pa: float | None = None,
+    particle_velocity_limit_m_per_s: float | None = None,
+    spl_min_db: float | None = None,
+    spl_max_db: float | None = None,
+    normalized_spl_range_db: float = 40.0,
 ) -> FieldScalarProjection:
     pressure = np.asarray(pressure)
     display = ObservationPlaneDisplay(display)
+    if not display.supports_cycle_animation:
+        animation_phase_deg = None
     if display == ObservationPlaneDisplay.PARTICLE_VELOCITY:
         if pressure.ndim != 2 or pressure.shape[1] != 3:
             raise ValueError("Particle velocity values must have shape (sample, 3).")
@@ -548,26 +552,36 @@ def project_field_scalars(
             values = complex_magnitude
             title = "Particle Velocity Magnitude (m/s)"
         else:
-            instantaneous = np.real(pressure * np.exp(1j * np.deg2rad(float(animation_phase_deg))))
+            instantaneous = np.sqrt(2.0) * np.real(pressure * np.exp(1j * np.deg2rad(float(animation_phase_deg))))
             values = np.linalg.norm(instantaneous, axis=1)
             title = "Instantaneous Particle Speed (m/s)"
         return FieldScalarProjection(
             values.astype(np.float32, copy=False),
             title,
             "turbo",
-            (0.0, PARTICLE_VELOCITY_COLOR_LIMIT_M_PER_S),
+            (
+                0.0,
+                _pressure_color_limit(
+                    complex_magnitude * (1.0 if animation_phase_deg is None else np.sqrt(2.0)),
+                    particle_velocity_limit_m_per_s,
+                ),
+            ),
         )
     if animation_phase_deg is not None:
-        values = np.real(pressure * np.exp(1j * np.deg2rad(float(animation_phase_deg))))
-        # Keep the animation scale stable for the entire cycle.  The complex
-        # magnitude is the maximum instantaneous amplitude each sample can
-        # reach, so its global maximum is a phase-independent symmetric limit.
-        limit = _pressure_color_limit(np.abs(pressure), pressure_color_limit_pa)
+        values = np.sqrt(2.0) * np.real(pressure * np.exp(1j * np.deg2rad(float(animation_phase_deg))))
+        # RMS phasor magnitudes times sqrt(2) give peak physical pressure.
+        # Use their maximum to keep the colour scale stable throughout the cycle.
+        limit = _pressure_color_limit(np.sqrt(2.0) * np.abs(pressure), pressure_color_limit_pa)
         return FieldScalarProjection(values, "Instantaneous Pressure (Pa)", "coolwarm", (-limit, limit))
     if display == ObservationPlaneDisplay.SPL:
         values = pressure_spl_db(pressure)
         maximum = _finite_max(values, fallback=0.0)
-        return FieldScalarProjection(values, "SPL (dB re 20 µPa)", "turbo", (maximum - 60.0, maximum))
+        return FieldScalarProjection(
+            values,
+            "SPL (dB re 20 µPa)",
+            "turbo",
+            (maximum - 60.0, maximum) if spl_min_db is None else (spl_min_db, spl_max_db),
+        )
     if display == ObservationPlaneDisplay.NORMALIZED_SPL:
         values = pressure_spl_db(pressure)
         reference_db = (
@@ -576,7 +590,7 @@ def project_field_scalars(
             else float(normalized_reference_db)
         )
         values = values - reference_db
-        return FieldScalarProjection(values, "Normalized SPL (dB)", "turbo", (-40.0, 0.0))
+        return FieldScalarProjection(values, "Normalized SPL (dB)", "turbo", (-normalized_spl_range_db, 0.0))
     if display == ObservationPlaneDisplay.PHASE:
         return FieldScalarProjection(phase_deg(pressure), "Phase (degrees)", "twilight", (-180.0, 180.0))
     values = np.real(pressure) if display == ObservationPlaneDisplay.REAL_PRESSURE else np.imag(pressure)

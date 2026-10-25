@@ -73,7 +73,7 @@ class ObservationPlanePropertiesDialog(QDialog):
         self.setMinimumWidth(410)
 
         layout = QVBoxLayout(self)
-        form = QFormLayout()
+        form = self._form = QFormLayout()
         self.name_edit = QLineEdit(self._plane.name)
         form.addRow("Name", self.name_edit)
 
@@ -108,9 +108,11 @@ class ObservationPlanePropertiesDialog(QDialog):
         )
         form.addRow("Arrow density", self.arrow_density_slider)
 
+        self._scale_rows = {}
         for prefix, label, unit, initial in (
             ("velocity", "Instantaneous velocity scale", " m/s", self._plane.velocity_scale_m_per_s),
             ("intensity", "Active intensity scale", " W/m^2", self._plane.intensity_scale_w_per_m2),
+            ("particle_velocity", "Velocity color maximum", " m/s", self._plane.particle_velocity_limit_m_per_s),
         ):
             automatic = QCheckBox("Automatic")
             automatic.setChecked(initial is None)
@@ -120,13 +122,18 @@ class ObservationPlanePropertiesDialog(QDialog):
             limit.setSingleStep(0.01)
             limit.setSuffix(unit)
             limit.setValue(1.0 if initial is None else initial)
-            limit.setToolTip("Full-scale magnitude for arrow length and colour. Values above this limit are saturated.")
+            limit.setToolTip(
+                "Maximum for the velocity colour scale. Values above this limit are saturated."
+                if prefix == "particle_velocity"
+                else "Full-scale magnitude for arrow length and colour. Values above this limit are saturated."
+            )
             setattr(self, f"{prefix}_scale_auto_check", automatic)
             setattr(self, f"{prefix}_scale_spin", limit)
             row = QHBoxLayout()
             row.addWidget(automatic)
             row.addWidget(limit, 1)
             form.addRow(label, row)
+            self._scale_rows[prefix] = row
 
         self.pressure_range_auto_check = QCheckBox("Automatic")
         self.pressure_range_auto_check.setChecked(self._plane.pressure_color_limit_pa is None)
@@ -141,11 +148,40 @@ class ObservationPlanePropertiesDialog(QDialog):
         self.pressure_limit_spin.setToolTip(
             "Set the symmetric pressure color range from -limit to +limit. Values outside it are saturated."
         )
-        pressure_range_row = QHBoxLayout()
+        pressure_range_row = self._pressure_range_row = QHBoxLayout()
         pressure_range_row.addWidget(self.pressure_range_auto_check)
         pressure_range_row.addWidget(QLabel("+/-"))
         pressure_range_row.addWidget(self.pressure_limit_spin, 1)
         form.addRow("Pressure color range", pressure_range_row)
+
+        self.spl_range_auto_check = QCheckBox("Automatic")
+        self.spl_range_auto_check.setToolTip("Use a 60 dB colour range below the current plane maximum.")
+        self.spl_range_auto_check.setChecked(self._plane.spl_min_db is None)
+        self.spl_min_spin = QDoubleSpinBox()
+        self.spl_max_spin = QDoubleSpinBox()
+        for spin in (self.spl_min_spin, self.spl_max_spin):
+            spin.setRange(-1000, 1000)
+            spin.setDecimals(2)
+            spin.setSuffix(" dB")
+        self.spl_min_spin.setValue(60 if self._plane.spl_min_db is None else self._plane.spl_min_db)
+        self.spl_max_spin.setValue(120 if self._plane.spl_max_db is None else self._plane.spl_max_db)
+        self.spl_min_spin.setMaximum(self.spl_max_spin.value() - 0.01)
+        self.spl_max_spin.setMinimum(self.spl_min_spin.value() + 0.01)
+        self.spl_min_spin.valueChanged.connect(lambda value: self.spl_max_spin.setMinimum(value + 0.01))
+        self.spl_max_spin.valueChanged.connect(lambda value: self.spl_min_spin.setMaximum(value - 0.01))
+        self._spl_range_row = QHBoxLayout()
+        self._spl_range_row.addWidget(self.spl_range_auto_check)
+        self._spl_range_row.addWidget(self.spl_min_spin)
+        self._spl_range_row.addWidget(QLabel("to"))
+        self._spl_range_row.addWidget(self.spl_max_spin)
+        form.addRow("SPL color range", self._spl_range_row)
+        self.normalized_range_spin = QDoubleSpinBox()
+        self.normalized_range_spin.setDecimals(2)
+        self.normalized_range_spin.setRange(0.01, 1000)
+        self.normalized_range_spin.setSuffix(" dB")
+        self.normalized_range_spin.setValue(self._plane.normalized_spl_range_db)
+        self.normalized_range_spin.setToolTip("Colour range below the plane maximum: -range to 0 dB.")
+        form.addRow("Normalized SPL range", self.normalized_range_spin)
 
         self.rendering_combo = QComboBox()
         for value, label in INTERIOR_RENDERING_LABELS.items():
@@ -159,7 +195,7 @@ class ObservationPlanePropertiesDialog(QDialog):
         layout.addLayout(form)
 
         results_group = QGroupBox("Solved Result")
-        results_form = QFormLayout(results_group)
+        results_form = self._results_form = QFormLayout(results_group)
         self.frequency_slider = QSlider(Qt.Horizontal)
         self.frequency_slider.setRange(0, max(len(self._solved_frequencies_hz) - 1, 0))
         self.frequency_slider.setEnabled(bool(self._solved_frequencies_hz))
@@ -184,18 +220,22 @@ class ObservationPlanePropertiesDialog(QDialog):
         self.response_combo.setEnabled(bool(self._solved_frequencies_hz))
         results_form.addRow("Response", self.response_combo)
 
-        self.animate_button = QPushButton("Animate Phase")
+        self.animate_button = QPushButton("Animate Cycle")
         self.animate_button.setCheckable(True)
+        self.animate_button.setToolTip(
+            "Animate one acoustic cycle at the selected frequency. Speed controls playback, not the solved frequency."
+        )
         self.animate_button.setEnabled(bool(self._solved_frequencies_hz))
         self.animation_speed_slider = QSlider(Qt.Horizontal)
         self.animation_speed_slider.setRange(1, 40)
         self.animation_speed_slider.setValue(round(self._plane.animation_speed_hz * 10.0))
         self.animation_speed_slider.setEnabled(False)
-        animation_row = QHBoxLayout()
+        animation_row = self._animation_row = QHBoxLayout()
         animation_row.addWidget(self.animate_button)
-        animation_row.addWidget(QLabel("Speed"))
+        self._animation_speed_label = QLabel("Speed")
+        animation_row.addWidget(self._animation_speed_label)
         animation_row.addWidget(self.animation_speed_slider, 1)
-        results_form.addRow("Phase", animation_row)
+        results_form.addRow("Cycle", animation_row)
 
         self.frequency_sweep_button = QPushButton("Sweep Frequency")
         self.frequency_sweep_button.setCheckable(True)
@@ -206,7 +246,8 @@ class ObservationPlanePropertiesDialog(QDialog):
         self.frequency_sweep_speed_slider.setEnabled(False)
         sweep_row = QHBoxLayout()
         sweep_row.addWidget(self.frequency_sweep_button)
-        sweep_row.addWidget(QLabel("Steps/s"))
+        self._sweep_speed_label = QLabel("Steps/s")
+        sweep_row.addWidget(self._sweep_speed_label)
         sweep_row.addWidget(self.frequency_sweep_speed_slider, 1)
         results_form.addRow("Frequency sweep", sweep_row)
         layout.addWidget(results_group)
@@ -222,6 +263,8 @@ class ObservationPlanePropertiesDialog(QDialog):
         self.pressure_range_auto_check.toggled.connect(self._refresh_dependent_controls)
         self.velocity_scale_auto_check.toggled.connect(self._refresh_dependent_controls)
         self.intensity_scale_auto_check.toggled.connect(self._refresh_dependent_controls)
+        self.particle_velocity_scale_auto_check.toggled.connect(self._refresh_dependent_controls)
+        self.spl_range_auto_check.toggled.connect(self._refresh_dependent_controls)
         self.frequency_slider.valueChanged.connect(self._refresh_frequency_label)
         self._frequency_preview_timer = QTimer(self)
         self._frequency_preview_timer.setSingleShot(True)
@@ -250,6 +293,12 @@ class ObservationPlanePropertiesDialog(QDialog):
             self.velocity_scale_spin.valueChanged,
             self.intensity_scale_auto_check.toggled,
             self.intensity_scale_spin.valueChanged,
+            self.particle_velocity_scale_auto_check.toggled,
+            self.particle_velocity_scale_spin.valueChanged,
+            self.spl_range_auto_check.toggled,
+            self.spl_min_spin.valueChanged,
+            self.spl_max_spin.valueChanged,
+            self.normalized_range_spin.valueChanged,
             self.pressure_range_auto_check.toggled,
             self.pressure_limit_spin.valueChanged,
             self.rendering_combo.currentIndexChanged,
@@ -283,6 +332,14 @@ class ObservationPlanePropertiesDialog(QDialog):
             intensity_scale_w_per_m2=(
                 None if self.intensity_scale_auto_check.isChecked() else self.intensity_scale_spin.value()
             ),
+            particle_velocity_limit_m_per_s=(
+                None
+                if self.particle_velocity_scale_auto_check.isChecked()
+                else self.particle_velocity_scale_spin.value()
+            ),
+            spl_min_db=None if self.spl_range_auto_check.isChecked() else self.spl_min_spin.value(),
+            spl_max_db=None if self.spl_range_auto_check.isChecked() else self.spl_max_spin.value(),
+            normalized_spl_range_db=self.normalized_range_spin.value(),
             interior_rendering=InteriorRenderingMode(self.rendering_combo.currentData()),
             invert_clip_side=self.invert_clip_check.isChecked(),
             response_id=str(self.response_combo.currentData() or "system"),
@@ -368,40 +425,61 @@ class ObservationPlanePropertiesDialog(QDialog):
                 item.setEnabled(interior_only)
         if not interior_only and self.display_combo.currentData() in {d.value for d in interior_displays}:
             self._select_data(self.display_combo, ObservationPlaneDisplay.SPL.value)
-        flow = self.display_combo.currentData() == ObservationPlaneDisplay.FLOW_ARROWS.value
+        display = ObservationPlaneDisplay(self.display_combo.currentData())
+        supports_cycle = display.supports_cycle_animation
+        if not supports_cycle and self.animate_button.isChecked():
+            self.animate_button.setChecked(False)
+        animated = supports_cycle and self.animate_button.isChecked()
+        self.animate_button.setEnabled(supports_cycle and bool(self._solved_frequencies_hz))
+        self._results_form.setRowVisible(self._animation_row, supports_cycle)
+        self.animation_speed_slider.setVisible(animated)
+        self._animation_speed_label.setVisible(animated)
+        flow = display == ObservationPlaneDisplay.FLOW_ARROWS
         self.arrow_density_slider.setEnabled(flow)
-        for prefix in ("velocity", "intensity"):
-            automatic = getattr(self, f"{prefix}_scale_auto_check")
-            automatic.setEnabled(flow)
-            getattr(self, f"{prefix}_scale_spin").setEnabled(flow and not automatic.isChecked())
-        supports_interior = plane_type in {
-            ObservationPlaneType.INTERIOR.value,
-            ObservationPlaneType.COMBINED.value,
+        self._form.setRowVisible(self.arrow_density_slider, flow)
+        scale_visibility = {
+            "velocity": flow and animated,
+            "intensity": flow and not animated,
+            "particle_velocity": display == ObservationPlaneDisplay.PARTICLE_VELOCITY,
         }
+        for prefix, visible in scale_visibility.items():
+            self._form.setRowVisible(self._scale_rows[prefix], visible)
+            automatic = getattr(self, f"{prefix}_scale_auto_check")
+            automatic.setEnabled(visible)
+            getattr(self, f"{prefix}_scale_spin").setEnabled(visible and not automatic.isChecked())
+        velocity_label = self._form.labelForField(self._scale_rows["particle_velocity"])
+        velocity_label.setText("Instantaneous speed maximum" if animated else "Velocity magnitude maximum")
+        supports_interior = plane_type in {ObservationPlaneType.INTERIOR.value, ObservationPlaneType.COMBINED.value}
         combined = plane_type == ObservationPlaneType.COMBINED.value
         if combined and self.rendering_combo.currentData() != InteriorRenderingMode.SMOOTH_FIELD.value:
             self._select_data(self.rendering_combo, InteriorRenderingMode.SMOOTH_FIELD.value)
-        # A combined element view would mix FEM cell shading with a sampled
-        # exterior surface. Keep the first implementation as one continuous,
-        # consistently scaled smooth field.
-        self.rendering_combo.setEnabled(supports_interior and not combined and not flow)
-        self.invert_clip_check.setEnabled(supports_interior)
+        rendering = supports_interior and not combined and not flow
+        self.rendering_combo.setEnabled(rendering)
+        self._form.setRowVisible(self.rendering_combo, rendering)
         element_field = (
             supports_interior and self.rendering_combo.currentData() == InteriorRenderingMode.ELEMENT_FIELD.value
         )
-        self.resolution_spin.setEnabled(not element_field and not flow)
-        pressure_display = self.display_combo.currentData() in {
-            ObservationPlaneDisplay.REAL_PRESSURE.value,
-            ObservationPlaneDisplay.IMAGINARY_PRESSURE.value,
+        clipping = supports_interior and (flow or not element_field)
+        self.invert_clip_check.setEnabled(clipping)
+        self._form.setRowVisible(self.invert_clip_check, clipping)
+        resolution = not element_field and not flow
+        self.resolution_spin.setEnabled(resolution)
+        self._form.setRowVisible(self.resolution_spin, resolution)
+        pressure_display = display in {
+            ObservationPlaneDisplay.REAL_PRESSURE,
+            ObservationPlaneDisplay.IMAGINARY_PRESSURE,
         }
-        velocity_display = self.display_combo.currentData() == ObservationPlaneDisplay.PARTICLE_VELOCITY.value
-        pressure_controls_available = (
-            not flow and not velocity_display and (pressure_display or self.animate_button.isChecked())
-        )
-        self.pressure_range_auto_check.setEnabled(pressure_controls_available)
-        self.pressure_limit_spin.setEnabled(
-            pressure_controls_available and not self.pressure_range_auto_check.isChecked()
-        )
+        self._form.setRowVisible(self._pressure_range_row, pressure_display)
+        self.pressure_range_auto_check.setEnabled(pressure_display)
+        self.pressure_limit_spin.setEnabled(pressure_display and not self.pressure_range_auto_check.isChecked())
+        spl_display = display == ObservationPlaneDisplay.SPL
+        self._form.setRowVisible(self._spl_range_row, spl_display)
+        self.spl_range_auto_check.setEnabled(spl_display)
+        for spin in (self.spl_min_spin, self.spl_max_spin):
+            spin.setEnabled(spl_display and not self.spl_range_auto_check.isChecked())
+        self._form.setRowVisible(self.normalized_range_spin, display == ObservationPlaneDisplay.NORMALIZED_SPL)
+        self.layout().activate()
+        self.resize(self.width(), self.sizeHint().height())
 
     def _refresh_frequency_label(self) -> None:
         if not self._solved_frequencies_hz:
@@ -426,6 +504,8 @@ class ObservationPlanePropertiesDialog(QDialog):
         available = len(self._solved_frequencies_hz) > 1
         checked = available and self.frequency_sweep_button.isChecked()
         self.frequency_sweep_speed_slider.setEnabled(checked)
+        self.frequency_sweep_speed_slider.setVisible(checked)
+        self._sweep_speed_label.setVisible(checked)
         if not checked:
             self._frequency_sweep_timer.stop()
             return

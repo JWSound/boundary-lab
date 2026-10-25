@@ -238,7 +238,7 @@ def test_properties_dialog_disables_particle_velocity_outside_interior_planes(qa
 def test_properties_dialog_selects_and_previews_solved_frequency(qapp) -> None:
     from blab.ui.observation_plane_dialog import ObservationPlanePropertiesDialog
 
-    plane = replace(new_observation_plane("Plane"), frequency_hz=900.0)
+    plane = replace(new_observation_plane("Plane"), frequency_hz=900.0, display=ObservationPlaneDisplay.REAL_PRESSURE)
     dialog = ObservationPlanePropertiesDialog(
         plane,
         solved_frequencies_hz=(10_000.0, 100.0, 1000.0),
@@ -369,7 +369,7 @@ def test_frequency_sweep_and_phase_animation_are_mutually_exclusive(qapp) -> Non
     from blab.ui.observation_plane_dialog import ObservationPlanePropertiesDialog
 
     dialog = ObservationPlanePropertiesDialog(
-        new_observation_plane("Sweep"),
+        replace(new_observation_plane("Sweep"), display=ObservationPlaneDisplay.REAL_PRESSURE),
         solved_frequencies_hz=(100.0, 200.0),
     )
     try:
@@ -1169,15 +1169,15 @@ def test_field_scalar_projection_uses_stable_ranges_and_animation_phase() -> Non
     normalized = project_field_scalars(pressure, ObservationPlaneDisplay.NORMALIZED_SPL)
     animated = project_field_scalars(
         pressure,
-        ObservationPlaneDisplay.SPL,
+        ObservationPlaneDisplay.REAL_PRESSURE,
         animation_phase_deg=90.0,
     )
     phase = project_field_scalars(pressure, ObservationPlaneDisplay.PHASE)
 
     assert normalized.clim == (-40.0, 0.0)
     np.testing.assert_allclose(normalized.values, [0.0, 0.0])
-    np.testing.assert_allclose(animated.values, [0.0, -1.0], atol=1e-12)
-    assert animated.clim == (-1.0, 1.0)
+    np.testing.assert_allclose(animated.values, [0.0, -np.sqrt(2.0)], atol=1e-12)
+    assert animated.clim == pytest.approx((-np.sqrt(2.0), np.sqrt(2.0)))
     np.testing.assert_allclose(phase.values, [0.0, 90.0], atol=1e-12)
 
     stronger_pressure = np.asarray([2.0 + 0.0j, 0.0 + 1.0j])
@@ -1196,15 +1196,15 @@ def test_field_scalar_projection_uses_stable_ranges_and_animation_phase() -> Non
 
     at_zero = project_field_scalars(
         stronger_pressure,
-        ObservationPlaneDisplay.SPL,
+        ObservationPlaneDisplay.REAL_PRESSURE,
         animation_phase_deg=0.0,
     )
     at_ninety = project_field_scalars(
         stronger_pressure,
-        ObservationPlaneDisplay.SPL,
+        ObservationPlaneDisplay.REAL_PRESSURE,
         animation_phase_deg=90.0,
     )
-    assert at_zero.clim == at_ninety.clim == (-2.0, 2.0)
+    assert at_zero.clim == at_ninety.clim == pytest.approx((-2 * np.sqrt(2.0), 2 * np.sqrt(2.0)))
 
     manual = project_field_scalars(
         stronger_pressure,
@@ -1213,7 +1213,7 @@ def test_field_scalar_projection_uses_stable_ranges_and_animation_phase() -> Non
     )
     animated_manual = project_field_scalars(
         stronger_pressure,
-        ObservationPlaneDisplay.SPL,
+        ObservationPlaneDisplay.REAL_PRESSURE,
         animation_phase_deg=90.0,
         pressure_color_limit_pa=0.5,
     )
@@ -1236,9 +1236,10 @@ def test_field_scalar_projection_uses_stable_ranges_and_animation_phase() -> Non
         animation_phase_deg=90.0,
     )
     np.testing.assert_allclose(velocity_magnitude.values, [5.0, 5.0])
-    np.testing.assert_allclose(velocity_at_zero.values, [5.0, 0.0], atol=1e-6)
-    np.testing.assert_allclose(velocity_at_ninety.values, [0.0, 5.0], atol=1e-6)
-    assert velocity_magnitude.clim == velocity_at_zero.clim == velocity_at_ninety.clim == (0.0, 35.0)
+    np.testing.assert_allclose(velocity_at_zero.values, [5.0 * np.sqrt(2.0), 0.0], atol=1e-6)
+    np.testing.assert_allclose(velocity_at_ninety.values, [0.0, 5.0 * np.sqrt(2.0)], atol=1e-6)
+    assert velocity_magnitude.clim == (0.0, 5.0)
+    assert velocity_at_zero.clim == velocity_at_ninety.clim == pytest.approx((0.0, 5.0 * np.sqrt(2.0)))
     assert velocity_magnitude.title == "Particle Velocity Magnitude (m/s)"
 
 
@@ -1286,7 +1287,7 @@ def test_animation_frame_updates_scalars_without_rebuilding_scene(association: s
         _ActiveFieldState,
     )
 
-    plane = new_observation_plane("Animated")
+    plane = replace(new_observation_plane("Animated"), display=ObservationPlaneDisplay.REAL_PRESSURE)
     pressure = np.asarray([2.0 + 0.0j, 0.0 + 1.0j])
     mesh = pv.PolyData(np.asarray([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]))
     attributes = mesh.cell_data if association == "cell" else mesh.point_data
@@ -1302,7 +1303,7 @@ def test_animation_frame_updates_scalars_without_rebuilding_scene(association: s
     updated = ObservationPlaneViewport._update_animation_frame(editor, plane)
 
     assert updated
-    np.testing.assert_allclose(attributes[FIELD_SCALAR_NAME], [0.0, -1.0], atol=1e-12)
+    np.testing.assert_allclose(attributes[FIELD_SCALAR_NAME], [0.0, -np.sqrt(2.0)], atol=1e-12)
     assert viewer.render_calls == 1
 
 
@@ -1573,6 +1574,7 @@ def test_result_selection_changes_use_fast_viewport_update() -> None:
     updated = replace(original, frequency_hz=200.0)
     calls = []
     editor = SimpleNamespace(
+        _animation_plane_id=None,
         _planes=(original,),
         _selected_id=original.id,
         _active_id=None,
@@ -1612,6 +1614,7 @@ def test_plane_sync_prunes_only_plane_owned_field_cache_entries() -> None:
     shared_boundary = object()
     retained_plane_geometry = object()
     editor = SimpleNamespace(
+        _animation_plane_id=None,
         _planes=(plane,),
         _selected_id=plane.id,
         _active_id=None,
@@ -1662,7 +1665,9 @@ def test_active_plane_animation_continues_without_selection(monkeypatch) -> None
     import blab.ui.observation_plane_viewport as viewport_module
     from blab.ui.observation_plane_viewport import ObservationPlaneViewport
 
-    plane = replace(new_observation_plane("Pinned"), animation_speed_hz=2.0)
+    plane = replace(
+        new_observation_plane("Pinned"), animation_speed_hz=2.0, display=ObservationPlaneDisplay.REAL_PRESSURE
+    )
     updates = []
     editor = SimpleNamespace(
         _planes=(plane,),

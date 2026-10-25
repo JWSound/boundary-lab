@@ -250,6 +250,11 @@ class ObservationPlaneViewport(QObject):
         previous_planes = self._planes
         previous_selected_id = self._selected_id
         self._planes = validated
+        animated = next((p for p in validated if p.id == self._animation_plane_id), None)
+        if self._animation_plane_id is not None and (animated is None or not animated.display.supports_cycle_animation):
+            self._animation_plane_id = None
+            self._animation_timer.stop()
+            self._animation_phase_deg = 0.0
         available_ids = {plane.id for plane in self._planes}
         if self._active_id not in available_ids:
             self._active_id = None
@@ -428,6 +433,8 @@ class ObservationPlaneViewport(QObject):
         self._exterior_request_meshes.pop(key, None)
 
     def set_animation(self, plane_id: str | None, enabled: bool) -> None:
+        plane = next((candidate for candidate in self._planes if candidate.id == plane_id), None)
+        enabled = enabled and plane is not None and plane.display.supports_cycle_animation
         if not enabled or plane_id is None or self._field_results is None:
             if self._animation_plane_id is None and not self._animation_timer.isActive():
                 return
@@ -1706,6 +1713,10 @@ class ObservationPlaneViewport(QObject):
             animation_phase_deg=animation_phase_deg,
             normalized_reference_db=normalized_reference,
             pressure_color_limit_pa=plane.pressure_color_limit_pa,
+            particle_velocity_limit_m_per_s=plane.particle_velocity_limit_m_per_s,
+            spl_min_db=plane.spl_min_db,
+            spl_max_db=plane.spl_max_db,
+            normalized_spl_range_db=plane.normalized_spl_range_db,
         )
 
     def _add_colored_field_actor(
@@ -1925,7 +1936,12 @@ class ObservationPlaneViewport(QObject):
             (candidate for candidate in self._planes if candidate.id == self._animation_plane_id),
             None,
         )
-        if plane is None or self._animation_plane_id != plane.id or self._field_results is None:
+        if (
+            plane is None
+            or not plane.display.supports_cycle_animation
+            or self._animation_plane_id != plane.id
+            or self._field_results is None
+        ):
             self.set_animation(None, False)
             return
         now = time.monotonic()
@@ -2316,6 +2332,10 @@ def _result_selection_update(
             pressure_color_limit_pa=old.pressure_color_limit_pa,
             velocity_scale_m_per_s=old.velocity_scale_m_per_s,
             intensity_scale_w_per_m2=old.intensity_scale_w_per_m2,
+            particle_velocity_limit_m_per_s=old.particle_velocity_limit_m_per_s,
+            spl_min_db=old.spl_min_db,
+            spl_max_db=old.spl_max_db,
+            normalized_spl_range_db=old.normalized_spl_range_db,
         )
         if comparable != old:
             return None
@@ -2325,6 +2345,10 @@ def _result_selection_update(
             or old.pressure_color_limit_pa != new.pressure_color_limit_pa
             or old.velocity_scale_m_per_s != new.velocity_scale_m_per_s
             or old.intensity_scale_w_per_m2 != new.intensity_scale_w_per_m2
+            or old.particle_velocity_limit_m_per_s != new.particle_velocity_limit_m_per_s
+            or old.spl_min_db != new.spl_min_db
+            or old.spl_max_db != new.spl_max_db
+            or old.normalized_spl_range_db != new.normalized_spl_range_db
         )
         state_changed = old.animation_speed_hz != new.animation_speed_hz
     if field_changed:
