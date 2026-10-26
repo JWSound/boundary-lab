@@ -44,7 +44,7 @@ FIELD_MESSAGE_ACTOR_NAME = "observation-plane:field-message"
 FIELD_SCALAR_NAME = "observation-plane-field"
 MOVE_LENGTH_PX = 168.0
 RESIZE_HALF_SIZE_PX = 10.0
-PLANE_FIELD_CACHE_KINDS = frozenset({"smooth", "element", "combined", "exterior", "exterior-mask"})
+PLANE_FIELD_CACHE_KINDS = frozenset({"smooth", "element", "combined", "exterior", "exterior-mask", "flow", "vector"})
 PARTICLE_VELOCITY_SCALAR_BAR_TITLE = "Particle Velocity\nMagnitude (m/s)\n "
 SCALAR_BAR_MIN_POSITION_X = 0.70
 SCALAR_BAR_MAX_POSITION_X = 0.84
@@ -88,6 +88,19 @@ class _FlowGeometry:
 
 
 @dataclass(frozen=True)
+class _VectorFieldGeometry:
+    mesh: object
+    anchors: np.ndarray
+    fem_point_ids: np.ndarray
+    source_tetrahedron_ids: np.ndarray
+    interpolation_weights: np.ndarray
+    vector_signs: np.ndarray
+    exterior_point_ids: np.ndarray
+    clipped: object | None
+    spacing: float
+
+
+@dataclass(frozen=True)
 class _SmoothFieldGeometry:
     mesh: object
     source_node_ids: np.ndarray
@@ -105,6 +118,7 @@ class _CombinedFieldGeometry:
     interpolation_weights: np.ndarray
     exterior_point_ids: np.ndarray
     clipped: object
+    source_tetrahedron_ids: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
@@ -420,7 +434,7 @@ class ObservationPlaneViewport(QObject):
             LOGGER.info("Discarded stale exterior field result: key=%s", key)
             self._exterior_request_meshes.pop(key, None)
             return
-        values = np.asarray(pressure, dtype=np.complex64)
+        values = np.asarray(pressure)
         mesh = self._exterior_request_meshes.pop(key, None)
         plane = self._field_plane()
         current_key = None
@@ -434,6 +448,7 @@ class ObservationPlaneViewport(QObject):
                 current_key = None
         if (
             current_key is not None
+            and not _is_vector_display(plane)
             and key != current_key
             and self._can_stream_exterior_field_result(plane, key, current_key)
         ):
@@ -1035,6 +1050,8 @@ class ObservationPlaneViewport(QObject):
         return geometry.mesh, values, "point", geometry.clipped
 
     def _flow_geometry(self, plane: ObservationPlane) -> _FlowGeometry:
+        if plane.plane_type != ObservationPlaneType.INTERIOR:
+            return self._vector_field_geometry(plane)
         results = self._field_results.interior
         signature = (
             self._field_generation,
@@ -1094,7 +1111,159 @@ class ObservationPlaneViewport(QObject):
         reference = _flow_scale_reference(plane, phase, reference)
         mesh.points = flow_arrow_points(geometry.anchors, vectors, normal, geometry.spacing, reference)
 
+    def _vector_field_geometry(self, plane: ObservationPlane) -> _VectorFieldGeometry:
+        exterior = None if self._field_results is None else self._field_results.exterior
+        if exterior is None:
+            raise ValueError("No exterior field results are available.")
+        if exterior.backend_id not in {"beat_cpu", "beat_cuda"}:
+            raise ValueError("Exterior velocity fields require BEAT CPU or CUDA.")
+        interior = self._field_results.interior if plane.plane_type == ObservationPlaneType.COMBINED else None
+        if plane.plane_type == ObservationPlaneType.COMBINED and interior is None:
+            raise ValueError("No interior field results are available.")
+        signature = (
+            self._field_generation,
+            plane.center_m,
+            plane.orientation_wxyz,
+            plane.width_m,
+            plane.height_m,
+            plane.resolution_m,
+            plane.arrow_density,
+            plane.display,
+            plane.plane_type,
+            plane.invert_clip_side,
+            exterior.run_id,
+        )
+        key = ("vector", plane.id)
+        cached = self._field_cache.get(key)
+        if cached is not None and cached[0] == signature:
+            return cached[1]
+        pv = __import__("pyvista")
+        arrows = plane.display == ObservationPlaneDisplay.FLOW_ARROWS
+        spacing = max(plane.width_m, plane.height_m) / plane.arrow_density if arrows else plane.resolution_m
+        if arrows:
+            nx, ny = plane.arrow_sample_shape
+            u, v, _ = plane.local_axes
+            x, y = np.meshgrid((np.arange(nx) - (nx - 1) / 2) * spacing, (np.arange(ny) - (ny - 1) / 2) * spacing)
+            anchors = np.asarray(plane.center_m) + x.reshape(-1, 1) * u + y.reshape(-1, 1) * v
+        else:
+            sample_mesh = _sample_plane_polydata(pv, plane)
+            anchors = np.array(sample_mesh.points)
+        sample = pv.PolyData(anchors)
+        expanded_ids = np.full(len(anchors), -1, dtype=np.int64)
+        volume = None
+        clipped = None
+        if interior is not None:
+            volume = self._fem_volume_geometry(interior.points_m, interior.tetrahedra, interior.symmetry)
+            expanded_ids = np.asarray(volume.volume.find_containing_cell(anchors), dtype=np.int64)
+            clipped = volume.volume.clip(
+                normal=plane.local_axes[2], origin=plane.center_m, invert=plane.invert_clip_side
+            )
+        boundary = self._combined_boundary_mesh(exterior)
+        enclosed = sample.select_interior_points(
+            boundary, method="cell_locator", locator_tolerance=1e-6, check_surface=False
+        )
+        inside = np.asarray(enclosed.point_data["selected_points"], dtype=bool)
+        _, closest = boundary.find_closest_cell(anchors, return_closest_point=True)
+        near = np.linalg.norm(anchors - np.asarray(closest), axis=1) <= max(1e-7, spacing * 0.25)
+        # FEM samples take precedence at the interface. Avoid evaluating the
+        # exterior representation on its singular boundary or inside solids.
+        fem = expanded_ids >= 0
+        outside = ~fem & ~inside & ~near
+        valid = fem | outside
+        if not np.any(valid):
+            raise ValueError("The observation plane contains no acoustic samples.")
+        if arrows:
+            anchors, expanded_ids = anchors[valid], expanded_ids[valid]
+            fem, outside = fem[valid], outside[valid]
+            mesh = pv.PolyData(np.repeat(anchors, 6, axis=0))
+            mesh.verts = np.empty(0, dtype=np.int64)
+            mesh.lines = np.column_stack((np.full(len(anchors) * 3, 2), np.arange(len(anchors) * 6).reshape(-1, 2)))
+        else:
+            faces = np.asarray(sample_mesh.faces).reshape(-1, 5)[:, 1:]
+            faces = faces[np.all(valid[faces], axis=1)]
+            if not len(faces):
+                raise ValueError("The observation plane contains no resolved acoustic cells.")
+            mesh = pv.PolyData(anchors, np.column_stack((np.full(len(faces), 4), faces)).reshape(-1))
+        fem_ids, outside_ids = np.flatnonzero(fem), np.flatnonzero(outside)
+        ids = expanded_ids[fem_ids]
+        bary = np.empty((0, 4))
+        signs = np.empty((0, 3))
+        if len(fem_ids):
+            bary = _tetrahedral_interpolation_weights(
+                anchors[fem_ids], volume.expanded_points[volume.expanded_tetrahedra[ids]]
+            )
+            signs = _symmetry_image_signs(interior.symmetry)[ids // len(interior.tetrahedra)]
+            ids = ids % len(interior.tetrahedra)
+        geometry = _VectorFieldGeometry(mesh, anchors, fem_ids, ids, bary, signs, outside_ids, clipped, spacing)
+        self._field_cache[key] = (signature, geometry)
+        return geometry
+
+    def _vector_field_values(self, plane, geometry, exterior_values):
+        """Join complex FEM velocity and BEM gradients before scalar projection."""
+        if np.asarray(exterior_values).shape != (len(geometry.exterior_point_ids), 4):
+            raise ValueError("Exterior pressure and gradient do not align with the plane samples.")
+        frequency = float(self._exterior_key_for_plane(plane)[8])
+        values = np.zeros((len(geometry.anchors), 4), dtype=np.complex128)
+        if len(geometry.fem_point_ids):
+            pressure, velocity = self._field_results.interior.sample_fields(
+                frequency, plane.response_id, geometry.source_tetrahedron_ids, geometry.interpolation_weights
+            )
+            values[geometry.fem_point_ids, 0] = pressure
+            values[geometry.fem_point_ids, 1:] = velocity * geometry.vector_signs
+        values[geometry.exterior_point_ids, 0] = exterior_values[:, 0]
+        density = self._field_results.exterior.density_kg_per_m3
+        # The retained traces and FEM fields both use exp(+i omega t).
+        values[geometry.exterior_point_ids, 1:] = exterior_values[:, 1:] / (-1j * 2 * np.pi * frequency * density)
+        return values if plane.display == ObservationPlaneDisplay.FLOW_ARROWS else values[:, 1:]
+
+    def _add_vector_field(self, plane):
+        try:
+            geometry = self._vector_field_geometry(plane)
+            if geometry.clipped is not None:
+                self._add_clipped_fem_volume(plane, geometry.clipped)
+            key = self._exterior_key_for_plane(plane)
+            values = self._exterior_results.get(key) if len(geometry.exterior_point_ids) else np.empty((0, 4), complex)
+            if values is None:
+                if key in self._exterior_failures:
+                    self._field_message = self._exterior_failures[key]
+                else:
+                    self._request_exterior_field_for_plane(plane, mesh=geometry)
+                return geometry.clipped is not None
+            self._add_colored_field_actor(
+                geometry.mesh,
+                self._vector_field_values(plane, geometry, values),
+                plane,
+                association="point",
+                name=f"observation-plane:field:vector:{plane.id}",
+            )
+            return geometry.clipped is not None
+        except (KeyError, RuntimeError, TypeError, ValueError) as exc:
+            self._field_message = f"Velocity field unavailable: {exc}"
+            return False
+
+    def _apply_vector_field_result(self, plane, values, *, geometry=None):
+        geometry = self._vector_field_geometry(plane) if geometry is None else geometry
+        fields = self._vector_field_values(plane, geometry, values)
+        state = self._active_field
+        if state is not None and state.plane_id == plane.id and state.mesh is geometry.mesh:
+            phase = self._animation_phase_deg if self._animation_plane_id == plane.id else None
+            if plane.display == ObservationPlaneDisplay.FLOW_ARROWS:
+                self._update_flow_points(plane, geometry.mesh, fields, phase)
+            projection = ObservationPlaneViewport._project_field_scalars(self, fields, plane, animation_phase_deg=phase)
+            _update_mesh_scalars(geometry.mesh, "point", projection.values)
+            state.pressure, state.plane = fields, plane
+            state.actor.GetMapper().SetScalarRange(*projection.clim)
+        else:
+            self._remove_active_field_actor()
+            self._add_colored_field_actor(
+                geometry.mesh, fields, plane, association="point", name=f"observation-plane:field:vector:{plane.id}"
+            )
+        self.viewer.render()
+        return True
+
     def _add_exterior_field(self, plane: ObservationPlane) -> bool:
+        if _is_vector_display(plane):
+            return self._add_vector_field(plane)
         results = None if self._field_results is None else self._field_results.exterior
         if results is None and self._field_results is not None and plane.plane_type == ObservationPlaneType.EXTERIOR:
             self._field_message = "Exterior field data was not retained; solve again with this plane configured."
@@ -1129,6 +1298,8 @@ class ObservationPlaneViewport(QObject):
             return False
 
     def _add_combined_field(self, plane: ObservationPlane) -> bool:
+        if _is_vector_display(plane):
+            return self._add_vector_field(plane)
         interior = None if self._field_results is None else self._field_results.interior
         exterior = None if self._field_results is None else self._field_results.exterior
         if interior is None or exterior is None:
@@ -1211,7 +1382,8 @@ class ObservationPlaneViewport(QObject):
             frequency = float(frequencies[int(np.argmin(np.abs(frequencies - requested)))])
         else:
             frequency = results.resolved_frequency(plane.frequency_hz)
-        return _exterior_field_key(self._field_synthesis_generation, results.run_id, plane, frequency)
+        key = _exterior_field_key(self._field_synthesis_generation, results.run_id, plane, frequency)
+        return key + ("vector", plane.display.value, plane.arrow_density) if _is_vector_display(plane) else key
 
     def _request_exterior_field_for_plane(self, plane: ObservationPlane, *, mesh=None) -> tuple[object, ...] | None:
         results = None if self._field_results is None else self._field_results.exterior
@@ -1235,7 +1407,9 @@ class ObservationPlaneViewport(QObject):
         if key in self._exterior_pending:
             return key
         geometry = self._field_request_geometry(plane) if mesh is None else mesh
-        if plane.plane_type == ObservationPlaneType.COMBINED:
+        if _is_vector_display(plane):
+            detached_points = np.array(geometry.anchors[geometry.exterior_point_ids], dtype=np.float64, copy=True)
+        elif plane.plane_type == ObservationPlaneType.COMBINED:
             detached_points = np.array(
                 geometry.mesh.points[geometry.exterior_point_ids],
                 dtype=np.float32,
@@ -1266,6 +1440,7 @@ class ObservationPlaneViewport(QObject):
                     frequency_hz=frequency,
                     sound_speed_m_per_s=results.sound_speed_m_per_s,
                     symmetry=results.traces.symmetry,
+                    pressure_gradient=_is_vector_display(plane),
                 ),
             )
         )
@@ -1280,6 +1455,8 @@ class ObservationPlaneViewport(QObject):
             self._request_exterior_field_for_plane(plane)
 
     def _field_request_geometry(self, plane: ObservationPlane):
+        if _is_vector_display(plane):
+            return self._vector_field_geometry(plane)
         if plane.plane_type == ObservationPlaneType.COMBINED:
             interior = None if self._field_results is None else self._field_results.interior
             exterior = None if self._field_results is None else self._field_results.exterior
@@ -1312,6 +1489,8 @@ class ObservationPlaneViewport(QObject):
         *,
         mesh=None,
     ) -> bool:
+        if _is_vector_display(plane):
+            return self._apply_vector_field_result(plane, pressure, geometry=mesh)
         mesh = self._exterior_plane_mesh(plane) if mesh is None else mesh
         if pressure.shape != (mesh.n_points,):
             return False
@@ -1361,6 +1540,8 @@ class ObservationPlaneViewport(QObject):
         *,
         geometry=None,
     ) -> bool:
+        if _is_vector_display(plane):
+            return self._apply_vector_field_result(plane, exterior_pressure, geometry=geometry)
         interior = None if self._field_results is None else self._field_results.interior
         exterior = None if self._field_results is None else self._field_results.exterior
         if interior is None or exterior is None:
@@ -1420,12 +1601,10 @@ class ObservationPlaneViewport(QObject):
         if exterior_values.shape != (geometry.exterior_point_ids.size,):
             raise ValueError("Evaluated exterior pressure does not align with the combined field domain.")
         frequency = float(self._exterior_key_for_plane(plane)[8])
-        nodal_pressure = interior.pressure(frequency, plane.response_id)
         pressure = np.full(geometry.mesh.n_points, np.nan + 1j * np.nan, dtype=np.complex64)
-        pressure[geometry.fem_point_ids] = np.sum(
-            nodal_pressure[geometry.source_node_ids] * geometry.interpolation_weights,
-            axis=1,
-        )
+        pressure[geometry.fem_point_ids] = interior.sample_fields(
+            frequency, plane.response_id, geometry.source_tetrahedron_ids, geometry.interpolation_weights,
+        )[0]
         pressure[geometry.exterior_point_ids] = exterior_values
         return pressure
 
@@ -1668,6 +1847,7 @@ class ObservationPlaneViewport(QObject):
             interpolation_weights=interpolation_weights,
             exterior_point_ids=exterior_point_ids,
             clipped=clipped,
+            source_tetrahedron_ids=sampled_tetrahedron_ids % len(interior.tetrahedra),
         )
         self._field_cache[key] = (signature, result)
         LOGGER.info(
@@ -1888,7 +2068,7 @@ class ObservationPlaneViewport(QObject):
                 except (KeyError, RuntimeError, TypeError, ValueError):
                     return False
                 if not geometry.exterior_point_ids.size:
-                    pressure = np.empty(0, dtype=np.complex64)
+                    pressure = np.empty((0, 4) if _is_vector_display(plane) else (0,), dtype=np.complex64)
             if pressure is not None:
                 if key in self._exterior_results:
                     self._exterior_results.move_to_end(key)
@@ -1923,6 +2103,8 @@ class ObservationPlaneViewport(QObject):
         return True
 
     def _preview_exterior_geometry(self, plane: ObservationPlane) -> bool:
+        if _is_vector_display(plane):
+            return False
         state = self._active_field
         plane_mesh = self._plane_meshes.get(plane.id)
         if plane_mesh is None:
@@ -2719,3 +2901,7 @@ def _vtk_actor_address(actor) -> str:
 def _flow_scale_reference(plane: ObservationPlane, phase: float | None, automatic: float) -> float:
     manual = plane.intensity_scale_w_per_m2 if phase is None else plane.velocity_scale_m_per_s
     return automatic if manual is None else manual
+
+
+def _is_vector_display(plane: ObservationPlane) -> bool:
+    return plane.display in {ObservationPlaneDisplay.FLOW_ARROWS, ObservationPlaneDisplay.PARTICLE_VELOCITY}

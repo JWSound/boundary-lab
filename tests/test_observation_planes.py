@@ -47,7 +47,7 @@ def test_observation_plane_round_trip_preserves_authoring_and_display_state() ->
     np.testing.assert_allclose(restored.corners_m[0], [-0.1, -0.3, 0.3])
 
 
-def test_particle_velocity_display_round_trips_only_for_interior_planes() -> None:
+def test_particle_velocity_display_round_trips_for_all_planes() -> None:
     interior = replace(
         new_observation_plane("Velocity"),
         display=ObservationPlaneDisplay.PARTICLE_VELOCITY,
@@ -55,10 +55,10 @@ def test_particle_velocity_display_round_trips_only_for_interior_planes() -> Non
 
     assert ObservationPlane.from_payload(interior.to_payload()) == interior
     assert (
-        replace(interior, plane_type=ObservationPlaneType.EXTERIOR).validated().display == ObservationPlaneDisplay.SPL
+        replace(interior, plane_type=ObservationPlaneType.EXTERIOR).validated().display == ObservationPlaneDisplay.PARTICLE_VELOCITY
     )
     assert (
-        replace(interior, plane_type=ObservationPlaneType.COMBINED).validated().display == ObservationPlaneDisplay.SPL
+        replace(interior, plane_type=ObservationPlaneType.COMBINED).validated().display == ObservationPlaneDisplay.PARTICLE_VELOCITY
     )
 
 
@@ -208,7 +208,7 @@ def test_combined_properties_use_a_single_smooth_rendering_mode(qapp) -> None:
         dialog.deleteLater()
 
 
-def test_properties_dialog_disables_particle_velocity_outside_interior_planes(qapp) -> None:
+def test_properties_dialog_allows_particle_velocity_in_all_plane_types(qapp) -> None:
     from blab.ui.observation_plane_dialog import ObservationPlanePropertiesDialog
 
     dialog = ObservationPlanePropertiesDialog(new_observation_plane("Plane"))
@@ -220,12 +220,12 @@ def test_properties_dialog_disables_particle_velocity_outside_interior_planes(qa
         dialog.display_combo.setCurrentIndex(velocity_index)
         exterior_index = dialog.type_combo.findData(ObservationPlaneType.EXTERIOR.value)
         dialog.type_combo.setCurrentIndex(exterior_index)
-        assert not velocity_item.isEnabled()
-        assert dialog.display_combo.currentData() == ObservationPlaneDisplay.SPL.value
+        assert velocity_item.isEnabled()
+        assert dialog.display_combo.currentData() == ObservationPlaneDisplay.PARTICLE_VELOCITY.value
 
         combined_index = dialog.type_combo.findData(ObservationPlaneType.COMBINED.value)
         dialog.type_combo.setCurrentIndex(combined_index)
-        assert not velocity_item.isEnabled()
+        assert velocity_item.isEnabled()
 
         interior_index = dialog.type_combo.findData(ObservationPlaneType.INTERIOR.value)
         dialog.type_combo.setCurrentIndex(interior_index)
@@ -633,7 +633,7 @@ def test_exterior_field_results_synthesize_retained_boundary_traces() -> None:
     normal = np.asarray([[[3.0], [4.0]], [[30.0], [40.0]]], dtype=np.complex64)
     available = np.asarray([True, True])
     compiled = SimpleNamespace(
-        regions=(SimpleNamespace(kind=AcousticRegionKind.UNBOUNDED_AIR, sound_speed_m_per_s=344.0),),
+        regions=(SimpleNamespace(kind=AcousticRegionKind.UNBOUNDED_AIR, sound_speed_m_per_s=344.0, density_kg_per_m3=1.21),),
         excitation_ports=(
             SimpleNamespace(id="port:woofer", component_id="component:woofer", kind=ExcitationPortKind.VOLTAGE),
             SimpleNamespace(id="port:tweeter", component_id="component:tweeter", kind=ExcitationPortKind.VOLTAGE),
@@ -1547,9 +1547,12 @@ def test_combined_pressure_merges_complex_fem_and_exterior_values_before_project
         interpolation_weights=np.asarray([[1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.5, 0.5]]),
         exterior_point_ids=np.asarray([2]),
         clipped=None,
+        source_tetrahedron_ids=np.asarray([0,0]),
     )
     interior = SimpleNamespace(
-        pressure=lambda _frequency, _response: np.asarray([1.0 + 2.0j, 3.0, 5.0 + 1.0j, 7.0 + 3.0j])
+        sample_fields=lambda frequency, response, ids, bary: (
+            bary @ np.asarray([1.0 + 2.0j, 3.0, 5.0 + 1.0j, 7.0 + 3.0j]), np.zeros((len(ids),3))
+        )
     )
     editor = SimpleNamespace(
         _field_results=SimpleNamespace(interior=interior),

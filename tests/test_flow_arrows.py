@@ -74,7 +74,7 @@ def test_flow_settings_roundtrip_and_dialog(qapp):
 
     plane = replace(new_observation_plane("Flow"), display=ObservationPlaneDisplay.FLOW_ARROWS, arrow_density=31)
     assert ObservationPlane.from_payload(plane.to_payload()) == plane
-    assert replace(plane, plane_type=ObservationPlaneType.EXTERIOR).validated().display == ObservationPlaneDisplay.SPL
+    assert replace(plane, plane_type=ObservationPlaneType.EXTERIOR).validated().display == ObservationPlaneDisplay.FLOW_ARROWS
     dialog = ObservationPlanePropertiesDialog(plane, solved_frequencies_hz=(100,))
     assert dialog.arrow_density_slider.isEnabled()
     assert not dialog.resolution_spin.isEnabled()
@@ -188,3 +188,108 @@ def test_manual_arrow_scale_saturates_without_changing_direction():
     anchors = np.zeros((2, 3))
     points = flow_arrow_points(anchors, [[3, 4, 0], [0, 0.5, 0]], [0, 0, 1], 1, 1).reshape(2, 6, 3)
     np.testing.assert_allclose(points[:, 1], [[0.48, 0.64, 0], [0, 0.4, 0]])
+
+
+@pytest.mark.parametrize("display", [ObservationPlaneDisplay.FLOW_ARROWS, ObservationPlaneDisplay.PARTICLE_VELOCITY])
+def test_combined_vector_sampling_preserves_fem_and_exterior_phase(display):
+    from blab.ui.observation_plane_viewport import _VectorFieldGeometry
+
+    frequency, density = 100.0, 1.37
+    velocity = np.array([[1 + 2j, 3 - 4j, 5j]])
+    pressure = np.array([2 - 3j])
+    geometry = _VectorFieldGeometry(
+        None, np.zeros((2, 3)), np.array([0]), np.array([0]),
+        np.array([[0.25] * 4]), np.array([[-1, 1, 1]]), np.array([1]), None, 0.1,
+    )
+    editor = SimpleNamespace(
+        _field_results=SimpleNamespace(
+            interior=SimpleNamespace(sample_fields=lambda *args: (pressure, velocity)),
+            exterior=SimpleNamespace(density_kg_per_m3=density),
+        ),
+        _exterior_key_for_plane=lambda plane: (None,) * 8 + (frequency,),
+    )
+    plane = replace(new_observation_plane("Combined"), plane_type=ObservationPlaneType.COMBINED, display=display)
+    exterior = np.column_stack((pressure, velocity * (-1j * 2 * np.pi * frequency * density)))
+    fields = ObservationPlaneViewport._vector_field_values(editor, plane, geometry, exterior)
+    expected = np.vstack((velocity * [-1, 1, 1], velocity))
+    if display == ObservationPlaneDisplay.FLOW_ARROWS:
+        np.testing.assert_allclose(fields[:, 0], np.repeat(pressure, 2))
+        fields = fields[:, 1:]
+    np.testing.assert_allclose(fields, expected)
+
+
+@pytest.mark.parametrize("display", [ObservationPlaneDisplay.FLOW_ARROWS, ObservationPlaneDisplay.PARTICLE_VELOCITY])
+def test_exterior_vector_geometry_masks_enclosed_and_boundary_samples(display):
+    import pyvista as pv
+
+    boundary = pv.Cube().triangulate()
+    editor = SimpleNamespace(
+        _field_results=SimpleNamespace(exterior=SimpleNamespace(backend_id="beat_cpu", run_id="test")),
+        _field_generation=1, _field_cache={}, _combined_boundary_mesh=lambda results: boundary,
+    )
+    plane = replace(new_observation_plane("Exterior"), plane_type=ObservationPlaneType.EXTERIOR,
+                    display=display, center_m=(0, 0, 0), width_m=2, height_m=2,
+                    resolution_m=0.1, arrow_density=20)
+    geometry = ObservationPlaneViewport._vector_field_geometry(editor, plane)
+    assert len(geometry.exterior_point_ids) > 0
+    assert len(geometry.fem_point_ids) == 0
+    exterior = geometry.anchors[geometry.exterior_point_ids]
+    assert np.all(np.max(np.abs(exterior[:, :2]), axis=1) > 0.5)
+    assert ObservationPlaneViewport._vector_field_geometry(editor, plane) is geometry
+    if display == ObservationPlaneDisplay.FLOW_ARROWS:
+        assert geometry.mesh.n_verts == 0
+        assert geometry.mesh.n_lines == 3 * len(exterior)
+    else:
+        used = np.unique(geometry.mesh.faces.reshape(-1, 5)[:, 1:])
+        assert set(used) <= set(geometry.exterior_point_ids)
+
+
+def test_combined_arrows_render_and_animate_both_regions_without_resampling():
+    import pyvista as pv
+
+    points = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=float)
+    cells = np.array([[0, 1, 2, 3]])
+    interior = InteriorFieldResults(
+        run_id="combined", frequencies_hz=np.array([100]), frequency_indices=np.array([0]),
+        points_m=points, tetrahedra=cells, tetrahedron_density_kg_per_m3=np.array([1.2]),
+        pressure_shape_gradients=tetrahedral_shape_gradients(points, cells),
+        pressure_by_frequency=np.array([[[1, 1-1j, 1, 1]]]), excitation_ids=("source",),
+        channel_names_by_excitation=("source",), channel_configs=(), symmetry="off",
+    )
+    plane = replace(new_observation_plane("Combined"), plane_type=ObservationPlaneType.COMBINED,
+                    display=ObservationPlaneDisplay.FLOW_ARROWS, center_m=(0.4, 0.2, 0.2),
+                    width_m=2, height_m=1, arrow_density=20)
+    viewer = pv.Plotter(off_screen=True)
+    editor = SimpleNamespace(
+        _field_results=SimpleNamespace(interior=interior, exterior=SimpleNamespace(
+            backend_id="beat_cpu", run_id="combined", density_kg_per_m3=1.2)),
+        _field_generation=1, _field_cache={}, _active_field=None,
+        _combined_boundary_mesh=lambda results: pv.Cube().triangulate(),
+        _exterior_key_for_plane=lambda plane: (None,) * 8 + (100,),
+        _animation_plane_id=None, _animation_phase_deg=0, viewer=viewer,
+        _text_color="white", _scalar_bar_titles=set(), _actor_names=set(),
+    )
+    for name in ("_flow_geometry", "_vector_field_geometry", "_fem_volume_geometry", "_update_flow_points",
+                 "_vector_field_values"):
+        setattr(editor, name, lambda *args, name=name: getattr(ObservationPlaneViewport, name)(editor, *args))
+    try:
+        geometry = editor._vector_field_geometry(plane)
+        assert len(geometry.fem_point_ids) > 0
+        assert len(geometry.exterior_point_ids) > 0
+        exterior = np.zeros((len(geometry.exterior_point_ids), 4), complex)
+        exterior[:, 0], exterior[:, 1] = 1, -1j
+        fields = editor._vector_field_values(plane, geometry, exterior)
+        ObservationPlaneViewport._add_colored_field_actor(
+            editor, geometry.mesh, fields, plane, association="point", name="combined-vector")
+        static = geometry.mesh.points.copy()
+        actor = editor._active_field.actor
+        editor._animation_phase_deg = 180
+        editor._animation_plane_id = plane.id
+        assert ObservationPlaneViewport._update_animation_frame(editor, plane)
+        assert not np.allclose(geometry.mesh.points, static)
+        editor._animation_plane_id = None
+        assert ObservationPlaneViewport._apply_vector_field_result(editor, plane, exterior)
+        assert editor._active_field.actor is actor
+        np.testing.assert_allclose(geometry.mesh.points, static)
+    finally:
+        viewer.close()
