@@ -470,6 +470,12 @@ Observation-plane properties control the plane geometry, sampling resolution,
 result response, frequency, and viewport display metric. Real, imaginary, and
 animated instantaneous pressure use a diverging color map centered on zero.
 
+The properties dialog shows only controls relevant to the selected display.
+SPL supports automatic scaling or manual minimum/maximum values; Normalized SPL
+lets you set the displayed range below 0 dB. **Animate Cycle** is available for
+Real Pressure, Imaginary Pressure, Particle Velocity Magnitude, and Flow Arrows.
+SPL, Normalized SPL, and Phase can sweep frequency but do not animate a cycle.
+
 Interior planes can also display **Particle Velocity Magnitude**. Boundary Lab
 derives the complex particle-velocity vector from the P1 FEM pressure gradient
 using the bounded region density, then colors the plane by its magnitude in
@@ -503,12 +509,6 @@ Release to finish a change, or press **Escape** during a drag to restore the
 plane's starting geometry.
 
 The manual pressure color limit accepts whole pascal values and starts at 10 Pa.
-
-The properties dialog shows only controls relevant to the selected display.
-SPL supports automatic scaling or manual minimum/maximum values; Normalized SPL
-lets you set the displayed range below 0 dB. **Animate Cycle** is available for
-Real Pressure, Imaginary Pressure, Particle Velocity Magnitude, and Flow Arrows.
-SPL, Normalized SPL, and Phase can sweep frequency but do not animate a cycle.
 
 ## Frequency Controls
 
