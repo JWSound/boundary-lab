@@ -107,10 +107,10 @@ def test_payload_defaults_to_the_inverted_clip_side_without_overriding_saved_cho
 
 
 def test_relative_rotation_overlay_reports_signed_angle() -> None:
-    from blab.ui.observation_plane_viewport import _relative_rotation_text
+    from blab.ui.observation_plane_gizmos import rotation_readout
 
-    assert _relative_rotation_text(15.0) == "Relative rotation: +15.0°"
-    assert _relative_rotation_text(-2.25) == "Relative rotation: -2.2°"
+    assert rotation_readout(15.0) == "+15.0°"
+    assert rotation_readout(-2.25) == "-2.2°"
 
 
 def test_observation_plane_help_is_compact_right_aligned_arial_text() -> None:
@@ -123,7 +123,7 @@ def test_observation_plane_help_is_compact_right_aligned_arial_text() -> None:
     source = source_text("ui", "observation_plane_viewport.py")
     assert 'position="upper_right"' in source
     assert "font_size=8" in source
-    assert source.count("font=OBSERVATION_PLANE_FONT") == 3
+    assert source.count("font=OBSERVATION_PLANE_FONT") == 2
     assert '"font_family": OBSERVATION_PLANE_FONT' in source
 
 
@@ -1746,43 +1746,30 @@ def test_qt_tool_shortcuts_select_move_rotate_and_scale_modes() -> None:
 def test_move_gizmo_refresh_reuses_actor_instances_and_updates_transforms() -> None:
     import vtk
 
-    from blab.ui.observation_plane_viewport import ObservationPlaneViewport
+    from blab.ui.observation_plane_viewport import MOVE_LENGTH_PX, ObservationPlaneViewport
 
     plane = replace(new_observation_plane("Plane"), center_m=(1.0, 2.0, 3.0))
     actors = {("move", index): vtk.vtkActor() for index in range(3)}
+    transforms = []
     editor = SimpleNamespace(
         _mode="move",
         _tool_actor_by_control=actors,
-        vtk=vtk,
-        _tool_scale=lambda _plane: 0.25,
+        _screen_tool_transform=lambda *args: transforms.append(args),
         _clear_interactive_tools=lambda: pytest.fail("existing gizmos must not be rebuilt"),
         _add_move_gizmo=lambda _plane: pytest.fail("existing gizmos must not be rebuilt"),
     )
-    editor._set_tool_actor_transform = MethodType(ObservationPlaneViewport._set_tool_actor_transform, editor)
     editor._update_move_gizmo = MethodType(ObservationPlaneViewport._update_move_gizmo, editor)
-
     original_actor_ids = {control: id(actor) for control, actor in actors.items()}
-    ObservationPlaneViewport._refresh_interactive_tools(editor, plane)
-
-    assert {control: id(actor) for control, actor in actors.items()} == original_actor_ids
-    x_matrix = actors[("move", 0)].GetUserMatrix()
-    np.testing.assert_allclose(
-        [x_matrix.GetElement(row, 3) for row in range(3)],
-        plane.center_m,
-    )
-    np.testing.assert_allclose(
-        [x_matrix.GetElement(row, 0) for row in range(3)],
-        np.asarray(plane.local_axes[0]) * 0.25,
-    )
-
-    moved = replace(plane, center_m=(-1.0, 0.5, 4.0))
-    ObservationPlaneViewport._refresh_interactive_tools(editor, moved)
-    assert {control: id(actor) for control, actor in actors.items()} == original_actor_ids
-    x_matrix = actors[("move", 0)].GetUserMatrix()
-    np.testing.assert_allclose(
-        [x_matrix.GetElement(row, 3) for row in range(3)],
-        moved.center_m,
-    )
+    for current in (plane, replace(plane, center_m=(-1.0, 0.5, 4.0))):
+        transforms.clear()
+        ObservationPlaneViewport._refresh_interactive_tools(editor, current)
+        assert {control: id(actor) for control, actor in actors.items()} == original_actor_ids
+        assert len(transforms) == 3
+        for index, (control, center, basis, size) in enumerate(transforms):
+            assert control == ("move", index)
+            np.testing.assert_allclose(center, current.center_m)
+            np.testing.assert_allclose(basis[:, 0], current.local_axes[index])
+            assert size == MOVE_LENGTH_PX
 
 
 def test_properties_dialog_warns_above_point_budget_and_disables_resolution_for_element_field(qapp) -> None:

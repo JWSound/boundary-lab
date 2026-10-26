@@ -488,8 +488,20 @@ automatic scale. The selected manual limit is stored with the observation
 plane in the project file.
 
 With a plane selected in the viewport, use **W** for Move, **E** for Rotate,
-and **R** for Scale. The manual pressure color limit accepts whole pascal
-values and starts at 10 Pa.
+and **R** for Scale. Drag the axis arrows to translate the plane or the square
+corner grips to resize it. Controls keep a consistent screen size when zooming.
+
+In Rotate mode, drag a red, green, or blue ring to rotate about the plane's
+local X, Y, or Z axis. A radar appears with 45-degree ticks on its inner band,
+10-degree ticks on its middle band, and 5-degree ticks on its outer band.
+Moving within 10 screen pixels of a tick snaps to that relative angle; away
+from the ticks, rotation is continuous. Alt is no longer needed for free
+rotation. The current angle and the top-right hotkey help remain visible.
+Nearly edge-on axes use a face-on radar to keep the ticks accessible.
+Release to finish a change, or press **Escape** during a drag to restore the
+plane's starting geometry.
+
+The manual pressure color limit accepts whole pascal values and starts at 10 Pa.
 
 ## Frequency Controls
 

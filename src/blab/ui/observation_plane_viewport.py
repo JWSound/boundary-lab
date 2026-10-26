@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import math
 import time
+import weakref
 from collections import OrderedDict
 from dataclasses import dataclass, replace
 
@@ -22,6 +23,7 @@ from blab.observation_planes import (
 )
 from blab.solvers.coupled_field import BemFieldEvaluationRequest
 from blab.ui.exterior_field_service import ExteriorFieldTask
+from blab.ui.observation_plane_gizmos import RotationRadar, colored_mesh, square_grip
 from blab.ui.observation_plane_results import (
     FieldScalarProjection,
     ObservationFieldResults,
@@ -32,15 +34,15 @@ from blab.ui.settings import field_cache_size_bytes, field_translation_interval_
 
 LOGGER = logging.getLogger("blab.runtime")
 
-AXIS_COLORS = ("#ef5350", "#66bb6a", "#42a5f5")
-SELECTED_EDGE_COLOR = "#ffd54f"
-UNSELECTED_EDGE_COLOR = "#80a4b8"
-PLANE_COLOR = "#48a9d6"
+AXIS_COLORS = ("#d95b52", "#86b568", "#729ddd")
+SELECTED_EDGE_COLOR = "#d5dce4"
+UNSELECTED_EDGE_COLOR = "#82909c"
+PLANE_COLOR = "#718da9"
 HELP_ACTOR_NAME = "observation-plane:help"
-ANGLE_ACTOR_NAME = "observation-plane:rotation-angle"
 FIELD_MESSAGE_ACTOR_NAME = "observation-plane:field-message"
 FIELD_SCALAR_NAME = "observation-plane-field"
-ROTATION_SNAP_DEG = 5.0
+MOVE_LENGTH_PX = 168.0
+RESIZE_HALF_SIZE_PX = 10.0
 PLANE_FIELD_CACHE_KINDS = frozenset({"smooth", "element", "combined", "exterior", "exterior-mask"})
 PARTICLE_VELOCITY_SCALAR_BAR_TITLE = "Particle Velocity\nMagnitude (m/s)\n "
 SCALAR_BAR_MIN_POSITION_X = 0.70
@@ -55,11 +57,9 @@ class _DragState:
     mode: str
     control: int
     start_axis_parameter: float | None = None
-    start_rotation_vector: np.ndarray | None = None
     fixed_corner: np.ndarray | None = None
     start_display_xy: np.ndarray | None = None
     fallback_scale: float = 0.0
-    fallback_screen_direction: np.ndarray | None = None
     normalized_reference_db: float | None = None
 
 
@@ -171,6 +171,23 @@ class ObservationPlaneViewport(QObject):
         self._picker = vtk_module.vtkCellPicker()
         self._picker.SetTolerance(0.001)
         self._foreground_renderer = self._create_foreground_renderer()
+        self._screen_camera = vtk_module.vtkCamera()
+        self._screen_camera.ParallelProjectionOn()
+        self._radar = RotationRadar(viewer, self._foreground_renderer)
+        self._controls_closed = False
+        self._controls_render_window = getattr(viewer, "render_window", None)
+        self._controls_observer = None
+        if self._controls_render_window is not None:
+            owner = weakref.ref(self)
+
+            def sync_controls(*_args):
+                editor = owner()
+                if editor is not None and not editor._controls_closed:
+                    editor._sync_controls()
+
+            self._controls_observer = self._controls_render_window.AddObserver("StartEvent", sync_controls)
+        viewer.destroyed.connect(self.close)
+
         viewer.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         viewer.installEventFilter(self)
         tool_shortcuts = {
@@ -189,7 +206,72 @@ class ObservationPlaneViewport(QObject):
     def selected_id(self) -> str | None:
         return self._selected_id
 
+    def close(self, *_args) -> None:
+        """Detach render observers before the Qt/VTK viewer is destroyed."""
+        if self._controls_closed:
+            return
+        self._controls_closed = True
+        if self._controls_observer is not None:
+            self._controls_render_window.RemoveObserver(self._controls_observer)
+            self._controls_observer = None
+        self._radar.close()
+        self._animation_timer.stop()
+        self._interior_refresh_timer.stop()
+        self._exterior_refresh_timer.stop()
+
+    def _control_point(self, position) -> np.ndarray:
+        return np.asarray(self._vtk_xy(position), dtype=float) / self.viewer.devicePixelRatioF()
+
+    def _sync_controls(self) -> None:
+        """Update screen-space actors just before VTK renders, including camera-only changes."""
+        plane = self._selected_plane()
+        foreground = self._foreground_renderer
+        if foreground is None:
+            return
+        if self._mode in {"move", "size"}:
+            width, height = self._controls_render_window.GetSize()
+            self._screen_camera.SetPosition(width / 2, height / 2, 10000)
+            self._screen_camera.SetFocalPoint(width / 2, height / 2, 0)
+            self._screen_camera.SetViewUp(0, 1, 0)
+            self._screen_camera.SetParallelScale(max(height / 2, 1))
+            self._screen_camera.SetClippingRange(1, 20000)
+            foreground.SetActiveCamera(self._screen_camera)
+            if plane is not None:
+                if self._mode == "move":
+                    self._update_move_gizmo(plane)
+                else:
+                    self._update_size_handles(plane)
+        else:
+            foreground.SetActiveCamera(self.viewer.renderer.GetActiveCamera())
+        self._radar.draw(
+            plane,
+            active=self._mode == "rotate",
+            dragging=self._drag is not None and self._drag.mode == "rotate",
+            colors=AXIS_COLORS,
+            dark=self._text_color == "white",
+        )
+
+    def _screen_tool_transform(self, control, center, basis, size_px) -> None:
+        renderer = self.viewer.renderer
+        renderer.SetWorldPoint(*center, 1.0)
+        renderer.WorldToDisplay()
+        x, y, _depth = renderer.GetDisplayPoint()
+        camera = renderer.GetActiveCamera()
+        forward = np.asarray(camera.GetDirectionOfProjection())
+        right = np.cross(forward, camera.GetViewUp())
+        right /= np.linalg.norm(right)
+        up = np.cross(right, forward)
+        view_basis = np.vstack((right, up, -forward)) @ basis
+        self._set_tool_actor_transform(
+            control,
+            np.array([x, y, 0.0]),
+            view_basis,
+            size_px * self.viewer.devicePixelRatioF(),
+        )
+
     def refresh_theme(self) -> None:
+        if self._controls_closed:
+            return
         text_color = _viewport_text_color(self.viewer)
         if text_color == self._text_color:
             return
@@ -437,6 +519,15 @@ class ObservationPlaneViewport(QObject):
         if watched is not self.viewer:
             return False
         event_type = event.type()
+        if event_type == QEvent.Type.PaletteChange:
+            # The viewer may still expose its old palette inside PaletteChange.
+            QTimer.singleShot(0, self.refresh_theme)
+            return False
+        if event_type == QEvent.Type.Close:
+            self.close()
+            return False
+        if self._drag is not None and self._drag.mode == "rotate" and event_type == QEvent.Type.Wheel:
+            return True
         if event_type == QEvent.Type.ContextMenu:
             self._show_context_menu(event)
             return True
@@ -461,9 +552,6 @@ class ObservationPlaneViewport(QObject):
             self._rotation_angle_deg = None
             self._exterior_refresh_timer.stop()
             self._interior_refresh_timer.stop()
-            if ANGLE_ACTOR_NAME in self._actor_names:
-                self.viewer.remove_actor(ANGLE_ACTOR_NAME, render=False)
-                self._actor_names.discard(ANGLE_ACTOR_NAME)
             plane = self._selected_plane()
             if plane is not None:
                 if (
@@ -496,6 +584,15 @@ class ObservationPlaneViewport(QObject):
             self.deleteRequested.emit(self._selected_id)
             return True
         if key == Qt.Key.Key_Escape:
+            if self._drag is not None:
+                original = self._drag.original
+                self._drag = None
+                self._rotation_angle_deg = None
+                self._exterior_refresh_timer.stop()
+                self._interior_refresh_timer.stop()
+                self._replace_selected(original)
+                self.planeChanged.emit(original)
+                return True
             if self._mode is not None:
                 self._set_mode(None)
             else:
@@ -528,6 +625,11 @@ class ObservationPlaneViewport(QObject):
             pass
 
     def _on_left_press(self, event) -> bool:
+        if self._mode == "rotate":
+            axis = self._radar.pick(self._control_point(event.position()))
+            if axis is not None:
+                self._begin_drag(("rotate", axis), event.position())
+                return True
         actor = self._pick_actor(event.position())
         address = _vtk_actor_address(actor)
         tool = self._tool_actor_controls.get(address)
@@ -561,22 +663,9 @@ class ObservationPlaneViewport(QObject):
                 normalized_reference_db=normalized_reference_db,
             )
         elif mode == "rotate":
-            axis = plane.local_axes[control]
-            intersection = self._ray_plane_intersection(position, np.asarray(plane.center_m), axis)
-            vector = None if intersection is None else intersection - np.asarray(plane.center_m)
-            if vector is not None and np.linalg.norm(vector) <= 1e-10:
-                vector = None
-            self._drag = _DragState(
-                plane,
-                mode,
-                control,
-                start_rotation_vector=vector,
-                start_display_xy=_position_array(position),
-                fallback_screen_direction=self._rotation_screen_direction(
-                    np.asarray(plane.center_m), axis, self._tool_scale(plane)
-                ),
-                normalized_reference_db=normalized_reference_db,
-            )
+            self._drag = _DragState(plane, mode, control, normalized_reference_db=normalized_reference_db)
+            self._radar.begin(plane, control, self._control_point(position))
+            self._render()
         elif mode == "size":
             opposite_index = (control + 2) % 4
             self._drag = _DragState(
@@ -611,28 +700,8 @@ class ObservationPlaneViewport(QObject):
         self._replace_selected(replace(drag.original, center_m=tuple(float(value) for value in center)))
 
     def _drag_rotate(self, position, drag: _DragState, *, alt_pressed: bool) -> None:
-        axis = drag.original.local_axes[drag.control]
-        center = np.asarray(drag.original.center_m)
-        intersection = self._ray_plane_intersection(position, center, axis)
-        if intersection is not None and drag.start_rotation_vector is not None:
-            start = drag.start_rotation_vector.copy()
-            current = intersection - center
-            start -= axis * float(np.dot(start, axis))
-            current -= axis * float(np.dot(current, axis))
-            if np.linalg.norm(start) <= 1e-10 or np.linalg.norm(current) <= 1e-10:
-                return
-            start /= np.linalg.norm(start)
-            current /= np.linalg.norm(current)
-            angle = math.degrees(
-                math.atan2(float(np.dot(axis, np.cross(start, current))), float(np.dot(start, current)))
-            )
-        elif drag.start_display_xy is not None and drag.fallback_screen_direction is not None:
-            display_delta = _position_array(position) - drag.start_display_xy
-            angle = float(np.dot(display_delta, drag.fallback_screen_direction)) * 0.5
-        else:
-            return
-        if not alt_pressed:
-            angle = round(angle / ROTATION_SNAP_DEG) * ROTATION_SNAP_DEG
+        # Modifiers do not affect snapping: only hovering an actual tick bar does.
+        angle = self._radar.angle_at(self._control_point(position))
         self._rotation_angle_deg = angle
         self._replace_selected(rotate_observation_plane(drag.original, drag.control, angle))
 
@@ -785,17 +854,39 @@ class ObservationPlaneViewport(QObject):
             actor = self.viewer.add_mesh(
                 mesh,
                 name=name,
-                color=PLANE_COLOR,
-                opacity=1.0 if field_visible else 0.32 if selected else 0.18,
+                color=(SELECTED_EDGE_COLOR if self._text_color == "white" else "#0a246a")
+                if field_visible
+                else PLANE_COLOR,
+                opacity=1.0 if field_visible else 0.28 if selected else 0.12,
                 style="wireframe" if field_visible else "surface",
-                show_edges=True,
-                edge_color=SELECTED_EDGE_COLOR if selected else UNSELECTED_EDGE_COLOR,
-                line_width=3.0 if selected else 1.5,
+                show_edges=False,
+                line_width=2.0 if selected else 1.5,
                 pickable=True,
                 render=False,
             )
             self._actor_names.add(name)
             self._plane_actor_ids[_vtk_actor_address(actor)] = plane.id
+            if not field_visible:
+                # Share vtkPoints so in-place live-field translations/rotations
+                # also move the opaque outline without rebuilding actors.
+                pv = __import__("pyvista")
+                border = pv.PolyData()
+                border.SetPoints(mesh.GetPoints())
+                border.lines = np.array([5, 0, 1, 2, 3, 0])
+                border_name = f"observation-plane:border:{plane.id}"
+                edge_color = SELECTED_EDGE_COLOR if selected else UNSELECTED_EDGE_COLOR
+                if self._text_color != "white":
+                    edge_color = "#0a246a" if selected else "#667482"
+                self.viewer.add_mesh(
+                    border,
+                    name=border_name,
+                    color=edge_color,
+                    line_width=2.0 if selected else 1.5,
+                    lighting=False,
+                    pickable=False,
+                    render=False,
+                )
+                self._actor_names.add(border_name)
         selected = self._selected_plane()
         field_plane = self._field_plane()
         clip_active = False
@@ -810,10 +901,6 @@ class ObservationPlaneViewport(QObject):
             self._add_help_text(selected)
             if self._mode == "move":
                 self._add_move_gizmo(selected)
-            elif self._mode == "rotate":
-                self._add_rotation_gizmo(selected)
-                if self._rotation_angle_deg is not None:
-                    self._add_rotation_angle_text(self._rotation_angle_deg)
             elif self._mode == "size":
                 self._add_size_handles(selected)
         if self._field_message:
@@ -1726,8 +1813,6 @@ class ObservationPlaneViewport(QObject):
                 return False
             state.plane = plane
         self._refresh_interactive_tools(plane)
-        if self._rotation_angle_deg is not None:
-            self._add_rotation_angle_text(self._rotation_angle_deg)
         self.viewer.render()
         return True
 
@@ -1738,8 +1823,6 @@ class ObservationPlaneViewport(QObject):
         if plane_mesh is None or not _update_mesh_points(plane_mesh, plane.corners_m):
             return False
         self._refresh_interactive_tools(plane)
-        if self._rotation_angle_deg is not None:
-            self._add_rotation_angle_text(self._rotation_angle_deg)
         self.viewer.render()
         return True
 
@@ -1753,21 +1836,17 @@ class ObservationPlaneViewport(QObject):
             self._render()
 
     def _refresh_interactive_tools(self, plane: ObservationPlane) -> None:
-        control_count = 4 if self._mode == "size" else 3 if self._mode in {"move", "rotate"} else 0
+        control_count = 4 if self._mode == "size" else 3 if self._mode == "move" else 0
         expected = {(self._mode, control) for control in range(control_count)}
         if set(self._tool_actor_by_control) != expected:
             self._clear_interactive_tools()
             if self._mode == "move":
                 self._add_move_gizmo(plane)
-            elif self._mode == "rotate":
-                self._add_rotation_gizmo(plane)
             elif self._mode == "size":
                 self._add_size_handles(plane)
             return
         if self._mode == "move":
             self._update_move_gizmo(plane)
-        elif self._mode == "rotate":
-            self._update_rotation_gizmo(plane)
         elif self._mode == "size":
             self._update_size_handles(plane)
 
@@ -1855,81 +1934,67 @@ class ObservationPlaneViewport(QObject):
         )
         self._actor_names.add(HELP_ACTOR_NAME)
 
-    def _add_rotation_angle_text(self, angle_deg: float) -> None:
-        self.viewer.add_text(
-            _relative_rotation_text(angle_deg),
-            position="upper_edge",
-            font_size=12,
-            font=OBSERVATION_PLANE_FONT,
-            color=self._text_color,
-            name=ANGLE_ACTOR_NAME,
-            render=False,
-        )
-        self._actor_names.add(ANGLE_ACTOR_NAME)
-
     def _add_move_gizmo(self, plane: ObservationPlane) -> None:
         pv = __import__("pyvista")
+        shaft_color = "#dedbd2" if self._text_color == "white" else "#555e65"
         for axis_index, color in enumerate(AXIS_COLORS):
-            mesh = pv.Arrow(
-                start=(0.0, 0.0, 0.0),
-                direction=(1.0, 0.0, 0.0),
-                scale=1.0,
-                tip_radius=0.12,
-                shaft_radius=0.035,
+            shaft = colored_mesh(
+                pv.Cylinder(
+                    center=(0.325, 0, 0),
+                    direction=(1, 0, 0),
+                    height=0.65,
+                    radius=0.018,
+                    resolution=12,
+                ),
+                shaft_color,
             )
-            self._add_tool_actor(mesh, "move", axis_index, color=color)
+            tip = colored_mesh(
+                pv.Cone(
+                    center=(0.825, 0, 0),
+                    direction=(1, 0, 0),
+                    height=0.35,
+                    radius=0.085,
+                    resolution=4,
+                ),
+                color,
+            )
+            self._add_tool_actor(
+                shaft.merge(tip, merge_points=False),
+                "move",
+                axis_index,
+                scalars="tool_rgb",
+                rgb=True,
+                preference="cell",
+                show_scalar_bar=False,
+            )
         self._update_move_gizmo(plane)
 
     def _update_move_gizmo(self, plane: ObservationPlane) -> None:
-        center = np.asarray(plane.center_m)
         axes = plane.local_axes
-        scale = self._tool_scale(plane)
         for axis_index, axis in enumerate(axes):
             tangent = axes[(axis_index + 1) % 3]
             basis = np.column_stack((axis, tangent, np.cross(axis, tangent)))
-            self._set_tool_actor_transform(("move", axis_index), center, basis, scale)
-
-    def _add_rotation_gizmo(self, plane: ObservationPlane) -> None:
-        pv = __import__("pyvista")
-        for axis_index, color in enumerate(AXIS_COLORS):
-            ring = pv.CircularArcFromNormal(
-                center=(0.0, 0.0, 0.0),
-                normal=(0.0, 0.0, 1.0),
-                polar=(1.0, 0.0, 0.0),
-                angle=360.0,
-                resolution=120,
-            )
-            self._add_tool_actor(
-                ring,
-                "rotate",
-                axis_index,
-                color=color,
-                line_width=5.0,
-                render_lines_as_tubes=True,
-            )
-        self._update_rotation_gizmo(plane)
-
-    def _update_rotation_gizmo(self, plane: ObservationPlane) -> None:
-        center = np.asarray(plane.center_m)
-        radius = self._tool_scale(plane) * 0.8
-        axes = plane.local_axes
-        for axis_index, axis in enumerate(axes):
-            polar = axes[(axis_index + 1) % 3]
-            tangent = np.cross(axis, polar)
-            basis = np.column_stack((polar, tangent, axis))
-            self._set_tool_actor_transform(("rotate", axis_index), center, basis, radius)
+            self._screen_tool_transform(("move", axis_index), plane.center_m, basis, MOVE_LENGTH_PX)
 
     def _add_size_handles(self, plane: ObservationPlane) -> None:
-        pv = __import__("pyvista")
         for corner_index in range(4):
-            handle = pv.Sphere(radius=1.0, center=(0.0, 0.0, 0.0), theta_resolution=16, phi_resolution=12)
-            self._add_tool_actor(handle, "size", corner_index, color=SELECTED_EDGE_COLOR)
+            handle = square_grip("#c9cdd1", "#293134")
+            self._add_tool_actor(
+                handle,
+                "size",
+                corner_index,
+                scalars="tool_rgb",
+                rgb=True,
+                preference="cell",
+                show_scalar_bar=False,
+                lighting=False,
+            )
         self._update_size_handles(plane)
 
     def _update_size_handles(self, plane: ObservationPlane) -> None:
-        radius = self._tool_scale(plane) * 0.075
+        basis = np.column_stack(plane.local_axes)
         for corner_index, corner in enumerate(plane.corners_m):
-            self._set_tool_actor_transform(("size", corner_index), corner, np.eye(3), radius)
+            self._screen_tool_transform(("size", corner_index), corner, basis, RESIZE_HALF_SIZE_PX)
 
     def _add_tool_actor(self, mesh, mode: str, control: int, **options):
         name = f"observation-plane:tool:{mode}:{control}"
@@ -1963,9 +2028,6 @@ class ObservationPlaneViewport(QObject):
             matrix.SetElement(row, 3, float(translation[row]))
         actor.SetUserMatrix(matrix)
         actor.Modified()
-
-    def _tool_scale(self, plane: ObservationPlane) -> float:
-        return max(min(plane.width_m, plane.height_m) * 0.4, self._default_size() * 0.15, 0.005)
 
     def _remove_actors(self) -> None:
         for title in tuple(self._scalar_bar_titles):
@@ -2096,21 +2158,6 @@ class ObservationPlaneViewport(QObject):
             return None
         return homogeneous[:3] / homogeneous[3]
 
-    def _rotation_screen_direction(self, center: np.ndarray, axis: np.ndarray, scale: float) -> np.ndarray:
-        renderer = self.viewer.renderer
-        display_points = []
-        for point in (center, center + axis * scale):
-            renderer.SetWorldPoint(*point, 1.0)
-            renderer.WorldToDisplay()
-            display_points.append(np.asarray(renderer.GetDisplayPoint()[:2], dtype=float))
-        projected_axis = display_points[1] - display_points[0]
-        projected_axis[1] *= -1.0  # VTK display Y is opposite Qt widget Y.
-        norm = float(np.linalg.norm(projected_axis))
-        if norm <= 1e-6:
-            return np.asarray((1.0, 0.0))
-        projected_axis /= norm
-        return np.asarray((-projected_axis[1], projected_axis[0]))
-
 
 def _plane_polydata(plane: ObservationPlane):
     pv = __import__("pyvista")
@@ -2128,10 +2175,6 @@ def _normalized(values: np.ndarray, *, fallback: tuple[float, float, float]) -> 
 
 def _position_array(position) -> np.ndarray:
     return np.asarray((float(position.x()), float(position.y())), dtype=float)
-
-
-def _relative_rotation_text(angle_deg: float) -> str:
-    return f"Relative rotation: {float(angle_deg):+.1f}°"
 
 
 def _observation_plane_help_text(plane_name: str, mode: str | None) -> str:
