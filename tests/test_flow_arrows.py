@@ -6,6 +6,7 @@ import pytest
 
 from blab.fem_fields import flow_arrow_points, plane_flow_vectors, sample_pressure_velocity
 from blab.observation_planes import (
+    InteriorRenderingMode,
     ObservationPlane,
     ObservationPlaneDisplay,
     ObservationPlaneType,
@@ -95,7 +96,8 @@ def test_flow_settings_roundtrip_and_dialog(qapp):
     dialog.close()
 
 
-def test_flow_renderer_caches_sampling_and_updates_animation_in_place():
+@pytest.mark.parametrize("rendering", [InteriorRenderingMode.SMOOTH_FIELD, InteriorRenderingMode.ELEMENT_FIELD])
+def test_flow_renderer_caches_sampling_and_updates_animation_in_place(rendering):
     import pyvista as pv
 
     points = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=float)
@@ -109,7 +111,7 @@ def test_flow_renderer_caches_sampling_and_updates_animation_in_place():
         tetrahedra=cells,
         tetrahedron_density_kg_per_m3=np.array([1.2]),
         pressure_shape_gradients=tetrahedral_shape_gradients(points, cells),
-        pressure_by_frequency=np.array([[[1, 1 - 1j, 1, 1]]]),
+        pressure_by_frequency=np.array([[[1, 1 - 1j, 1, 1 - 2j]]]),
         excitation_ids=("source",),
         channel_names_by_excitation=("source",),
         channel_configs=(),
@@ -121,7 +123,8 @@ def test_flow_renderer_caches_sampling_and_updates_animation_in_place():
         center_m=(0, 0.2, 0.2),
         width_m=0.8,
         height_m=0.2,
-        arrow_density=10,
+        arrow_density=20 if rendering == InteriorRenderingMode.ELEMENT_FIELD else 10,
+        interior_rendering=rendering,
     )
     viewer = pv.Plotter(off_screen=True, window_size=(600, 400))
     editor = SimpleNamespace(
@@ -148,7 +151,12 @@ def test_flow_renderer_caches_sampling_and_updates_animation_in_place():
             editor, mesh, fields, plane, association=association, name="flow"
         )
         static_points = mesh.points.copy()
-        assert "In-plane\nActive Intensity\n(W/m^2)" in editor._scalar_bar_titles
+        volumetric = rendering == InteriorRenderingMode.ELEMENT_FIELD
+        assert ("Active Intensity\n(W/m^2)" if volumetric else "In-plane\nActive Intensity\n(W/m^2)") in editor._scalar_bar_titles
+        if volumetric:
+            assert np.ptp(geometry.anchors[:, 2]) > 0
+            assert np.all(geometry.clipped.find_containing_cell(geometry.anchors) >= 0)
+            assert np.any(np.abs(static_points.reshape(-1, 10, 3)[:, 1, 2] - geometry.anchors[:, 2]) > 0)
         actor = editor._active_field.actor
         editor._animation_phase_deg = 90
         assert ObservationPlaneViewport._update_animation_frame(editor, plane)
@@ -163,16 +171,20 @@ def test_flow_renderer_caches_sampling_and_updates_animation_in_place():
         manual = replace(plane, intensity_scale_w_per_m2=2 * automatic_max)
         assert ObservationPlaneViewport._update_active_field(editor, manual)
         assert actor.GetMapper().GetScalarRange()[1] == pytest.approx(2 * automatic_max)
-        tips = mesh.points.reshape(-1, 6, 3)[:, 1]
-        static_tips = static_points.reshape(-1, 6, 3)[:, 1]
+        tips = mesh.points.reshape(-1, 10 if volumetric else 6, 3)[:, 1]
+        static_tips = static_points.reshape(-1, 10 if volumetric else 6, 3)[:, 1]
         np.testing.assert_allclose(tips - geometry.anchors, (static_tips - geometry.anchors) / 2)
         manual = replace(manual, velocity_scale_m_per_s=0.01)
         editor._animation_plane_id = plane.id
         assert ObservationPlaneViewport._update_active_field(editor, manual)
         assert actor.GetMapper().GetScalarRange()[1] == pytest.approx(0.01)
         assert editor._active_field.actor is actor
-        denser = editor._flow_geometry(replace(plane, arrow_density=20))
+        denser = editor._flow_geometry(replace(plane, arrow_density=plane.arrow_density * 2))
         assert len(denser.anchors) > len(geometry.anchors)
+        if volumetric:
+            flipped = editor._flow_geometry(replace(plane, invert_clip_side=not plane.invert_clip_side))
+            assert np.all(flipped.clipped.find_containing_cell(flipped.anchors) >= 0)
+            assert not np.array_equal(flipped.anchors, geometry.anchors)
     finally:
         viewer.close()
 
@@ -188,6 +200,45 @@ def test_manual_arrow_scale_saturates_without_changing_direction():
     anchors = np.zeros((2, 3))
     points = flow_arrow_points(anchors, [[3, 4, 0], [0, 0.5, 0]], [0, 0, 1], 1, 1).reshape(2, 6, 3)
     np.testing.assert_allclose(points[:, 1], [[0.48, 0.64, 0], [0, 0.4, 0]])
+
+
+def test_volumetric_vectors_and_arrowheads_preserve_all_axes():
+    velocity = np.array([[0, 0, 2], [1j, 0, 0], [0, 0, 0]])
+    vectors, reference = plane_flow_vectors([1, 1, 1], velocity, None)
+    np.testing.assert_allclose(vectors, [[0, 0, 2], [0, 0, 0], [0, 0, 0]])
+    points = flow_arrow_points(np.zeros((3, 3)), vectors, None, 1, reference).reshape(3, 10, 3)
+    assert np.isfinite(points).all()
+    np.testing.assert_allclose(points[0, 1], [0, 0, 0.8])
+    assert np.linalg.matrix_rank(points[0, [3, 5, 7, 9]] - [0, 0, 0.6], tol=1e-12) == 2
+    quarter, scale = plane_flow_vectors([1, 1, 1], velocity, None, 90)
+    reverse, reverse_scale = plane_flow_vectors([1, 1, 1], velocity, None, 270)
+    np.testing.assert_allclose(quarter, -reverse, atol=1e-14)
+    assert scale == reverse_scale
+
+
+def test_volume_grid_is_equidistant_and_bounded():
+    from blab.fem_fields import volume_arrow_grid
+
+    points, spacing = volume_arrow_grid((0, 1, 0, 1, 0, 1), 60)
+    assert len(points) <= 64000
+    for axis in range(3):
+        np.testing.assert_allclose(np.diff(np.unique(points[:, axis])), spacing)
+    empty, _ = volume_arrow_grid((0, 0, 0, 1, 0, 1), 20)
+    assert empty.shape == (0, 3)
+
+
+def test_flow_dialog_exposes_element_rendering(qapp):
+    from blab.ui.observation_plane_dialog import ObservationPlanePropertiesDialog
+
+    plane = replace(new_observation_plane("Volume"), display=ObservationPlaneDisplay.FLOW_ARROWS,
+                    interior_rendering=InteriorRenderingMode.ELEMENT_FIELD)
+    dialog = ObservationPlanePropertiesDialog(plane, solved_frequencies_hz=(100,))
+    assert dialog.rendering_combo.isEnabled()
+    assert not dialog.rendering_combo.isHidden()
+    assert dialog.plane.interior_rendering == InteriorRenderingMode.ELEMENT_FIELD
+    assert dialog.arrow_density_slider.isEnabled()
+    assert not dialog.resolution_spin.isEnabled()
+    dialog.close()
 
 
 @pytest.mark.parametrize("display", [ObservationPlaneDisplay.FLOW_ARROWS, ObservationPlaneDisplay.PARTICLE_VELOCITY])

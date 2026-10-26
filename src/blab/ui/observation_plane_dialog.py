@@ -445,7 +445,7 @@ class ObservationPlanePropertiesDialog(QDialog):
         combined = plane_type == ObservationPlaneType.COMBINED.value
         if combined and self.rendering_combo.currentData() != InteriorRenderingMode.SMOOTH_FIELD.value:
             self._select_data(self.rendering_combo, InteriorRenderingMode.SMOOTH_FIELD.value)
-        rendering = supports_interior and not combined and not flow
+        rendering = supports_interior and not combined
         self.rendering_combo.setEnabled(rendering)
         self._form.setRowVisible(self.rendering_combo, rendering)
         element_field = (

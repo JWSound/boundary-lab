@@ -207,6 +207,14 @@ With **Animate Cycle** enabled, they show instantaneous in-plane particle veloci
 Standing waves can show strong animated motion with little static intensity.
 These are linear acoustic fields, not streaming or turbulent flow.
 
+For Interior planes, **Element Field** changes flow arrows to a uniform 3D grid
+inside the visible clipped FEM volume. These arrows retain all three vector
+components, including motion normal to the plane, and use crossed arrowheads.
+The translucent tetrahedra remain visible as context. Density sets spacing
+relative to the longest clipped-volume dimension; a 64,000-candidate limit
+bounds sampling work at high densities. Existing intensity and velocity scales
+apply to the full 3D magnitude. Smooth Field continues to use in-plane arrows.
+
 **Arrow density** controls anchors across the longer plane side (5 to 60), with
 equal physical spacing in both directions. Anchors outside the selected acoustic
 regions, inside solids, or too close to the exterior boundary are omitted.
