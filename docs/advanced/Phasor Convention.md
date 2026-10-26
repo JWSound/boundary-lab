@@ -18,7 +18,7 @@ and Deploy use that same convention. Physical frequency and wavenumber are posit
 | Displacement | `x = v/(+i omega)` |
 | Positive delay | `exp(-i omega tau)` |
 | Propagation alignment | `exp(+i k r)` |
-| Animation | `Re(P exp(+i theta))` |
+| Physical instantaneous animation from RMS phasors | `sqrt(2) Re(P exp(+i theta))` |
 
 Normals, real jump terms, interface orientation and linear-algebra adjoints
 retain their definitions. This change does not improve resonance conditioning:

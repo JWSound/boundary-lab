@@ -8,6 +8,7 @@ import numpy as np
 
 from blab.channel_synthesis import channel_drive, channel_voltage_gain, flat_target_corrections
 from blab.config import ChannelConfig
+from blab.fem_fields import sample_pressure_velocity
 from blab.observation_planes import ObservationPlaneDisplay, ObservationPlaneType
 from blab.physical_model import AcousticRegionKind, ExcitationPortKind
 from blab.solve_results import (
@@ -20,8 +21,6 @@ from blab.solve_results import (
     phase_deg,
     pressure_spl_db,
 )
-
-PARTICLE_VELOCITY_COLOR_LIMIT_M_PER_S = 35.0
 
 
 @dataclass(frozen=True)
@@ -53,6 +52,7 @@ class InteriorFieldResults:
     flat_target_enabled: bool = False
     flat_target_reference_angle_deg: float = 0.0
     symmetry: str = "off"
+    tetrahedra10: np.ndarray | None = None
 
     @property
     def response_options(self) -> tuple[tuple[str, str], ...]:
@@ -86,20 +86,23 @@ class InteriorFieldResults:
         return np.sum(basis * weights[:, np.newaxis], axis=0).astype(np.complex64, copy=False)
 
     def particle_velocity(self, frequency_hz: float | None, response_id: str) -> np.ndarray:
-        """Return the complex P1 particle-velocity vector in each tetrahedron."""
+        """Return complex velocity at each tetrahedron's centroid (P1 is constant)."""
 
-        available_index = self.frequency_index(frequency_hz)
-        frequency = float(self.frequencies_hz[available_index])
-        pressure = self.pressure(frequency, response_id)
-        pressure_gradient = np.einsum(
-            "ti,tij->tj",
-            pressure[np.asarray(self.tetrahedra, dtype=np.int64)],
+        ids = np.arange(len(self.tetrahedra))
+        return self.sample_fields(frequency_hz, response_id, ids, np.full((len(ids), 4), 0.25))[1]
+
+    def sample_fields(self, frequency_hz, response_id, cell_ids, barycentric):
+        """Sample complex pressure and velocity using the retained element order."""
+        frequency = float(self.frequencies_hz[self.frequency_index(frequency_hz)])
+        return sample_pressure_velocity(
+            self.pressure(frequency_hz, response_id),
+            self.tetrahedra if self.tetrahedra10 is None else self.tetrahedra10,
             self.pressure_shape_gradients,
-            optimize=True,
+            self.tetrahedron_density_kg_per_m3,
+            frequency,
+            cell_ids,
+            barycentric,
         )
-        omega = 2.0 * np.pi * frequency
-        velocity = pressure_gradient / (-1j * omega * self.tetrahedron_density_kg_per_m3[:, np.newaxis])
-        return velocity.astype(np.complex64, copy=False)
 
 
 @dataclass(frozen=True)
@@ -227,6 +230,13 @@ def interior_field_results_from_solved_system(
     if pressure.shape != (solved.frequencies_hz.size, len(solved.excitation_ids), points.shape[0]):
         raise ValueError("FEM nodal pressure does not align with the solved frequencies, excitations, and nodes.")
     shape_gradients = tetrahedral_shape_gradients(points, tetrahedra)
+    tetrahedra10 = domain.topology.get("tetrahedra10")
+    if tetrahedra10 is not None:
+        tetrahedra10 = np.asarray(tetrahedra10, dtype=np.int64)
+        if tetrahedra10.shape != (len(tetrahedra), 10) or not np.array_equal(tetrahedra10[:, :4], tetrahedra):
+            raise ValueError("Quadratic FEM topology must align with the corner tetrahedra.")
+        if np.any(tetrahedra10 < 0) or np.any(tetrahedra10 >= len(points)):
+            raise ValueError("Quadratic FEM topology references unavailable pressure nodes.")
     tetrahedron_density = _tetrahedron_density_kg_per_m3(solved, domain, tetrahedra.shape[0])
 
     availability = np.asarray(solved.completion_mask, dtype=bool) & np.asarray(
@@ -252,6 +262,7 @@ def interior_field_results_from_solved_system(
         frequency_indices=frequency_indices,
         points_m=points,
         tetrahedra=tetrahedra,
+        tetrahedra10=tetrahedra10,
         tetrahedron_density_kg_per_m3=tetrahedron_density,
         pressure_shape_gradients=shape_gradients,
         pressure_by_frequency=pressure,
@@ -524,9 +535,15 @@ def project_field_scalars(
     animation_phase_deg: float | None = None,
     normalized_reference_db: float | None = None,
     pressure_color_limit_pa: float | None = None,
+    particle_velocity_limit_m_per_s: float | None = None,
+    spl_min_db: float | None = None,
+    spl_max_db: float | None = None,
+    normalized_spl_range_db: float = 40.0,
 ) -> FieldScalarProjection:
     pressure = np.asarray(pressure)
     display = ObservationPlaneDisplay(display)
+    if not display.supports_cycle_animation:
+        animation_phase_deg = None
     if display == ObservationPlaneDisplay.PARTICLE_VELOCITY:
         if pressure.ndim != 2 or pressure.shape[1] != 3:
             raise ValueError("Particle velocity values must have shape (sample, 3).")
@@ -535,26 +552,36 @@ def project_field_scalars(
             values = complex_magnitude
             title = "Particle Velocity Magnitude (m/s)"
         else:
-            instantaneous = np.real(pressure * np.exp(1j * np.deg2rad(float(animation_phase_deg))))
+            instantaneous = np.sqrt(2.0) * np.real(pressure * np.exp(1j * np.deg2rad(float(animation_phase_deg))))
             values = np.linalg.norm(instantaneous, axis=1)
             title = "Instantaneous Particle Speed (m/s)"
         return FieldScalarProjection(
             values.astype(np.float32, copy=False),
             title,
             "turbo",
-            (0.0, PARTICLE_VELOCITY_COLOR_LIMIT_M_PER_S),
+            (
+                0.0,
+                _pressure_color_limit(
+                    complex_magnitude * (1.0 if animation_phase_deg is None else np.sqrt(2.0)),
+                    particle_velocity_limit_m_per_s,
+                ),
+            ),
         )
     if animation_phase_deg is not None:
-        values = np.real(pressure * np.exp(1j * np.deg2rad(float(animation_phase_deg))))
-        # Keep the animation scale stable for the entire cycle.  The complex
-        # magnitude is the maximum instantaneous amplitude each sample can
-        # reach, so its global maximum is a phase-independent symmetric limit.
-        limit = _pressure_color_limit(np.abs(pressure), pressure_color_limit_pa)
+        values = np.sqrt(2.0) * np.real(pressure * np.exp(1j * np.deg2rad(float(animation_phase_deg))))
+        # RMS phasor magnitudes times sqrt(2) give peak physical pressure.
+        # Use their maximum to keep the colour scale stable throughout the cycle.
+        limit = _pressure_color_limit(np.sqrt(2.0) * np.abs(pressure), pressure_color_limit_pa)
         return FieldScalarProjection(values, "Instantaneous Pressure (Pa)", "coolwarm", (-limit, limit))
     if display == ObservationPlaneDisplay.SPL:
         values = pressure_spl_db(pressure)
         maximum = _finite_max(values, fallback=0.0)
-        return FieldScalarProjection(values, "SPL (dB re 20 µPa)", "turbo", (maximum - 60.0, maximum))
+        return FieldScalarProjection(
+            values,
+            "SPL (dB re 20 µPa)",
+            "turbo",
+            (maximum - 60.0, maximum) if spl_min_db is None else (spl_min_db, spl_max_db),
+        )
     if display == ObservationPlaneDisplay.NORMALIZED_SPL:
         values = pressure_spl_db(pressure)
         reference_db = (
@@ -563,7 +590,7 @@ def project_field_scalars(
             else float(normalized_reference_db)
         )
         values = values - reference_db
-        return FieldScalarProjection(values, "Normalized SPL (dB)", "turbo", (-40.0, 0.0))
+        return FieldScalarProjection(values, "Normalized SPL (dB)", "turbo", (-normalized_spl_range_db, 0.0))
     if display == ObservationPlaneDisplay.PHASE:
         return FieldScalarProjection(phase_deg(pressure), "Phase (degrees)", "twilight", (-180.0, 180.0))
     values = np.real(pressure) if display == ObservationPlaneDisplay.REAL_PRESSURE else np.imag(pressure)

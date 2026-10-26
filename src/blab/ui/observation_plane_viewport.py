@@ -14,6 +14,7 @@ from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import QMenu
 
+from blab.fem_fields import flow_arrow_points, plane_flow_vectors
 from blab.observation_planes import (
     InteriorRenderingMode,
     ObservationPlane,
@@ -73,6 +74,17 @@ class _ActiveFieldState:
     actor_name: str = ""
     plane: ObservationPlane | None = None
     sample_shape: tuple[int, int] | None = None
+
+
+@dataclass(frozen=True)
+class _FlowGeometry:
+    mesh: object
+    anchors: np.ndarray
+    cell_ids: np.ndarray
+    barycentric: np.ndarray
+    vector_signs: np.ndarray
+    spacing: float
+    clipped: object
 
 
 @dataclass(frozen=True)
@@ -320,6 +332,11 @@ class ObservationPlaneViewport(QObject):
         previous_planes = self._planes
         previous_selected_id = self._selected_id
         self._planes = validated
+        animated = next((p for p in validated if p.id == self._animation_plane_id), None)
+        if self._animation_plane_id is not None and (animated is None or not animated.display.supports_cycle_animation):
+            self._animation_plane_id = None
+            self._animation_timer.stop()
+            self._animation_phase_deg = 0.0
         available_ids = {plane.id for plane in self._planes}
         if self._active_id not in available_ids:
             self._active_id = None
@@ -498,6 +515,8 @@ class ObservationPlaneViewport(QObject):
         self._exterior_request_meshes.pop(key, None)
 
     def set_animation(self, plane_id: str | None, enabled: bool) -> None:
+        plane = next((candidate for candidate in self._planes if candidate.id == plane_id), None)
+        enabled = enabled and plane is not None and plane.display.supports_cycle_animation
         if not enabled or plane_id is None or self._field_results is None:
             if self._animation_plane_id is None and not self._animation_timer.isActive():
                 return
@@ -963,14 +982,21 @@ class ObservationPlaneViewport(QObject):
         results = None if self._field_results is None else self._field_results.interior
         if results is None:
             raise ValueError("No interior field results are available.")
+        if plane.display == ObservationPlaneDisplay.FLOW_ARROWS:
+            geometry = self._flow_geometry(plane)
+            pressure, velocity = results.sample_fields(
+                plane.frequency_hz,
+                plane.response_id,
+                geometry.cell_ids,
+                geometry.barycentric,
+            )
+            values = np.column_stack((pressure, velocity * geometry.vector_signs))
+            return geometry.mesh, values, "point", geometry.clipped
         particle_velocity = plane.display == ObservationPlaneDisplay.PARTICLE_VELOCITY
         if particle_velocity and plane.plane_type != ObservationPlaneType.INTERIOR:
             raise ValueError("Particle velocity is available for Interior observation planes only.")
-        pressure = None if particle_velocity else results.pressure(plane.frequency_hz, plane.response_id)
-        tetrahedron_velocity = (
-            results.particle_velocity(plane.frequency_hz, plane.response_id) if particle_velocity else None
-        )
         if plane.interior_rendering == InteriorRenderingMode.ELEMENT_FIELD:
+            pressure = None if particle_velocity else results.pressure(plane.frequency_hz, plane.response_id)
             geometry = self._element_field_mesh(
                 plane,
                 results.points_m,
@@ -978,9 +1004,19 @@ class ObservationPlaneViewport(QObject):
                 results.symmetry,
             )
             if particle_velocity:
+                tetrahedron_velocity = results.particle_velocity(plane.frequency_hz, plane.response_id)
                 values = tetrahedron_velocity[geometry.source_tetrahedron_ids] * geometry.vector_signs
             else:
-                source_pressure = np.mean(pressure[np.asarray(results.tetrahedra, dtype=np.int64)], axis=1)
+                if results.tetrahedra10 is not None:
+                    ids = np.arange(len(results.tetrahedra))
+                    source_pressure = results.sample_fields(
+                        plane.frequency_hz,
+                        plane.response_id,
+                        ids,
+                        np.full((len(ids), 4), 0.25),
+                    )[0]
+                else:
+                    source_pressure = np.mean(pressure[np.asarray(results.tetrahedra, dtype=np.int64)], axis=1)
                 values = source_pressure[geometry.source_tetrahedron_ids]
             return geometry.mesh, values, "cell", None
         geometry = self._smooth_field_mesh(
@@ -989,14 +1025,74 @@ class ObservationPlaneViewport(QObject):
             results.tetrahedra,
             results.symmetry,
         )
-        if particle_velocity:
-            values = tetrahedron_velocity[geometry.source_tetrahedron_ids] * geometry.vector_signs
-        else:
-            values = np.sum(
-                pressure[geometry.source_node_ids] * geometry.interpolation_weights,
-                axis=1,
-            )
+        sampled_pressure, sampled_velocity = results.sample_fields(
+            plane.frequency_hz,
+            plane.response_id,
+            geometry.source_tetrahedron_ids,
+            geometry.interpolation_weights,
+        )
+        values = sampled_velocity * geometry.vector_signs if particle_velocity else sampled_pressure
         return geometry.mesh, values, "point", geometry.clipped
+
+    def _flow_geometry(self, plane: ObservationPlane) -> _FlowGeometry:
+        results = self._field_results.interior
+        signature = (
+            self._field_generation,
+            plane.center_m,
+            plane.orientation_wxyz,
+            plane.width_m,
+            plane.height_m,
+            plane.arrow_density,
+            results.symmetry,
+            plane.invert_clip_side,
+        )
+        key = ("flow", plane.id)
+        cached = self._field_cache.get(key)
+        if cached is not None and cached[0] == signature:
+            return cached[1]
+        pv = __import__("pyvista")
+        volume = self._fem_volume_geometry(results.points_m, results.tetrahedra, results.symmetry)
+        spacing = max(plane.width_m, plane.height_m) / plane.arrow_density
+        u, v, _normal = plane.local_axes
+        # Equal physical spacing in both axes, centred and independent of colour resolution.
+        nx, ny = plane.arrow_sample_shape
+        xs = (np.arange(nx) + 0.5) * spacing
+        ys = (np.arange(ny) + 0.5) * spacing
+        xs -= (xs[0] + xs[-1]) / 2
+        ys -= (ys[0] + ys[-1]) / 2
+        x, y = np.meshgrid(xs, ys)
+        anchors = np.asarray(plane.center_m) + x.reshape(-1, 1) * u + y.reshape(-1, 1) * v
+        expanded_ids = np.asarray(volume.volume.find_containing_cell(anchors), dtype=np.int64)
+        valid = expanded_ids >= 0
+        anchors, expanded_ids = anchors[valid], expanded_ids[valid]
+        if not len(anchors):
+            raise ValueError("No arrow samples intersect the FEM region; increase arrow density or move the plane.")
+        barycentric = _tetrahedral_interpolation_weights(
+            anchors,
+            volume.expanded_points[volume.expanded_tetrahedra[expanded_ids]],
+        )
+        count = len(results.tetrahedra)
+        mesh = pv.PolyData(np.repeat(anchors, 6, axis=0))
+        mesh.verts = np.empty(0, dtype=np.int64)
+        mesh.lines = np.column_stack((np.full(len(anchors) * 3, 2), np.arange(len(anchors) * 6).reshape(-1, 2)))
+        geometry = _FlowGeometry(
+            mesh,
+            anchors,
+            expanded_ids % count,
+            barycentric,
+            _symmetry_image_signs(results.symmetry)[expanded_ids // count],
+            spacing,
+            volume.volume.clip(normal=plane.local_axes[2], origin=plane.center_m, invert=plane.invert_clip_side),
+        )
+        self._field_cache[key] = (signature, geometry)
+        return geometry
+
+    def _update_flow_points(self, plane, mesh, values, phase):
+        geometry = self._flow_geometry(plane)
+        normal = plane.local_axes[2]
+        vectors, reference = plane_flow_vectors(values[:, 0], values[:, 1:], normal, phase)
+        reference = _flow_scale_reference(plane, phase, reference)
+        mesh.points = flow_arrow_points(geometry.anchors, vectors, normal, geometry.spacing, reference)
 
     def _add_exterior_field(self, plane: ObservationPlane) -> bool:
         results = None if self._field_results is None else self._field_results.exterior
@@ -1674,6 +1770,26 @@ class ObservationPlaneViewport(QObject):
         *,
         animation_phase_deg: float | None = None,
     ) -> FieldScalarProjection:
+        if plane.display == ObservationPlaneDisplay.FLOW_ARROWS:
+            vectors, reference = plane_flow_vectors(
+                pressure[:, 0],
+                pressure[:, 1:],
+                plane.local_axes[2],
+                animation_phase_deg,
+            )
+            reference = _flow_scale_reference(plane, animation_phase_deg, reference)
+            title = (
+                "In-plane Active Intensity (W/m^2)"
+                if animation_phase_deg is None
+                else "In-plane Instantaneous Velocity (m/s)"
+            )
+            return FieldScalarProjection(
+                # Bright magenta-to-yellow keeps low-magnitude arrows visible on dark backgrounds.
+                np.repeat(np.linalg.norm(vectors, axis=1), 6),
+                title,
+                "spring",
+                (0, reference),
+            )
         drag = getattr(self, "_drag", None)
         normalized_reference = None
         if drag is not None and drag.original.id == plane.id and drag.mode in {"move", "rotate"}:
@@ -1684,6 +1800,10 @@ class ObservationPlaneViewport(QObject):
             animation_phase_deg=animation_phase_deg,
             normalized_reference_db=normalized_reference,
             pressure_color_limit_pa=plane.pressure_color_limit_pa,
+            particle_velocity_limit_m_per_s=plane.particle_velocity_limit_m_per_s,
+            spl_min_db=plane.spl_min_db,
+            spl_max_db=plane.spl_max_db,
+            normalized_spl_range_db=plane.normalized_spl_range_db,
         )
 
     def _add_colored_field_actor(
@@ -1696,6 +1816,8 @@ class ObservationPlaneViewport(QObject):
         name: str,
     ) -> None:
         phase = self._animation_phase_deg if self._animation_plane_id == plane.id else None
+        if plane.display == ObservationPlaneDisplay.FLOW_ARROWS:
+            self._update_flow_points(plane, mesh, pressure, phase)
         projection = ObservationPlaneViewport._project_field_scalars(
             self,
             pressure,
@@ -1717,7 +1839,7 @@ class ObservationPlaneViewport(QObject):
             opacity=0.92,
             show_edges=association == "cell",
             edge_color="#36464d",
-            line_width=0.4,
+            line_width=2.0 if plane.display == ObservationPlaneDisplay.FLOW_ARROWS else 0.4,
             lighting=False,
             pickable=False,
             show_scalar_bar=True,
@@ -1741,7 +1863,9 @@ class ObservationPlaneViewport(QObject):
             actor=actor,
             actor_name=name,
             plane=plane,
-            sample_shape=plane.sample_shape if association == "point" else None,
+            sample_shape=plane.sample_shape
+            if association == "point" and plane.display != ObservationPlaneDisplay.FLOW_ARROWS
+            else None,
         )
         self._scalar_bar_titles.add(scalar_bar_title)
         self._actor_names.add(name)
@@ -1780,6 +1904,8 @@ class ObservationPlaneViewport(QObject):
         if mesh is not state.mesh or association != state.association:
             return False
         phase = self._animation_phase_deg if self._animation_plane_id == plane.id else None
+        if plane.display == ObservationPlaneDisplay.FLOW_ARROWS:
+            self._update_flow_points(plane, mesh, pressure, phase)
         projection = ObservationPlaneViewport._project_field_scalars(
             self,
             pressure,
@@ -1889,7 +2015,12 @@ class ObservationPlaneViewport(QObject):
             (candidate for candidate in self._planes if candidate.id == self._animation_plane_id),
             None,
         )
-        if plane is None or self._animation_plane_id != plane.id or self._field_results is None:
+        if (
+            plane is None
+            or not plane.display.supports_cycle_animation
+            or self._animation_plane_id != plane.id
+            or self._field_results is None
+        ):
             self.set_animation(None, False)
             return
         now = time.monotonic()
@@ -1911,6 +2042,8 @@ class ObservationPlaneViewport(QObject):
         state = self._active_field
         if state is None or state.plane_id != plane.id:
             return False
+        if plane.display == ObservationPlaneDisplay.FLOW_ARROWS:
+            self._update_flow_points(plane, state.mesh, state.pressure, self._animation_phase_deg)
         projection = ObservationPlaneViewport._project_field_scalars(
             self,
             state.pressure,
@@ -2188,6 +2321,8 @@ def _observation_plane_help_text(plane_name: str, mode: str | None) -> str:
 def _scalar_bar_title(title: str) -> str:
     if title == "Particle Velocity Magnitude (m/s)":
         return PARTICLE_VELOCITY_SCALAR_BAR_TITLE
+    if title.startswith("In-plane "):
+        return title.replace("In-plane ", "In-plane\n").replace(" (", "\n(")
     return title
 
 
@@ -2238,6 +2373,12 @@ def _result_selection_update(
             response_id=old.response_id,
             animation_speed_hz=old.animation_speed_hz,
             pressure_color_limit_pa=old.pressure_color_limit_pa,
+            velocity_scale_m_per_s=old.velocity_scale_m_per_s,
+            intensity_scale_w_per_m2=old.intensity_scale_w_per_m2,
+            particle_velocity_limit_m_per_s=old.particle_velocity_limit_m_per_s,
+            spl_min_db=old.spl_min_db,
+            spl_max_db=old.spl_max_db,
+            normalized_spl_range_db=old.normalized_spl_range_db,
         )
         if comparable != old:
             return None
@@ -2245,6 +2386,12 @@ def _result_selection_update(
             old.frequency_hz != new.frequency_hz
             or old.response_id != new.response_id
             or old.pressure_color_limit_pa != new.pressure_color_limit_pa
+            or old.velocity_scale_m_per_s != new.velocity_scale_m_per_s
+            or old.intensity_scale_w_per_m2 != new.intensity_scale_w_per_m2
+            or old.particle_velocity_limit_m_per_s != new.particle_velocity_limit_m_per_s
+            or old.spl_min_db != new.spl_min_db
+            or old.spl_max_db != new.spl_max_db
+            or old.normalized_spl_range_db != new.normalized_spl_range_db
         )
         state_changed = old.animation_speed_hz != new.animation_speed_hz
     if field_changed:
@@ -2567,3 +2714,8 @@ def _vtk_actor_address(actor) -> str:
     if hasattr(actor, "GetAddressAsString"):
         return actor.GetAddressAsString("")
     return str(id(actor))
+
+
+def _flow_scale_reference(plane: ObservationPlane, phase: float | None, automatic: float) -> float:
+    manual = plane.intensity_scale_w_per_m2 if phase is None else plane.velocity_scale_m_per_s
+    return automatic if manual is None else manual

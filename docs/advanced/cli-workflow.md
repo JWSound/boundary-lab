@@ -198,6 +198,46 @@ Interior-only projects do not accept exterior point probes or retained BEM
 traces. Their FEM nodal pressure is retained automatically and can drive
 Interior observation planes.
 
+In the plane properties window, **Acoustic Flow Arrows** displays equally spaced
+in-plane arrows inside the FEM volume. With animation off, direction and length
+show active acoustic intensity, `Re(p * conjugate(v))`, in W/m^2 (RMS phasors).
+With **Animate Cycle** enabled, they show instantaneous in-plane particle velocity,
+`sqrt(2) * Re(v * exp(i theta))`, in m/s. Normal-to-plane motion is excluded.
+Standing waves can show strong animated motion with little static intensity.
+These are linear acoustic fields, not streaming or turbulent flow.
+
+**Arrow density** controls anchors across the longer plane side (5 to 60), with
+equal physical spacing in both directions. Anchors outside the FEM volume are
+omitted. Length and colour scale automatically for the selected plane, frequency
+and response; the velocity scale stays fixed through each animation cycle.
+The separate **Instantaneous velocity scale** and **Active intensity scale**
+controls can override Automatic with a fixed full-scale magnitude in m/s or W/m^2.
+This sets both the maximum arrow length and the top of the colour legend; larger
+magnitudes saturate. Both settings are saved with the plane.
+The legend gives the physical scale. Density changes and animation reuse retained
+complex results and do not launch another solve. P1 fields use constant element
+gradients; P2 fields use all ten pressure nodes and evaluate gradients at each
+anchor. Increasing density does not refine the underlying FEM solution.
+
+Plane properties show controls only for the selected display and rendering mode;
+hidden settings retain their values. Flow arrows show the intensity scale while
+static and the instantaneous velocity scale while animated. Resolution is hidden
+for arrows and Element Field, and playback speed appears only during playback.
+
+SPL supports an automatic 60 dB range below the plane maximum or manual minimum
+and maximum values. Normalized SPL exposes its range below 0 dB (40 dB by default).
+Particle Velocity Magnitude supports an automatic maximum or a manual maximum
+in m/s instead of a fixed 35 m/s colour limit. These settings are saved per plane.
+Automatic velocity scaling remains constant over each cycle.
+
+**Animate Cycle** is available for Real Pressure, Imaginary Pressure, Particle
+Velocity Magnitude, and Acoustic Flow Arrows. Selecting SPL, Normalized SPL, or
+Phase stops cycle playback and hides its controls; frequency sweeping remains
+available. Pressure and scalar-speed animations convert RMS phasors to physical
+instantaneous quantities with `sqrt(2) * Re(P * exp(i theta))`, consistent with
+the velocity arrows. Static real/imaginary pressure and velocity magnitudes
+continue to use the retained RMS phasors.
+
 Full-matrix `validation_diagnostics` may be enabled for monolithic coupled BEAT
 CPU solves. They cannot be combined with CPU, CUDA, or ROCm FEM static
 condensation; project validation rejects that combination before Julia starts.

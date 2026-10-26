@@ -30,6 +30,11 @@ class ObservationPlaneDisplay(StrEnum):
     IMAGINARY_PRESSURE = "imaginary_pressure"
     NORMALIZED_SPL = "normalized_spl"
     PARTICLE_VELOCITY = "particle_velocity"
+    FLOW_ARROWS = "flow_arrows"
+
+    @property
+    def supports_cycle_animation(self) -> bool:
+        return self in {self.REAL_PRESSURE, self.IMAGINARY_PRESSURE, self.PARTICLE_VELOCITY, self.FLOW_ARROWS}
 
 
 class InteriorRenderingMode(StrEnum):
@@ -60,6 +65,13 @@ class ObservationPlane:
     frequency_hz: float | None = None
     animation_speed_hz: float = 1.0
     pressure_color_limit_pa: float | None = None
+    arrow_density: int = 20
+    velocity_scale_m_per_s: float | None = None
+    intensity_scale_w_per_m2: float | None = None
+    particle_velocity_limit_m_per_s: float | None = None
+    spl_min_db: float | None = None
+    spl_max_db: float | None = None
+    normalized_spl_range_db: float = 40.0
 
     def validated(self) -> ObservationPlane:
         center = _finite_tuple(self.center_m, 3, label="center_m")
@@ -88,10 +100,32 @@ class ObservationPlane:
             )
         plane_type = ObservationPlaneType(self.plane_type)
         display = ObservationPlaneDisplay(self.display)
-        if display == ObservationPlaneDisplay.PARTICLE_VELOCITY and plane_type != ObservationPlaneType.INTERIOR:
+        if (
+            display in {ObservationPlaneDisplay.PARTICLE_VELOCITY, ObservationPlaneDisplay.FLOW_ARROWS}
+            and plane_type != ObservationPlaneType.INTERIOR
+        ):
             display = ObservationPlaneDisplay.SPL
+        flow_scales = {}
+        for key in ("velocity_scale_m_per_s", "intensity_scale_w_per_m2", "particle_velocity_limit_m_per_s"):
+            value = getattr(self, key)
+            flow_scales[key] = None if value is None else _positive_finite(value, label=key, minimum=1e-12)
+        spl_min = None if self.spl_min_db is None else float(self.spl_min_db)
+        spl_max = None if self.spl_max_db is None else float(self.spl_max_db)
+        if (spl_min is None) != (spl_max is None):
+            raise ValueError("SPL minimum and maximum must both be specified or automatic.")
+        if spl_min is not None and (not math.isfinite(spl_min) or not math.isfinite(spl_max) or spl_min >= spl_max):
+            raise ValueError("SPL limits must be finite with minimum less than maximum.")
+        normalized_range = _positive_finite(self.normalized_spl_range_db, label="normalized_spl_range_db", minimum=0.01)
+        density = int(self.arrow_density)
+        if not 5 <= density <= 60:
+            raise ValueError("Arrow density must be between 5 and 60.")
         return replace(
             self,
+            arrow_density=density,
+            spl_min_db=spl_min,
+            spl_max_db=spl_max,
+            normalized_spl_range_db=normalized_range,
+            **flow_scales,
             id=identifier,
             name=name,
             center_m=center,
@@ -116,6 +150,11 @@ class ObservationPlane:
         x_points = int(math.ceil(self.width_m / self.resolution_m)) + 1
         y_points = int(math.ceil(self.height_m / self.resolution_m)) + 1
         return max(x_points, 2), max(y_points, 2)
+
+    @property
+    def arrow_sample_shape(self) -> tuple[int, int]:
+        spacing = max(self.width_m, self.height_m) / self.arrow_density
+        return tuple(max(1, int(math.floor(size / spacing + 1e-9))) for size in (self.width_m, self.height_m))
 
     @property
     def evaluation_point_count(self) -> int:
@@ -157,6 +196,13 @@ class ObservationPlane:
             "width_m": plane.width_m,
             "height_m": plane.height_m,
             "resolution_m": plane.resolution_m,
+            "arrow_density": plane.arrow_density,
+            "velocity_scale_m_per_s": plane.velocity_scale_m_per_s,
+            "intensity_scale_w_per_m2": plane.intensity_scale_w_per_m2,
+            "particle_velocity_limit_m_per_s": plane.particle_velocity_limit_m_per_s,
+            "spl_min_db": plane.spl_min_db,
+            "spl_max_db": plane.spl_max_db,
+            "normalized_spl_range_db": plane.normalized_spl_range_db,
             "type": plane.plane_type.value,
             "display": plane.display.value,
             "interior_rendering": plane.interior_rendering.value,
@@ -179,6 +225,13 @@ class ObservationPlane:
                 orientation_wxyz=tuple(payload.get("orientation_wxyz", (1.0, 0.0, 0.0, 0.0))),
                 width_m=float(payload.get("width_m", DEFAULT_PLANE_SIZE_M)),
                 height_m=float(payload.get("height_m", DEFAULT_PLANE_SIZE_M)),
+                arrow_density=int(payload.get("arrow_density", 20)),
+                velocity_scale_m_per_s=payload.get("velocity_scale_m_per_s"),
+                intensity_scale_w_per_m2=payload.get("intensity_scale_w_per_m2"),
+                particle_velocity_limit_m_per_s=payload.get("particle_velocity_limit_m_per_s"),
+                spl_min_db=payload.get("spl_min_db"),
+                spl_max_db=payload.get("spl_max_db"),
+                normalized_spl_range_db=payload.get("normalized_spl_range_db", 40.0),
                 resolution_m=float(payload.get("resolution_m", DEFAULT_PLANE_RESOLUTION_M)),
                 plane_type=ObservationPlaneType(payload.get("type", ObservationPlaneType.INTERIOR.value)),
                 display=ObservationPlaneDisplay(payload.get("display", ObservationPlaneDisplay.SPL.value)),
