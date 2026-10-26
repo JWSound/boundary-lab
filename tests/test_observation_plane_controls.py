@@ -107,7 +107,11 @@ def test_geometry_controls_follow_plane_and_rendering_type(qapp):
             dialog.rendering_combo.findData(InteriorRenderingMode.ELEMENT_FIELD.value)
         )
         assert dialog.resolution_spin.isHidden()
-        assert dialog.invert_clip_check.isHidden()
+        assert not dialog.invert_clip_check.isHidden()
+        assert dialog.invert_clip_check.isEnabled()
+        original_side = dialog.plane.invert_clip_side
+        dialog.invert_clip_check.setChecked(not original_side)
+        assert dialog.plane.invert_clip_side is not original_side
         dialog.type_combo.setCurrentIndex(dialog.type_combo.findData(ObservationPlaneType.EXTERIOR.value))
         assert dialog.rendering_combo.isHidden()
         assert dialog.invert_clip_check.isHidden()

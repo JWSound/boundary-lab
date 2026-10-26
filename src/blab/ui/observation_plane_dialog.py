@@ -459,7 +459,9 @@ class ObservationPlanePropertiesDialog(QDialog):
         element_field = (
             supports_interior and self.rendering_combo.currentData() == InteriorRenderingMode.ELEMENT_FIELD.value
         )
-        clipping = supports_interior and (flow or not element_field)
+        # Element fields clip the volume itself; their clipping side remains
+        # meaningful even though they do not use a sampling resolution.
+        clipping = supports_interior
         self.invert_clip_check.setEnabled(clipping)
         self._form.setRowVisible(self.invert_clip_check, clipping)
         resolution = not element_field and not flow
