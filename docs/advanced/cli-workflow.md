@@ -386,8 +386,11 @@ the [server developer reference](boundary-lab-server_advanced.md) for the remote
 
 ## Mesh A STEP File
 
+The CAD import plugin carries its own command line, run from the plugin folder:
+
 ```bash
-blab cad-import enclosure.step --fmax 2000 --elements-per-wavelength 6 --output meshes
+cd geometry_providers/cad_import
+python -m cadimport.cli enclosure.step --fmax 2000 --elements-per-wavelength 6 --output meshes
 ```
 
 Runs the CAD import pipeline without the desktop app and writes one `<mesh id>.msh`
