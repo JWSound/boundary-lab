@@ -1099,8 +1099,12 @@ class ObservationPlaneViewport(QObject):
         vertices_per_arrow = 10 if volumetric else 6
         mesh = pv.PolyData(np.repeat(anchors, vertices_per_arrow, axis=0))
         mesh.verts = np.empty(0, dtype=np.int64)
-        mesh.lines = np.column_stack((np.full(len(anchors) * vertices_per_arrow // 2, 2),
-                                      np.arange(len(anchors) * vertices_per_arrow).reshape(-1, 2)))
+        mesh.lines = np.column_stack(
+            (
+                np.full(len(anchors) * vertices_per_arrow // 2, 2),
+                np.arange(len(anchors) * vertices_per_arrow).reshape(-1, 2),
+            )
+        )
         geometry = _FlowGeometry(
             mesh,
             anchors,
@@ -2924,6 +2928,8 @@ def _is_vector_display(plane: ObservationPlane) -> bool:
 
 
 def _volumetric_flow(plane: ObservationPlane) -> bool:
-    return (plane.plane_type == ObservationPlaneType.INTERIOR
-            and plane.interior_rendering == InteriorRenderingMode.ELEMENT_FIELD
-            and plane.display == ObservationPlaneDisplay.FLOW_ARROWS)
+    return (
+        plane.plane_type == ObservationPlaneType.INTERIOR
+        and plane.interior_rendering == InteriorRenderingMode.ELEMENT_FIELD
+        and plane.display == ObservationPlaneDisplay.FLOW_ARROWS
+    )
