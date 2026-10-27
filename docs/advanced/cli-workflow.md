@@ -172,6 +172,11 @@ Supported `retain` entries are `bem_boundary_pressure`,
 Complex results remain separated by excitation port; the headless path does not
 collapse them into synthesized GUI channels.
 
+For a double-precision reference solve, set `"solver_options": {"precision":
+"float64"}` in the request overlay. Headless CPU, CUDA, and ROCm solves honor
+this setting; the default remains `float32`. Pure-interior FEM solves always
+use `float64` for mesh geometry and element Jacobians.
+
 Exterior-only CUDA and Metal solves select direct Burton–Miller system
 assembly. The engine assembles the dense system and excitation right-hand sides
 on the GPU without materializing the four boundary-operator matrices, and
