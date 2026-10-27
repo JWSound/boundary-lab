@@ -3,7 +3,7 @@
 A bundled Generator Plugin that turns a STEP file into a conformal FEM/BEM mesh
 assembly. Solids become **air bodies** (bounded regions); surface bodies become
 **exterior surface bodies**, which together form the BEM exterior. Meshing runs
-the same headless pipeline as `blab cad-import`, so both produce identical
+the same headless pipeline as `python -m cadimport.cli` (run from this folder), so both produce identical
 meshes for identical inputs.
 
 ## Use

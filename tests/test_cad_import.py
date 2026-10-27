@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import re
 import subprocess
@@ -14,8 +15,20 @@ import meshio
 import numpy as np
 import pytest
 
-from blab.cad_import import (
+from blab.interface_conform import validate_conforming_interfaces
+from cad_fixtures import (
+    bored_ball,
+    multipart_port,
+    named_sides,
+    single_solid,
+    strip_names,
+    two_chambers,
+    vented_box,
+    waveguide,
+)
+from cad_plugin import (
     LEVELS,
+    PLUGIN_DIR,
     CadClosedShell,
     CadFace,
     CadFaceGroups,
@@ -28,6 +41,7 @@ from blab.cad_import import (
     inspect_step,
     match_face_ref,
     mesh_step,
+    module,
     open_step,
     place_preview,
     preview_from_json,
@@ -35,19 +49,10 @@ from blab.cad_import import (
     result_from_json,
     result_to_json,
 )
-from blab.cad_import import cli as cad_cli
-from blab.cad_import.sizing import legacy_sizes, migrated, read_face_sizes
-from blab.interface_conform import validate_conforming_interfaces
-from cad_fixtures import (
-    bored_ball,
-    multipart_port,
-    named_sides,
-    single_solid,
-    strip_names,
-    two_chambers,
-    vented_box,
-    waveguide,
-)
+
+cad_cli = module("cli")
+_sizing = module("sizing")
+legacy_sizes, migrated, read_face_sizes = _sizing.legacy_sizes, _sizing.migrated, _sizing.read_face_sizes
 
 # Target element size 343 / 3430 / 5 = 20 mm.
 SETTINGS = CadImportSettings(fmax_hz=3430.0, sound_speed_m_per_s=343.0, elements_per_wavelength=5.0)
@@ -802,8 +807,14 @@ MESH_IMPORT = Path(__file__).parent / "fixtures" / "cad_import" / "blab Mesh imp
 def test_surface_model_with_near_coincident_edges_reads_without_degenerate_faces():
     # Fragmented in metres, OpenCASCADE's fixed tolerance collapsed faces of this model to zero area, and finding
     # the normal of one never returned. A subprocess, so that hang fails the test instead of stalling the run.
-    code = "import sys; from blab.cad_import import inspect_step; print(min(f.area for f in inspect_step(sys.argv[1]).faces))"
-    run = subprocess.run([sys.executable, "-c", code, str(MESH_IMPORT)], capture_output=True, text=True, timeout=120)
+    code = "import sys; from cadimport import inspect_step; print(min(f.area for f in inspect_step(sys.argv[1]).faces))"
+    run = subprocess.run(
+        [sys.executable, "-c", code, str(MESH_IMPORT)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        cwd=PLUGIN_DIR,
+    )
 
     assert run.returncode == 0, run.stderr
     assert float(run.stdout) > 1e-9  # m², a 0.03 mm square
@@ -816,7 +827,9 @@ def test_a_face_bounded_only_by_seams_still_has_curves_to_draw():
 
     assert all(openings.face_curves[f] for f in openings.face_edges)
     assert set().union(*openings.face_curves.values()) <= set(openings.edges)  # sampled, so drawable
-    assert preview_from_json(json.loads(json.dumps(preview_to_json(preview)))).openings.face_curves == openings.face_curves
+    assert (
+        preview_from_json(json.loads(json.dumps(preview_to_json(preview)))).openings.face_curves == openings.face_curves
+    )
 
 
 @pytest.fixture(scope="module")
@@ -1158,3 +1171,22 @@ def test_previews_survive_their_json_form(surface_model):
 
 def test_meshing_results_survive_their_json_form(vented):
     assert result_from_json(json.loads(json.dumps(result_to_json(vented)))) == vented
+
+
+def test_the_plugin_command_line_meshes_a_step_file_from_the_plugin_folder(tmp_path):
+    step = vented_box(tmp_path / "box.step")
+    run = subprocess.run(
+        [sys.executable, "-m", "cadimport.cli", str(step), "--fmax", "1000", "--output", str(tmp_path / "out")],
+        capture_output=True,
+        text=True,
+        timeout=300,
+        cwd=PLUGIN_DIR,
+    )
+
+    assert run.returncode == 0, run.stderr
+    assert (tmp_path / "out" / "exterior.msh").is_file()
+    assert "Wrote exterior.msh" in run.stdout
+
+
+def test_the_main_package_has_no_cad_import_module():
+    assert importlib.util.find_spec("blab.cad_import") is None

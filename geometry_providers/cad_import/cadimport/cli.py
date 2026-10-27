@@ -1,4 +1,4 @@
-"""``blab cad-import``: mesh a STEP file into a FEM/BEM assembly with the CAD import pipeline."""
+"""``python -m cadimport.cli``: mesh a STEP file into a FEM/BEM assembly with the CAD import pipeline."""
 
 from __future__ import annotations
 
@@ -112,3 +112,7 @@ def main(argv: Sequence[str] | None = None, prog: str | None = None) -> None:
     print(f"Suggested symmetry: {SYMMETRY_LABELS[geometry.symmetry]}")
     for warning in geometry.warnings:
         print(f"Warning: {warning}")
+
+
+if __name__ == "__main__":
+    main(prog="python -m cadimport.cli")

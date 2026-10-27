@@ -6,7 +6,8 @@ from dataclasses import asdict, replace
 
 import pytest
 
-from blab.cad_import import (
+from cad_fixtures import named_sides, vented_box
+from cad_plugin import (
     CadDesign,
     CadFaceGroups,
     CadFaceRef,
@@ -15,9 +16,11 @@ from blab.cad_import import (
     design_settings,
     face_ref,
     inspect_step,
+    module,
 )
-from blab.cad_import.design import BEM_FINENESS, FEM_FINENESS
-from cad_fixtures import named_sides, vented_box
+
+_design = module("design")
+BEM_FINENESS, FEM_FINENESS = _design.BEM_FINENESS, _design.FEM_FINENESS
 
 
 @pytest.fixture(scope="module")
@@ -484,7 +487,7 @@ def test_a_bem_level_stores_its_elements_per_wavelength_on_faces_and_volumes(box
 
 
 def test_the_shown_target_of_a_face_is_the_one_the_size_plan_meshes_it_with(box):
-    from blab.cad_import.sizing import size_plan
+    size_plan = module("sizing").size_plan
 
     design = CadDesign(source(elements_per_wavelength=6, bem_elements_per_wavelength=2), box)
     settings = design_settings(design.source, CONFIGURATION)

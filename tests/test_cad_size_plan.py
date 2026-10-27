@@ -6,9 +6,10 @@ from dataclasses import replace
 
 import pytest
 
-from blab.cad_import import CadFaceGroups, CadImportSettings, CadSizeOverride, inspect_step
-from blab.cad_import.sizing import size_plan
 from cad_fixtures import vented_box
+from cad_plugin import CadFaceGroups, CadImportSettings, CadSizeOverride, inspect_step, module
+
+size_plan = module("sizing").size_plan
 
 COARSE = CadSizeOverride(elements_per_wavelength=2)
 MM_8, MM_30 = CadSizeOverride(size_m=0.008), CadSizeOverride(size_m=0.03)

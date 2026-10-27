@@ -16,11 +16,11 @@ from PySide6.QtGui import QMouseEvent, QPalette
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QComboBox, QDockWidget, QHeaderView, QLabel, QScrollArea, QSplitter
 
-from blab.cad_import import inspect_step
 from blab.generators import catalog as catalog_module
 from blab.physical_compiler import PhysicalSystemCompiler
 from blab.ui.settings import load_gui_preferences, save_gui_preferences
 from cad_fixtures import bored_ball, strip_names, vented_box, waveguide
+from cad_plugin import inspect_step
 from conftest import _stub_qt_interactor_class
 from test_cad_import_provider import PROVIDER, ROOT
 from test_ui_settings import MemorySettings

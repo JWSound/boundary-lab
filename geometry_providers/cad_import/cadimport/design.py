@@ -326,7 +326,7 @@ class CadDesign:
 
     def migrated(self, sizing: CadSizing) -> dict | None:
         """The whole source with older body and face-group sizes turned into face and volume sizes (see
-        :func:`blab.cad_import.sizing.migrated`), else ``None``; ``sizing`` needs the maximum frequency."""
+        :func:`cadimport.sizing.migrated`), else ``None``; ``sizing`` needs the maximum frequency."""
         if self.groups is None or self.size_error or sizing.fmax_hz is None:
             return None
         return migrated(self.source, self.groups, self.sizes, sizing)

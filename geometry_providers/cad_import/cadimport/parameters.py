@@ -1,4 +1,4 @@
-"""The STEP file of a CAD import design source; the rest of the source is read by ``blab.cad_import.design``."""
+"""The STEP file of a CAD import design source; the rest of the source is read by ``cadimport.design``."""
 
 from pathlib import Path
 

@@ -12,8 +12,6 @@ import meshio
 import numpy as np
 import pytest
 
-from blab.cad_import import CadGeometry, CadImportResult, CadInterface, CadMesh, face_ref, inspect_step
-from blab.cad_import.pipeline import ZERO
 from blab.config import ChannelConfig
 from blab.generators import GenerationRequest
 from blab.generators.application import stage_generation
@@ -32,6 +30,9 @@ from blab.project.model import (
 )
 from blab.system_solve import prepare_system_solve
 from cad_fixtures import bored_ball, multipart_port, single_solid, strip_names, vented_box, waveguide
+from cad_plugin import CadGeometry, CadImportResult, CadInterface, CadMesh, face_ref, inspect_step, module
+
+ZERO = module("pipeline").ZERO
 
 ROOT = Path(__file__).resolve().parents[1] / "geometry_providers"
 PROVIDER = "blab.cad_import"

@@ -43,7 +43,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from blab.cad_import import (
+from blab.generators.configuration import DEFAULT_SOUND_SPEED_M_PER_S
+from blab.ui.file_dialogs import FileDialogService
+
+from . import (
     BEM_LEVELS,
     FEM_LEVELS,
     LEVELS,
@@ -54,12 +57,9 @@ from blab.cad_import import (
     CadSizeOverride,
     place_preview,
 )
-from blab.cad_import.design import BEM_FINENESS, FEM_FINENESS, source_placement
-from blab.cad_import.sizing import shared
-from blab.generators.configuration import DEFAULT_SOUND_SPEED_M_PER_S
-from blab.ui.file_dialogs import FileDialogService
-
+from .design import BEM_FINENESS, FEM_FINENESS, source_placement
 from .jobs import preview_in_worker
+from .sizing import shared
 
 SYMMETRY_LABELS = {"off": "Off", "x": "X", "xy": "XY"}
 FACE_ROLE = Qt.ItemDataRole.UserRole

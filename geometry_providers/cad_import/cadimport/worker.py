@@ -1,7 +1,7 @@
 """Isolated Gmsh process: ``worker.py job.json`` runs a job :mod:`jobs` wrote.
 
 Writes ``result.json``, or ``error.json`` with the message of a pipeline rejection. Runs with ``-I``, so the job
-names the ``blab`` source folder of the host process.
+names the ``blab`` source folder of the host process and the plugin folder.
 """
 
 import json
@@ -13,8 +13,8 @@ RESULT, ERROR = "result.json", "error.json"  # what the worker writes in the out
 
 def main(job_path):
     job = json.loads(Path(job_path).read_text(encoding="utf-8"))
-    sys.path.insert(0, job["blab_path"])
-    from blab.cad_import import CadImportSettings, mesh_step, open_step, preview_to_json, result_to_json
+    sys.path[:0] = [job["plugin_path"], job["blab_path"]]
+    from cadimport.pipeline import CadImportSettings, mesh_step, open_step, preview_to_json, result_to_json
 
     output = Path(job["output"])
     try:

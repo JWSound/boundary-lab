@@ -6,7 +6,8 @@ from dataclasses import asdict, replace
 
 import pytest
 
-from blab.cad_import import (
+from cad_fixtures import vented_box
+from cad_plugin import (
     FEM_LEVELS,
     LEVELS,
     MIXED,
@@ -17,9 +18,17 @@ from blab.cad_import import (
     CadSizing,
     face_ref,
     inspect_step,
+    module,
 )
-from blab.cad_import.sizing import LEGACY_SIZES, legacy_sizes, migrated, read_face_sizes, size_plan
-from cad_fixtures import vented_box
+
+_sizing = module("sizing")
+LEGACY_SIZES, legacy_sizes, migrated, read_face_sizes, size_plan = (
+    _sizing.LEGACY_SIZES,
+    _sizing.legacy_sizes,
+    _sizing.migrated,
+    _sizing.read_face_sizes,
+    _sizing.size_plan,
+)
 
 COARSE, FINE = CadSizeOverride(elements_per_wavelength=2), CadSizeOverride(elements_per_wavelength=6)
 MM_8, MM_30 = CadSizeOverride(size_m=0.008), CadSizeOverride(size_m=0.03)

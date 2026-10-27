@@ -3,6 +3,7 @@
 A rejection by the pipeline (``ValueError``) comes back as ``ValueError`` with the same message.
 """
 
+import importlib.util
 import json
 import subprocess
 import sys
@@ -10,13 +11,13 @@ import time
 from dataclasses import asdict
 from pathlib import Path
 
-import blab
-from blab.cad_import import CadImportResult, CadImportSettings, CadPreview, preview_from_json, result_from_json
 from blab.generators.base import GenerationCancelledError
 
+from .pipeline import CadImportResult, CadImportSettings, CadPreview, preview_from_json, result_from_json
 from .worker import ERROR, RESULT
 
-BLAB_PATH = str(Path(blab.__file__).resolve().parents[1])
+BLAB_PATH = str(Path(importlib.util.find_spec("blab").origin).resolve().parents[1])  # the host source folder
+PLUGIN_PATH = str(Path(__file__).resolve().parents[1])  # the folder holding the ``cadimport`` package
 WORKER = Path(__file__).with_name("worker.py")
 
 
@@ -45,7 +46,7 @@ def _run(job, output, *, cancelled, started=lambda process: None, elapsed=lambda
     """Run ``worker.py`` on ``job`` in ``output`` and return its JSON result; ``cancelled()`` is polled and
     terminates it."""
     job_path = output / "job.json"
-    job_path.write_text(json.dumps(job | {"blab_path": BLAB_PATH, "output": str(output)}, indent=2), encoding="utf-8")
+    job_path.write_text(json.dumps(job | {"blab_path": BLAB_PATH, "plugin_path": PLUGIN_PATH, "output": str(output)}, indent=2), encoding="utf-8")
     log_path = output / "meshing.log"
     with log_path.open("w", encoding="utf-8") as log:
         process = subprocess.Popen(
