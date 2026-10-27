@@ -4,7 +4,9 @@ A bundled Generator Plugin that turns a STEP file into a conformal FEM/BEM mesh
 assembly. Solids become **air bodies** (bounded regions); surface bodies become
 **exterior surface bodies**, which together form the BEM exterior. Meshing runs
 the same headless pipeline as `python -m cadimport.cli` (run from this folder), so both produce identical
-meshes for identical inputs.
+meshes for identical inputs. Boundary Lab has no `blab` command for this; for
+automation on projects with CAD import designs, use `blab project validate` and
+`blab project solve`.
 
 ## Use
 
@@ -104,3 +106,16 @@ already be the half or quarter part; the host checks it lies in the positive
 region. Saved projects reopen from their cached meshes without re-meshing.
 
 Source units are metres; the STEP path is stored as given.
+
+## Implementation and layout
+
+The plugin lives entirely in `geometry_providers/cad_import/` (meshing pipeline,
+design, sizing, face references, editor, subprocess worker and command line in
+`cadimport/`) and uses the public generator exchange API. The main package holds
+only the first-party allowlist entry and the enable-once setting. Modules import
+each other relatively, so the plugin loads only through the plugin loader. The
+standard Windows and macOS build/restage scripts already copy the whole
+`geometry_providers` folder into application resources. The isolated meshing
+worker is started with this folder on its import path. The command-line entry
+point is `python -m cadimport.cli`, run from this folder (see the
+[advanced CLI workflow](../../docs/advanced/cli-workflow.md#mesh-a-step-file)).

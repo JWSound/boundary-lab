@@ -49,6 +49,14 @@ model and validates interface topology; backend-specific solve checks still appl
   FEM–BEM–LEM assembly and CAD Import meshes a STEP file into one.
   Other packages still require explicit enablement; a manifest cannot claim
   first-party status. Disabling a bundled plugin is remembered.
+- A plugin lives entirely in its own folder. The bundled Vented Enclosure and CAD
+  Import plugins are the examples: the main package holds only the generic
+  exchange API, the catalog and the first-party allowlist entry, and plugins
+  cannot add commands to `blab`. CAD Import is the example of a plugin with a real
+  meshing pipeline and a cancellable subprocess worker; its modules import each
+  other relatively because the loader mounts the folder under its own namespace,
+  and its worker gets the plugin folder on its import path. Automation uses the
+  generic `blab project` workflow; a plugin may ship its own command line, run from its folder.
 - Providers can submit asynchronous solves, subscribe to status, cancel their
   own jobs, and query canonical solved data through the host services below.
   The host owns the frequency range and count; provider commands cannot change them.
