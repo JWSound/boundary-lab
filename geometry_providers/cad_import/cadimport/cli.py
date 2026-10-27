@@ -79,7 +79,7 @@ def _triple(parser, option, value) -> tuple[float, float, float]:
     return values
 
 
-def main(argv: Sequence[str] | None = None, prog: str | None = None) -> None:
+def main(argv: Sequence[str] | None = None, prog: str = "python -m cadimport.cli") -> None:
     parser = _build_arg_parser(prog)
     args = parser.parse_args(argv)
     try:
@@ -115,4 +115,4 @@ def main(argv: Sequence[str] | None = None, prog: str | None = None) -> None:
 
 
 if __name__ == "__main__":
-    main(prog="python -m cadimport.cli")
+    main()

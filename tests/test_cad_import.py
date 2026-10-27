@@ -15,6 +15,7 @@ import meshio
 import numpy as np
 import pytest
 
+import blab
 from blab.interface_conform import validate_conforming_interfaces
 from cad_fixtures import (
     bored_ball,
@@ -966,10 +967,13 @@ def test_invalid_closed_shell_choices_are_rejected(surface_model, closed_shells,
 def test_cli_sets_closed_shell_roles(surface_model, tmp_path, capsys):
     cad_cli.main(
         [str(surface_model), "--fmax", "1000", "--output", str(tmp_path), "--closed-shell", "Closed shell 1=air"],
-        prog="blab cad-import",
+        prog="python -m cadimport.cli",
     )
 
     output = capsys.readouterr().out
+    with pytest.raises(SystemExit):
+        cad_cli.main(["--help"])
+    assert "usage: python -m cadimport.cli" in capsys.readouterr().out
     assert "Closed shell: Closed shell 1 (air)" in output
     assert "Interface: Interface 1 Closed shell 1 (closed_shell_1 <-> exterior)" in output
     with pytest.raises(SystemExit):
@@ -982,7 +986,7 @@ def test_cli_writes_the_same_meshes_as_the_pipeline(vented, tmp_path, capsys):
 
     cad_cli.main(
         [str(step), "--fmax", "3430", "--elements-per-wavelength", "5", "--output", str(tmp_path / "cli")],
-        prog="blab cad-import",
+        prog="python -m cadimport.cli",
     )
 
     for mesh in vented.meshes:
@@ -1004,7 +1008,7 @@ def test_cli_takes_a_bem_fineness_and_meshes_as_the_pipeline_does(tmp_path, caps
     expected = mesh_step(step, settings, tmp_path / "pipeline")
     args = ["--fmax", "3430", "--elements-per-wavelength", "5", "--bem-elements-per-wavelength", "2"]
 
-    cad_cli.main([str(step), *args, "--output", str(tmp_path / "cli")], prog="blab cad-import")
+    cad_cli.main([str(step), *args, "--output", str(tmp_path / "cli")], prog="python -m cadimport.cli")
 
     for mesh in expected.meshes:
         assert (tmp_path / "cli" / mesh.path.name).read_bytes() == mesh.path.read_bytes()
@@ -1017,7 +1021,7 @@ def test_cli_places_the_geometry_with_rotate_and_translate(tmp_path, capsys):
     step = vented_box(tmp_path / "box.step", symmetry="x", shift_mm=(30, 0, 0))
     args = [str(step), "--fmax", "1000", "--output", str(tmp_path / "out")]
 
-    cad_cli.main([*args, "--rotate", "180,0,0", "--translate=-30,0,0"], prog="blab cad-import")
+    cad_cli.main([*args, "--rotate", "180,0,0", "--translate=-30,0,0"], prog="python -m cadimport.cli")
 
     output = capsys.readouterr().out
     assert "Bounding box: 60.0 x 120.0 x 210.0 mm" in output
@@ -1189,4 +1193,8 @@ def test_the_plugin_command_line_meshes_a_step_file_from_the_plugin_folder(tmp_p
 
 
 def test_the_main_package_has_no_cad_import_module():
-    assert importlib.util.find_spec("blab.cad_import") is None
+    # A stale __pycache__ can leave an empty directory that imports as a namespace package, so look at sources.
+    folder = Path(blab.__file__).parent / "cad_import"
+    assert not list(folder.rglob("*.py")) if folder.exists() else True
+    spec = importlib.util.find_spec("blab.cad_import")
+    assert spec is None or spec.origin is None

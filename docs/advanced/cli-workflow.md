@@ -386,10 +386,17 @@ the [server developer reference](boundary-lab-server_advanced.md) for the remote
 
 ## Mesh A STEP File
 
-The CAD import plugin carries its own command line, run from the plugin folder:
+The CAD import plugin carries its own command line. Run it from any working directory, such as the
+folder holding your STEP file, with the plugin folder on the Python path; input and output paths are
+relative to that working directory, not to the application folder:
 
 ```bash
-cd geometry_providers/cad_import
+PYTHONPATH=/path/to/boundary-lab/geometry_providers/cad_import \
+  python -m cadimport.cli enclosure.step --fmax 2000 --elements-per-wavelength 6 --output meshes
+```
+
+```powershell
+$env:PYTHONPATH = "C:\path\to\boundary-lab\geometry_providers\cad_import"
 python -m cadimport.cli enclosure.step --fmax 2000 --elements-per-wavelength 6 --output meshes
 ```
 
