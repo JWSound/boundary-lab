@@ -1612,7 +1612,10 @@ class ObservationPlaneViewport(QObject):
         frequency = float(self._exterior_key_for_plane(plane)[8])
         pressure = np.full(geometry.mesh.n_points, np.nan + 1j * np.nan, dtype=np.complex64)
         pressure[geometry.fem_point_ids] = interior.sample_fields(
-            frequency, plane.response_id, geometry.source_tetrahedron_ids, geometry.interpolation_weights,
+            frequency,
+            plane.response_id,
+            geometry.source_tetrahedron_ids,
+            geometry.interpolation_weights,
         )[0]
         pressure[geometry.exterior_point_ids] = exterior_values
         return pressure
