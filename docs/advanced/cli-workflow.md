@@ -199,7 +199,8 @@ traces. Their FEM nodal pressure is retained automatically and can drive
 Interior observation planes.
 
 In the plane properties window, **Acoustic Flow Arrows** displays equally spaced
-in-plane arrows inside the FEM volume. With animation off, direction and length
+in-plane arrows in FEM regions and, with BEAT CPU/CUDA, exterior BEM regions.
+Combined planes select the appropriate field automatically. With animation off, direction and length
 show active acoustic intensity, `Re(p * conjugate(v))`, in W/m^2 (RMS phasors).
 With **Animate Cycle** enabled, they show instantaneous in-plane particle velocity,
 `sqrt(2) * Re(v * exp(i theta))`, in m/s. Normal-to-plane motion is excluded.
@@ -207,8 +208,9 @@ Standing waves can show strong animated motion with little static intensity.
 These are linear acoustic fields, not streaming or turbulent flow.
 
 **Arrow density** controls anchors across the longer plane side (5 to 60), with
-equal physical spacing in both directions. Anchors outside the FEM volume are
-omitted. Length and colour scale automatically for the selected plane, frequency
+equal physical spacing in both directions. Anchors outside the selected acoustic
+regions, inside solids, or too close to the exterior boundary are omitted.
+Length and colour scale automatically for the selected plane, frequency
 and response; the velocity scale stays fixed through each animation cycle.
 The separate **Instantaneous velocity scale** and **Active intensity scale**
 controls can override Automatic with a fixed full-scale magnitude in m/s or W/m^2.
@@ -217,7 +219,8 @@ magnitudes saturate. Both settings are saved with the plane.
 The legend gives the physical scale. Density changes and animation reuse retained
 complex results and do not launch another solve. P1 fields use constant element
 gradients; P2 fields use all ten pressure nodes and evaluate gradients at each
-anchor. Increasing density does not refine the underlying FEM solution.
+anchor. BEM velocity uses analytic pressure gradients with adaptive near-panel
+quadrature. Increasing density does not refine the underlying acoustic solution.
 
 Plane properties show controls only for the selected display and rendering mode;
 hidden settings retain their values. Flow arrows show the intensity scale while

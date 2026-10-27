@@ -476,14 +476,19 @@ lets you set the displayed range below 0 dB. **Animate Cycle** is available for
 Real Pressure, Imaginary Pressure, Particle Velocity Magnitude, and Flow Arrows.
 SPL, Normalized SPL, and Phase can sweep frequency but do not animate a cycle.
 
-Interior planes can also display **Particle Velocity Magnitude**. Boundary Lab
-derives the complex particle-velocity vector from the P1 FEM pressure gradient
-using the bounded region density, then colors the plane by its magnitude in
+Interior, Exterior, and Combined planes can display **Particle Velocity Magnitude**
+and **Acoustic Flow Arrows** with BEAT CPU or CUDA. Combined planes automatically
+use FEM fields inside bounded acoustic regions and BEM fields in exterior air.
+Boundary Lab derives complex particle velocity from the pressure gradient and
+the region density, then colors the magnitude display in
 metres per second with an automatic color maximum or a user-specified limit.
 **Animate Cycle** shows physical instantaneous particle speed from the retained
-RMS phasors, using a color range that stays fixed throughout the cycle. The
-option is unavailable for Exterior and Combined planes because their exterior
-BEM field evaluator currently returns pressure only.
+RMS phasors, using a color range that stays fixed throughout the cycle.
+Flow arrows show steady active intensity while static and in-plane particle
+velocity while animated. Solid interiors and exterior samples too close to the
+BEM boundary are omitted. The existing density and scale controls apply across
+both acoustic regions; changing the display does not require another solve when
+the boundary traces were retained.
 
 The **Pressure color range** is automatic by default and uses a symmetric range
 based on the current pressure field. To keep the scale fixed while changing or

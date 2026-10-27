@@ -119,6 +119,7 @@ class ExteriorFieldResults:
     horizontal_angles_deg: np.ndarray | None = None
     flat_target_enabled: bool = False
     flat_target_reference_angle_deg: float = 0.0
+    density_kg_per_m3: float = 1.2041
 
     @property
     def run_id(self) -> str:
@@ -379,6 +380,7 @@ def exterior_field_results_from_solved_system(
         traces=traces,
         backend_id=solved.provenance.backend_id,
         sound_speed_m_per_s=float(unbounded_regions[0].sound_speed_m_per_s),
+        density_kg_per_m3=float(unbounded_regions[0].density_kg_per_m3),
         channel_names_by_excitation=channel_names,
         channel_configs=tuple(channel_configs),
         voltage_channel_names=voltage_channel_names,
