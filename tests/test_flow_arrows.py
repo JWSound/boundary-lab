@@ -155,7 +155,9 @@ def test_flow_renderer_caches_sampling_and_updates_animation_in_place(rendering)
         )
         static_points = mesh.points.copy()
         volumetric = rendering == InteriorRenderingMode.ELEMENT_FIELD
-        assert ("Active Intensity\n(W/m^2)" if volumetric else "In-plane\nActive Intensity\n(W/m^2)") in editor._scalar_bar_titles
+        assert (
+            "Active Intensity\n(W/m^2)" if volumetric else "In-plane\nActive Intensity\n(W/m^2)"
+        ) in editor._scalar_bar_titles
         if volumetric:
             assert np.ptp(geometry.anchors[:, 2]) > 0
             assert np.all(geometry.clipped.find_containing_cell(geometry.anchors) >= 0)
@@ -233,8 +235,11 @@ def test_volume_grid_is_equidistant_and_bounded():
 def test_flow_dialog_exposes_element_rendering(qapp):
     from blab.ui.observation_plane_dialog import ObservationPlanePropertiesDialog
 
-    plane = replace(new_observation_plane("Volume"), display=ObservationPlaneDisplay.FLOW_ARROWS,
-                    interior_rendering=InteriorRenderingMode.ELEMENT_FIELD)
+    plane = replace(
+        new_observation_plane("Volume"),
+        display=ObservationPlaneDisplay.FLOW_ARROWS,
+        interior_rendering=InteriorRenderingMode.ELEMENT_FIELD,
+    )
     dialog = ObservationPlanePropertiesDialog(plane, solved_frequencies_hz=(100,))
     assert dialog.rendering_combo.isEnabled()
     assert not dialog.rendering_combo.isHidden()

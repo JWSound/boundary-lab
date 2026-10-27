@@ -62,8 +62,10 @@ def flow_arrow_points(anchors, vectors, normal, spacing, reference):
         other = np.cross(direction, side)
         width = np.linalg.norm(delta, axis=1)[:, None] * 0.16
         side, other = side * width, other * width
-        return np.stack((anchors, tip, tip, shoulder + side, tip, shoulder - side,
-                         tip, shoulder + other, tip, shoulder - other), axis=1).reshape(-1, 3)
+        return np.stack(
+            (anchors, tip, tip, shoulder + side, tip, shoulder - side, tip, shoulder + other, tip, shoulder - other),
+            axis=1,
+        ).reshape(-1, 3)
     side = np.cross(normal, delta) * 0.16
     return np.stack((anchors, tip, tip, shoulder + side, tip, shoulder - side), axis=1).reshape(-1, 3)
 
