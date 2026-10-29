@@ -59,6 +59,12 @@ def themed_content_background(palette: QPalette) -> str:
     return palette.color(QPalette.Base).name()
 
 
+def application_palette_is_dark() -> bool:
+    """Whether the active application theme uses a dark window palette."""
+    app = QApplication.instance()
+    return app is not None and app.palette().color(QPalette.Window).lightness() < 128
+
+
 def _refresh_theme_widgets(app: QApplication) -> None:
     # QApplication propagates StyleChange and PaletteChange when the style,
     # palette, or application stylesheet changes. Manually unpolishing every

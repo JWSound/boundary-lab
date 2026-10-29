@@ -32,7 +32,6 @@ class GroupDelayCanvas(RawCoordinatePlotCanvas):
         self._lines: dict[str, Any] = {}
         self._series_labels: tuple[str, ...] = ()
         self._series_visibility: dict[str, bool] = {}
-        self._series_actions: dict[str, QAction] = {}
         self._channel_colors: dict[str, Any] = {}
         self._plot_state = None
         super().__init__(self.figure, "Group Delay")
@@ -142,7 +141,7 @@ class GroupDelayCanvas(RawCoordinatePlotCanvas):
         for index, label in enumerate(labels):
             self._lines[label].set_data(freqs_hz, group_delay_ms[index])
         self._apply_series_visibility()
-        self._update_y_limits()
+        self._update_visible_series_limits()
         self._apply_manual_axis_limits()
         apply_compact_plot_text(self.axes)
         if self._crosshair_visible:
@@ -157,39 +156,7 @@ class GroupDelayCanvas(RawCoordinatePlotCanvas):
             self._channel_colors[label] = cycle[(index - 1) % len(cycle)]
         return self._channel_colors[label]
 
-    def _sync_trace_filter_actions(self, labels: tuple[str, ...]) -> None:
-        self.trace_filter_menu.clear()
-        self._series_actions = {}
-        for label in labels:
-            action = self.trace_filter_menu.addAction(label)
-            action.setCheckable(True)
-            action.setChecked(self._series_visibility.get(label, True))
-            action.toggled.connect(lambda checked, series_label=label: self.set_series_visible(series_label, checked))
-            self._series_actions[label] = action
-        self.trace_filter_action.setEnabled(bool(labels))
-
-    def set_series_visible(self, label: str, visible: bool) -> None:
-        if label not in self._series_labels:
-            return
-        self._series_visibility[label] = bool(visible)
-        self.trace_visibility_changed.emit()
-        self._apply_series_visibility()
-        self._update_y_limits()
-        self._apply_manual_axis_limits()
-        self._invalidate_crosshair_background()
-        self.draw_idle()
-
-    def _apply_series_visibility(self) -> None:
-        for label, line in self._lines.items():
-            line.set_visible(self._series_visibility.get(label, True))
-        legend = self.axes.get_legend()
-        if legend is not None:
-            legend.remove()
-        visible = [line for line in self._lines.values() if line.get_visible()]
-        if visible:
-            self.axes.legend(visible, [line.get_label() for line in visible], loc="best")
-
-    def _update_y_limits(self) -> None:
+    def _update_visible_series_limits(self) -> None:
         finite_rows = []
         for line in self._lines.values():
             if not line.get_visible():

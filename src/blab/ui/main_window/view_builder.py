@@ -33,6 +33,7 @@ from blab.ui.main_window.workflow_view import (
 from blab.ui.main_window_widgets import (
     DockTitleBar,
 )
+from blab.ui.plot_marker import PlotMarkerOverlay
 from blab.ui.plots import (
     frequency_to_slider_value,
     slider_value_to_frequency,
@@ -110,6 +111,7 @@ class ViewBuilderMixin:
             entry.widget.trace_visibility_changed.connect(
                 lambda plot_id=entry.plot_id: self.refresh_plot_data_export(plot_id)
             )
+            PlotMarkerOverlay(entry.widget, self.plot_marker)
             if entry.plot_id in {"horizontal_isobar", "vertical_isobar"}:
                 capture_action = QAction("Capture Contours", self)
                 capture_action.setToolTip(f"Capture contours for {entry.title}")
@@ -267,6 +269,7 @@ class ViewBuilderMixin:
                     if action is not None
                 ]
             )
+            tool_actions.append(self.plot_marker.action)
             if entry.plot_id in {"electrical_impedance", "on_axis_frequency_response"}:
                 tool_actions.extend((entry.widget.trace_filter_action, entry.widget.show_phase_action))
             elif entry.plot_id in {
@@ -282,6 +285,9 @@ class ViewBuilderMixin:
                 tool_actions.extend((entry.widget.calculate_action, entry.widget.trace_filter_action))
             elif entry.plot_id == "spinorama":
                 tool_actions.append(self.spherical_spin_action)
+            iec_scale_action = getattr(entry.widget, "iec_scale_action", None)
+            if iec_scale_action is not None:
+                tool_actions.append(iec_scale_action)
             dock = self._make_panel_dock(
                 f"{entry.plot_id}_dock",
                 entry.title,

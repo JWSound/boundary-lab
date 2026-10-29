@@ -124,8 +124,8 @@ def test_streaming_plot_canvases_reuse_artists_and_layout() -> None:
     assert on_axis_block.count("clear_plot_axes(self.axes)") == 1
     assert "self._spl_lines" in spinorama_block
     assert "self._di_lines" in spinorama_block
-    assert "self._spl_lines[name].set_data" in spinorama_block
-    assert "self._di_lines[name].set_data" in spinorama_block
+    assert "self._spl_lines[series.label].set_data" in spinorama_block
+    assert "self._di_lines[series.label].set_data" in spinorama_block
     assert spinorama_block.count("clear_plot_axes(self.axes)") == 1
     assert spinorama_block.count("clear_plot_axes(self.di_axes)") == 1
 
