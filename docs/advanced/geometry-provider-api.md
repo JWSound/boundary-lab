@@ -44,9 +44,19 @@ model and validates interface topology; backend-specific solve checks still appl
 - Local folders with a `provider.json` manifest appear in **Edit > Generator Plugins...**. Enable a package before its code can be loaded.
   Custom widgets live inside the host's design dock; Ath remains the default.
   The bundled [Vented Enclosure](../../geometry_providers/vented_enclosure/README.md)
-  is enabled on introduction and provides a working FEM–BEM–LEM assembly.
+  and [CAD Import](../../geometry_providers/cad_import/README.md) plugins are
+  each enabled once on introduction; Vented Enclosure provides a working
+  FEM–BEM–LEM assembly and CAD Import meshes a STEP file into one.
   Other packages still require explicit enablement; a manifest cannot claim
-  first-party status. Disabling the bundled plugin is remembered.
+  first-party status. Disabling a bundled plugin is remembered.
+- A plugin lives entirely in its own folder. The bundled Vented Enclosure and CAD
+  Import plugins are the examples: the main package holds only the generic
+  exchange API, the catalog and the first-party allowlist entry, and plugins
+  cannot add commands to `blab`. CAD Import is the example of a plugin with a real
+  meshing pipeline and a cancellable subprocess worker; its modules import each
+  other relatively because the loader mounts the folder under its own namespace,
+  and its worker gets the plugin folder on its import path. Automation uses the
+  generic `blab project` workflow; a plugin may ship its own command line, run from its folder.
 - Providers can submit asynchronous solves, subscribe to status, cancel their
   own jobs, and query canonical solved data through the host services below.
   The host owns the frequency range and count; provider commands cannot change them.
@@ -72,7 +82,10 @@ Import the public exchange types from `blab.generators`.
 | `provider_options` | Host-provided runtime options, such as the Ath executable |
 
 `configuration` contains `physical_system`, `channel_config`,
-`component_channels`, `symmetry_config`, and `stitching_config`. Inspect the
+`component_channels`, `symmetry_config`, `stitching_config`, and a read-only
+`frequency` block (`freq_min_hz`, `freq_max_hz`, `freq_count`) with the project
+sweep, for example to size meshes for the highest frequency. `frequency` is not
+a patch section; a patch naming it is rejected. Inspect the
 physical system to discover existing mesh, boundary and component IDs. Do not
 derive IDs from display labels. It may be `None` before the first generation;
 generate a mesh first to obtain host-assigned IDs on the next request.
@@ -150,8 +163,10 @@ regeneration and design renaming. Display names are `<design_name>__<local_id>`.
 Every resource must have exactly one source and a `bem_surface` or `fem_volume`
 purpose. An assembly cannot also populate the legacy primary mesh, radiator or
 symmetry-variant fields. Mesh coordinates share the design's scale and XYZ
-translation; the Mesh Config dialog links those controls and enabled state across
-all resources in the assembly.
+translation. The Mesh Config dialog links the enabled state across all resources
+in the assembly and locks their scale and translation at the design's values: a
+generated geometry is placed by its design, so a provider that needs a placement
+applies it to the meshes it writes.
 
 On first generation, include complete physical assignments for every mesh:
 bounded regions need volume groups; moving boundaries need a component and its
@@ -181,9 +196,17 @@ the plugin. File paths inside the project directory are saved relatively.
 Older project schemas remain readable; releases supporting only schema 9 or
 earlier reject schema 10 rather than silently losing assembly resources.
 
-This increment supports full models with symmetry **Off**. It rejects automatic
-assembly symmetry reduction rather than independently reducing interface meshes.
-Enabling/disabling applies to the whole assembly. Removing a design removes its
+Under project symmetry **Off**, assemblies are full models. Under **X** or **XY**
+symmetry an assembly is accepted only when it declares itself already reduced
+with `GeneratedGeometry(..., reduced=True)`. The host then checks that every
+resource, after the design's scale and translation, lies in the positive X (X
+symmetry) or positive X and Y (XY symmetry) region, within the usual
+symmetry-plane tolerance. A resource outside that region rejects the whole
+candidate. The candidate is compiled with the project symmetry. The host never cuts an assembly: one that does not declare itself reduced is still
+rejected under X or XY symmetry, including when the response's own
+`symmetry_config` patch selects symmetry. The declaration means "reduced for the
+project symmetry"; it is saved with the artifact and checked again whenever the
+project symmetry is applied to the assembly. Enabling/disabling applies to the whole assembly. Removing a design removes its
 owned physical entities; cross-design component/interface dependencies must be
 resolved before removing or disabling it. It does not automatically construct
 geometry or install a vented-enclosure plugin.
@@ -264,7 +287,8 @@ in separate accepted updates or use the application's authoring UI when a kind
 change requires removing incompatible parameters.
 
 Symmetry modes currently match the host: `off`, `x`, `xy`. This patch selects the
-host setting; it does not certify that a mesh has the requested symmetry. Normal
+host setting; it does not certify that a mesh has the requested symmetry (see
+[Named mesh assemblies](#named-mesh-assemblies) for reduced assemblies). Normal
 mesh/solver validation still applies. Stitching currently maps to the host's
 existing project-wide stitching switch and nonnegative tolerance in millimeters;
 per-pair stitching policies are not implemented.
@@ -547,7 +571,7 @@ Subscriber exceptions are logged without stopping the host.
 
 | Method | Future result | Meaning |
 | --- | --- | --- |
-| `context()` | `ProviderContext` | Document/provider IDs, revision, host frequency minimum/maximum/count |
+| `context()` | `ProviderContext` | Document/provider IDs, revision, host frequency minimum/maximum/count, sound speed (m/s) of the exterior air region (343 when there is none) |
 | `solve(SolveCommand(...))` | `SolveJob` | Queue a solve for that exact revision |
 | `status(job_id)` | `SolveJob` | State, progress counts, request ID, revision, result run ID |
 | `cancel(job_id)` | `SolveJob` | Cancel this document's pending/preparing/running job |

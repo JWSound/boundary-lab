@@ -80,6 +80,7 @@ class GeneratedGeometryReference:
     mirror_axes: tuple[str, ...] = ()
     meshes: tuple[GeneratedMesh, ...] = ()
     provider_metadata: Mapping[str, Any] = field(default_factory=dict)
+    reduced: bool = False
 
 
 @dataclass(frozen=True)
@@ -139,9 +140,14 @@ class GeneratedGeometry:
     mesh_data: MeshData | None = None
     reduced_mesh_data: MeshData | None = None
     meshes: tuple[GeneratedMesh, ...] = ()
+    # An assembly that is already reduced for the project symmetry; the host
+    # checks it lies in the positive region and never cuts it.
+    reduced: bool = False
 
     def __post_init__(self):
         _validate_meshes(self.meshes)
+        if self.reduced and not self.meshes:
+            raise ValueError("Only mesh assemblies can declare themselves already reduced.")
         if self.meshes:
             try:
                 json.dumps(dict(self.provider_metadata), allow_nan=False)
@@ -204,6 +210,7 @@ class GeneratedGeometry:
             reduced_mesh_data=self.reduced_mesh_data,
             meshes=self.meshes,
             provider_metadata=deepcopy(self.provider_metadata) if self.meshes else {},
+            reduced=self.reduced,
         )
 
 

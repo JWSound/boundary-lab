@@ -9,7 +9,7 @@ from dataclasses import replace
 from blab.config import RadiatorConfig
 from blab.generators.base import GeneratedGeometry, GenerationCompleted, generated_mesh_id
 from blab.generators.configuration import _check_references, apply_configuration_patch, project_revision
-from blab.generators.resources import generated_mesh_entries, generated_mesh_name
+from blab.generators.resources import generated_mesh_entries, generated_mesh_name, validate_reduced_assembly
 from blab.mesh_data import read_resource_mesh
 from blab.mesh_inventory import InventoryEntry, inspect_system_meshes
 from blab.physical_compiler import PhysicalSystemCompiler
@@ -127,8 +127,7 @@ def stage_generation(
 
 def _stage_assembly(project, generated, completed, document, imported_radiators):
     geometry = completed.result
-    if project.symmetry != "off":
-        raise ValueError("Generated mesh assemblies currently require symmetry Off.")
+    validate_reduced_assembly(document, geometry, project.symmetry)
     candidate = deepcopy(project)
     old_meshes = document.artifact.meshes if document.artifact else ()
     if document.artifact is not None and not old_meshes:
@@ -208,8 +207,8 @@ def _stage_assembly(project, generated, completed, document, imported_radiators)
         document_id=document.id,
         mesh_ids=old_ids | new_ids,
     )
-    if candidate.symmetry != "off":
-        raise ValueError("Generated mesh assemblies currently require symmetry Off.")
+    if candidate.symmetry != project.symmetry:
+        validate_reduced_assembly(document, geometry, candidate.symmetry)
     candidate.physical_system = replace(
         candidate.physical_system,
         meshes=tuple(m for m in candidate.physical_system.meshes if m.id not in old_ids - new_ids),
@@ -226,7 +225,7 @@ def _stage_assembly(project, generated, completed, document, imported_radiators)
         raise ValueError("Every generated assembly mesh must be assigned to an acoustic region.")
     # Compilation validates purposes, groups, component assignments, coverage and
     # conforming interface topology before publishing any part of the assembly.
-    PhysicalSystemCompiler().compile(candidate.physical_system)
+    PhysicalSystemCompiler().compile(candidate.physical_system, symmetry_mode=candidate.symmetry)
     infer_physical_solve_kind(candidate.physical_system)
     candidate.generator_documents = replace_generator_document(
         candidate.generator_documents,

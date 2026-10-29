@@ -13,7 +13,7 @@ def test_bundled_plugin_is_enabled_once_and_keeps_existing_default():
     settings = MemorySettings({"providers/default": "ath", "providers/enabled": ["custom.plugin", {}]})
     preferences = load_gui_preferences(settings)
     assert preferences.default_geometry_provider == "ath"
-    assert preferences.enabled_geometry_providers == ("custom.plugin", PROVIDER)
+    assert preferences.enabled_geometry_providers == ("custom.plugin", PROVIDER, "blab.cad_import")
     preferences.enabled_geometry_providers = ("custom.plugin",)
     save_gui_preferences(settings, preferences)
     assert load_gui_preferences(settings).enabled_geometry_providers == ("custom.plugin",)

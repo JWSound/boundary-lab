@@ -147,6 +147,14 @@ def test_empty_operations_can_be_applied_before_first_geometry(project):
     assert candidate == project
 
 
+def test_snapshot_exposes_read_only_frequency_settings(project):
+    snapshot = configuration_snapshot(project)
+    assert snapshot["frequency"] == {"freq_min_hz": 321, "freq_max_hz": 4321, "freq_count": 9}
+    assert configuration_snapshot(replace(project, project_preferences=None))["frequency"]["freq_max_hz"] == 20000
+    with pytest.raises(ValueError, match="frequency"):
+        validate_patch({"frequency": {"freq_max_hz": 1000}})
+
+
 @pytest.mark.parametrize(
     "patch",
     [

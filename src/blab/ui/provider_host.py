@@ -11,7 +11,7 @@ from uuid import uuid4
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal, Slot
 
-from blab.generators.configuration import project_revision
+from blab.generators.configuration import configuration_snapshot, exterior_sound_speed, project_revision
 from blab.generators.host import ProviderContext, ProviderHost, ProviderHostError, ProviderService
 
 
@@ -75,7 +75,13 @@ class DesktopProviderHost(QObject):
         revision = hashlib.sha256((project_revision(snapshot) + preferences).encode()).hexdigest()
         frequencies = self.window.frequency_range()
         return ProviderContext(
-            document_id, provider_id, revision, frequencies.min_hz, frequencies.max_hz, frequencies.count
+            document_id,
+            provider_id,
+            revision,
+            frequencies.min_hz,
+            frequencies.max_hz,
+            frequencies.count,
+            exterior_sound_speed(configuration_snapshot(snapshot)),
         )
 
     def _busy(self):

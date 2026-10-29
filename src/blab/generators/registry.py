@@ -92,6 +92,7 @@ def restore_generator_document(document: GeneratorDocument) -> GeneratedGeometry
             meshes=artifact.meshes,
             source_path=Path(artifact.source_path) if artifact.source_path else None,
             provider_metadata=artifact.provider_metadata,
+            reduced=artifact.reduced,
         )
     if artifact is not None and artifact.mesh_data is not None:
         return GeneratedGeometry(
