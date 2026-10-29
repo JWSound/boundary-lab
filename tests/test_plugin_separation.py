@@ -31,11 +31,7 @@ def _string_parts(node: ast.AST) -> list[str]:
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return [node.value]
     if isinstance(node, ast.JoinedStr | ast.BinOp | ast.Call):
-        return [
-            part.value
-            for part in ast.walk(node)
-            if isinstance(part, ast.Constant) and isinstance(part.value, str)
-        ]
+        return [part.value for part in ast.walk(node) if isinstance(part, ast.Constant) and isinstance(part.value, str)]
     return []
 
 
