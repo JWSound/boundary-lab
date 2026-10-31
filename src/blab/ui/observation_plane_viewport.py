@@ -1120,7 +1120,9 @@ class ObservationPlaneViewport(QObject):
     def _update_flow_points(self, plane, mesh, values, phase):
         geometry = self._flow_geometry(plane)
         normal = None if _volumetric_flow(plane) else plane.local_axes[2]
-        vectors, reference = plane_flow_vectors(values[:, 0], values[:, 1:], normal, phase)
+        vectors, reference = plane_flow_vectors(
+            values[:, 0], values[:, 1:], normal, phase, component=plane.complex_component
+        )
         reference = _flow_scale_reference(plane, phase, reference)
         mesh.points = flow_arrow_points(geometry.anchors, vectors, normal, geometry.spacing, reference)
 
@@ -1972,10 +1974,11 @@ class ObservationPlaneViewport(QObject):
                 pressure[:, 1:],
                 None if _volumetric_flow(plane) else plane.local_axes[2],
                 animation_phase_deg,
+                component=plane.complex_component,
             )
             reference = _flow_scale_reference(plane, animation_phase_deg, reference)
             title = (
-                "In-plane Active Intensity (W/m^2)"
+                f"In-plane {'Reactive' if plane.complex_component == 'imaginary' else 'Active'} Intensity (W/m^2)"
                 if animation_phase_deg is None
                 else "In-plane Instantaneous Velocity (m/s)"
             )
@@ -2523,7 +2526,7 @@ def _scalar_bar_title(title: str) -> str:
         return PARTICLE_VELOCITY_SCALAR_BAR_TITLE
     if title.startswith("In-plane "):
         return title.replace("In-plane ", "In-plane\n").replace(" (", "\n(")
-    if title in {"Active Intensity (W/m^2)", "Instantaneous Velocity (m/s)"}:
+    if title in {"Active Intensity (W/m^2)", "Reactive Intensity (W/m^2)", "Instantaneous Velocity (m/s)"}:
         return title.replace(" (", "\n(")
     return title
 

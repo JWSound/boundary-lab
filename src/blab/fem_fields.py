@@ -32,13 +32,16 @@ def sample_pressure_velocity(pressure, cells, gradients, densities, frequency_hz
     return sampled, velocity
 
 
-def plane_flow_vectors(pressure, velocity, normal, phase_deg=None):
-    """Active intensity for RMS phasors, or instantaneous physical velocity."""
+def plane_flow_vectors(pressure, velocity, normal, phase_deg=None, *, component="real"):
+    """Active/reactive RMS intensity, or instantaneous physical velocity."""
+    if component not in {"real", "imaginary"}:
+        raise ValueError("Complex component must be real or imaginary.")
     velocity = np.asarray(velocity)
     # None selects the full vector for volumetric Element Field arrows.
     tangential = velocity if normal is None else velocity - (velocity @ normal)[:, None] * np.asarray(normal)
     if phase_deg is None:
-        vectors = np.real(np.asarray(pressure)[:, None] * np.conj(tangential))
+        intensity = np.asarray(pressure)[:, None] * np.conj(tangential)
+        vectors = np.real(intensity) if component == "real" else np.imag(intensity)
         reference = np.linalg.norm(vectors, axis=1)
     else:
         vectors = np.sqrt(2.0) * np.real(tangential * np.exp(1j * np.deg2rad(phase_deg)))
