@@ -7,6 +7,7 @@ from dataclasses import replace
 
 from PySide6.QtCore import QSignalBlocker, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -39,8 +40,7 @@ DISPLAY_LABELS = {
     ObservationPlaneDisplay.FLOW_ARROWS: "Acoustic Flow Arrows",
     ObservationPlaneDisplay.SPL: "SPL",
     ObservationPlaneDisplay.PHASE: "Phase",
-    ObservationPlaneDisplay.REAL_PRESSURE: "Real Pressure",
-    ObservationPlaneDisplay.IMAGINARY_PRESSURE: "Imaginary Pressure",
+    ObservationPlaneDisplay.REAL_PRESSURE: "Pressure",
     ObservationPlaneDisplay.NORMALIZED_SPL: "Normalized SPL",
     ObservationPlaneDisplay.PARTICLE_VELOCITY: "Particle Velocity Magnitude",
 }
@@ -97,14 +97,44 @@ class ObservationPlanePropertiesDialog(QDialog):
         self.display_combo = QComboBox()
         for value, label in DISPLAY_LABELS.items():
             self.display_combo.addItem(label, value.value)
-        self._select_data(self.display_combo, self._plane.display.value)
+        pressure_display = self._plane.display in {
+            ObservationPlaneDisplay.REAL_PRESSURE,
+            ObservationPlaneDisplay.IMAGINARY_PRESSURE,
+        }
+        self._select_data(
+            self.display_combo,
+            ObservationPlaneDisplay.REAL_PRESSURE.value if pressure_display else self._plane.display.value,
+        )
         form.addRow("Display", self.display_combo)
+
+        self.component_control = QWidget()
+        component_layout = QHBoxLayout(self.component_control)
+        component_layout.setContentsMargins(0, 0, 0, 0)
+        component_layout.setSpacing(0)
+        self.component_group = QButtonGroup(self)
+        self.real_component_button = QPushButton("Real")
+        self.imaginary_component_button = QPushButton("Imaginary")
+        for index, button in enumerate((self.real_component_button, self.imaginary_component_button)):
+            button.setCheckable(True)
+            button.setAutoDefault(False)
+            button.setProperty("componentSegment", "first" if index == 0 else "last")
+            self.component_group.addButton(button, index)
+            component_layout.addWidget(button)
+        self.component_control.setStyleSheet(
+            "QPushButton { border: 1px solid palette(mid); padding: 3px 8px;"
+            " background-color: palette(button); color: palette(button-text); }"
+            'QPushButton[componentSegment="first"] { border-top-right-radius: 0; border-bottom-right-radius: 0; }'
+            'QPushButton[componentSegment="last"] { border-top-left-radius: 0; border-bottom-left-radius: 0; }'
+            "QPushButton:checked { background-color: palette(highlight); color: palette(highlighted-text); }"
+        )
+        self.component_group.button(1 if self._plane.complex_component == "imaginary" else 0).setChecked(True)
+        form.addRow("Component", self.component_control)
 
         self.arrow_density_slider = QSlider(Qt.Horizontal)
         self.arrow_density_slider.setRange(5, 60)
         self.arrow_density_slider.setValue(self._plane.arrow_density)
         self.arrow_density_slider.setToolTip(
-            "Arrows across the longer side of the plane. Static: active intensity; animated: particle velocity."
+            "Arrow sampling density. Static: active or reactive intensity; animated: particle velocity."
         )
         form.addRow("Arrow density", self.arrow_density_slider)
 
@@ -260,6 +290,7 @@ class ObservationPlanePropertiesDialog(QDialog):
         self.type_combo.currentIndexChanged.connect(self._refresh_dependent_controls)
         self.rendering_combo.currentIndexChanged.connect(self._refresh_dependent_controls)
         self.display_combo.currentIndexChanged.connect(self._refresh_dependent_controls)
+        self.component_group.idClicked.connect(self._refresh_dependent_controls)
         self.pressure_range_auto_check.toggled.connect(self._refresh_dependent_controls)
         self.velocity_scale_auto_check.toggled.connect(self._refresh_dependent_controls)
         self.intensity_scale_auto_check.toggled.connect(self._refresh_dependent_controls)
@@ -288,6 +319,7 @@ class ObservationPlanePropertiesDialog(QDialog):
             self.height_spin.valueChanged,
             self.resolution_spin.valueChanged,
             self.display_combo.currentIndexChanged,
+            self.component_group.idClicked,
             self.arrow_density_slider.valueChanged,
             self.velocity_scale_auto_check.toggled,
             self.velocity_scale_spin.valueChanged,
@@ -317,6 +349,10 @@ class ObservationPlanePropertiesDialog(QDialog):
 
     @property
     def plane(self) -> ObservationPlane:
+        display = ObservationPlaneDisplay(self.display_combo.currentData())
+        component = "imaginary" if self.imaginary_component_button.isChecked() else "real"
+        if display == ObservationPlaneDisplay.REAL_PRESSURE and component == "imaginary":
+            display = ObservationPlaneDisplay.IMAGINARY_PRESSURE
         return replace(
             self._plane,
             name=self.name_edit.text().strip() or self._plane.name,
@@ -324,7 +360,8 @@ class ObservationPlanePropertiesDialog(QDialog):
             height_m=self.height_spin.value() / 1000.0,
             resolution_m=self.resolution_spin.value() / 1000.0,
             plane_type=ObservationPlaneType(self.type_combo.currentData()),
-            display=ObservationPlaneDisplay(self.display_combo.currentData()),
+            display=display,
+            complex_component=component,
             arrow_density=self.arrow_density_slider.value(),
             velocity_scale_m_per_s=(
                 None if self.velocity_scale_auto_check.isChecked() else self.velocity_scale_spin.value()
@@ -427,6 +464,13 @@ class ObservationPlanePropertiesDialog(QDialog):
         self.animation_speed_slider.setVisible(animated)
         self._animation_speed_label.setVisible(animated)
         flow = display == ObservationPlaneDisplay.FLOW_ARROWS
+        self._form.setRowVisible(
+            self.component_control, not animated and (flow or display == ObservationPlaneDisplay.REAL_PRESSURE)
+        )
+        intensity_label = self._form.labelForField(self._scale_rows["intensity"])
+        intensity_label.setText(
+            "Reactive intensity scale" if self.imaginary_component_button.isChecked() else "Active intensity scale"
+        )
         self.arrow_density_slider.setEnabled(flow)
         self._form.setRowVisible(self.arrow_density_slider, flow)
         scale_visibility = {

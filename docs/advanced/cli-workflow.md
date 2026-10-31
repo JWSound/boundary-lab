@@ -201,7 +201,12 @@ Interior observation planes.
 In the plane properties window, **Acoustic Flow Arrows** displays equally spaced
 in-plane arrows in FEM regions and, with BEAT CPU/CUDA, exterior BEM regions.
 Combined planes select the appropriate field automatically. With animation off, direction and length
-show active acoustic intensity, `Re(p * conjugate(v))`, in W/m^2 (RMS phasors).
+show active acoustic intensity, `Re(p * conjugate(v))`, in W/m^2 (RMS phasors),
+with the **Real** component selected. **Imaginary** shows reactive intensity,
+`Im(p * conjugate(v))`, using the same units and scale control. This applies to
+both planar and volumetric arrows. Pressure likewise uses a single **Pressure**
+entry with a **Real | Imaginary** toggle. Component selection is saved with the
+plane, hidden during cycle animation, and restored when animation stops.
 With **Animate Cycle** enabled, they show instantaneous in-plane particle velocity,
 `sqrt(2) * Re(v * exp(i theta))`, in m/s. Normal-to-plane motion is excluded.
 Standing waves can show strong animated motion with little static intensity.
@@ -241,7 +246,7 @@ Particle Velocity Magnitude supports an automatic maximum or a manual maximum
 in m/s instead of a fixed 35 m/s colour limit. These settings are saved per plane.
 Automatic velocity scaling remains constant over each cycle.
 
-**Animate Cycle** is available for Real Pressure, Imaginary Pressure, Particle
+**Animate Cycle** is available for Pressure, Particle
 Velocity Magnitude, and Acoustic Flow Arrows. Selecting SPL, Normalized SPL, or
 Phase stops cycle playback and hides its controls; frequency sweeping remains
 available. Pressure and scalar-speed animations convert RMS phasors to physical
