@@ -60,6 +60,18 @@ def evaluate_bem_field(
         julia_threads=4 if bem_backend in {"cuda", "rocm"} else 8,
         julia_project=julia_project,
     )
+    if request.pressure_gradient:
+        # Older engine clients do not negotiate field quantities themselves.
+        # Check before sending Float64 gradient coordinates to a pressure-only worker.
+        worker.ensure_started()
+        info = worker.worker_info or {}
+        capabilities = info.get("field_quantities", {})
+        quantities = capabilities.get(bem_backend, []) if isinstance(capabilities, dict) else []
+        if not isinstance(quantities, list) or "pressure_gradient_v1" not in quantities:
+            raise RuntimeError(
+                "The running BEAT Engine does not support exterior velocity or flow arrows. "
+                "Use the matching engine with pressure-gradient support and restart Boundary Lab."
+            )
     with tempfile.TemporaryDirectory(prefix="blab-bem-field-") as temp_dir:
         request_dir = Path(temp_dir)
         request_path = request_dir / "request.json"
