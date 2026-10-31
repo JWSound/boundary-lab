@@ -27,6 +27,25 @@ def test_active_intensity_rms_and_standing_wave():
     np.testing.assert_allclose(shifted, vectors[:1])
 
 
+@pytest.mark.parametrize("normal", [None, [0, 0, 1]])
+def test_reactive_intensity_retains_sign_and_animation_ignores_component(normal):
+    pressure = np.array([2, 2])
+    velocity = np.array([[0.01j, 0, 0], [-0.01j, 0, 0]])
+    active, _ = plane_flow_vectors(pressure, velocity, normal)
+    reactive, scale = plane_flow_vectors(pressure, velocity, normal, component="imaginary")
+    np.testing.assert_allclose(active, 0)
+    np.testing.assert_allclose(reactive, [[-0.02, 0, 0], [0.02, 0, 0]])
+    assert scale == pytest.approx(0.02)
+    rotation = np.exp(0.7j)
+    shifted, _ = plane_flow_vectors(pressure * rotation, velocity * rotation, normal, component="imaginary")
+    np.testing.assert_allclose(shifted, reactive)
+    for phase in (0, 90, 180, 270):
+        real, real_scale = plane_flow_vectors(pressure, velocity, normal, phase)
+        imaginary, imaginary_scale = plane_flow_vectors(pressure, velocity, normal, phase, component="imaginary")
+        np.testing.assert_allclose(real, imaginary)
+        assert real_scale == imaginary_scale
+
+
 def test_animation_projects_rotated_plane_and_preserves_phase_scale():
     velocity = np.array([[1, 1j, 10]])
     first, scale = plane_flow_vectors([1], velocity, [0, 0, 1], 0)
@@ -99,8 +118,9 @@ def test_flow_settings_roundtrip_and_dialog(qapp):
     dialog.close()
 
 
+@pytest.mark.parametrize("component", ["real", "imaginary"])
 @pytest.mark.parametrize("rendering", [InteriorRenderingMode.SMOOTH_FIELD, InteriorRenderingMode.ELEMENT_FIELD])
-def test_flow_renderer_caches_sampling_and_updates_animation_in_place(rendering):
+def test_flow_renderer_caches_sampling_and_updates_animation_in_place(rendering, component):
     import pyvista as pv
 
     points = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=float)
@@ -128,6 +148,7 @@ def test_flow_renderer_caches_sampling_and_updates_animation_in_place(rendering)
         height_m=0.2,
         arrow_density=20 if rendering == InteriorRenderingMode.ELEMENT_FIELD else 10,
         interior_rendering=rendering,
+        complex_component=component,
     )
     viewer = pv.Plotter(off_screen=True, window_size=(600, 400))
     editor = SimpleNamespace(
@@ -155,9 +176,8 @@ def test_flow_renderer_caches_sampling_and_updates_animation_in_place(rendering)
         )
         static_points = mesh.points.copy()
         volumetric = rendering == InteriorRenderingMode.ELEMENT_FIELD
-        assert (
-            "Active Intensity\n(W/m^2)" if volumetric else "In-plane\nActive Intensity\n(W/m^2)"
-        ) in editor._scalar_bar_titles
+        intensity = "Active" if component == "real" else "Reactive"
+        assert (("" if volumetric else "In-plane\n") + intensity + " Intensity\n(W/m^2)") in editor._scalar_bar_titles
         if volumetric:
             assert np.ptp(geometry.anchors[:, 2]) > 0
             assert np.all(geometry.clipped.find_containing_cell(geometry.anchors) >= 0)
@@ -319,7 +339,8 @@ def test_exterior_vector_geometry_masks_enclosed_and_boundary_samples(display):
         assert set(used) <= set(geometry.exterior_point_ids)
 
 
-def test_combined_arrows_render_and_animate_both_regions_without_resampling():
+@pytest.mark.parametrize("component", ["real", "imaginary"])
+def test_combined_arrows_render_and_animate_both_regions_without_resampling(component):
     import pyvista as pv
 
     points = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=float)
@@ -342,6 +363,7 @@ def test_combined_arrows_render_and_animate_both_regions_without_resampling():
         new_observation_plane("Combined"),
         plane_type=ObservationPlaneType.COMBINED,
         display=ObservationPlaneDisplay.FLOW_ARROWS,
+        complex_component=component,
         center_m=(0.4, 0.2, 0.2),
         width_m=2,
         height_m=1,

@@ -473,8 +473,17 @@ animated instantaneous pressure use a diverging color map centered on zero.
 The properties dialog shows only controls relevant to the selected display.
 SPL supports automatic scaling or manual minimum/maximum values; Normalized SPL
 lets you set the displayed range below 0 dB. **Animate Cycle** is available for
-Real Pressure, Imaginary Pressure, Particle Velocity Magnitude, and Flow Arrows.
+Pressure, Particle Velocity Magnitude, and Flow Arrows.
 SPL, Normalized SPL, and Phase can sweep frequency but do not animate a cycle.
+
+**Pressure** uses a **Real | Imaginary** component toggle in place of separate
+dropdown entries. The same toggle appears for static **Acoustic Flow Arrows**:
+Real shows active intensity and Imaginary shows reactive intensity, with the
+legend and intensity-scale label identifying the selected quantity. Reactive
+intensity describes the quadrature component of complex intensity, not net
+time-averaged energy transport. **Animate Cycle** hides the toggle and shows
+physical instantaneous pressure or particle velocity; stopping animation restores
+the chosen component. Existing saved Real/Imaginary Pressure selections are preserved.
 
 Interior, Exterior, and Combined planes can display **Particle Velocity Magnitude**
 and **Acoustic Flow Arrows** with BEAT CPU or CUDA. Combined planes automatically
@@ -484,7 +493,7 @@ the region density, then colors the magnitude display in
 metres per second with an automatic color maximum or a user-specified limit.
 **Animate Cycle** shows physical instantaneous particle speed from the retained
 RMS phasors, using a color range that stays fixed throughout the cycle.
-Flow arrows show steady active intensity while static and in-plane particle
+Flow arrows show active or reactive intensity while static and in-plane particle
 velocity while animated. Solid interiors and exterior samples too close to the
 BEM boundary are omitted. The existing density and scale controls apply across
 both acoustic regions; changing the display does not require another solve when
@@ -492,7 +501,7 @@ the boundary traces were retained.
 
 For Interior planes, selecting **Element Field** with **Acoustic Flow Arrows**
 shows full 3D vectors throughout the visible, clipped FEM volume, with translucent
-tetrahedra as context. Static arrows show 3D active intensity; **Animate Cycle**
+tetrahedra as context. Static arrows show 3D active or reactive intensity; **Animate Cycle**
 shows instantaneous 3D particle velocity. **Arrow density** controls equal spacing
 throughout the volume, with an internal sample limit for responsiveness. The
 existing scale controls apply, and **Invert clip side** selects the visible side.
