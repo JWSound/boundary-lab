@@ -14,7 +14,7 @@ from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import QMenu
 
-from blab.fem_fields import flow_arrow_points, plane_flow_vectors
+from blab.fem_fields import flow_arrow_points, plane_flow_vectors, volume_arrow_grid
 from blab.observation_planes import (
     InteriorRenderingMode,
     ObservationPlane,
@@ -1062,6 +1062,7 @@ class ObservationPlaneViewport(QObject):
             plane.arrow_density,
             results.symmetry,
             plane.invert_clip_side,
+            plane.interior_rendering,
         )
         key = ("flow", plane.id)
         cached = self._field_cache.get(key)
@@ -1079,6 +1080,12 @@ class ObservationPlaneViewport(QObject):
         ys -= (ys[0] + ys[-1]) / 2
         x, y = np.meshgrid(xs, ys)
         anchors = np.asarray(plane.center_m) + x.reshape(-1, 1) * u + y.reshape(-1, 1) * v
+        clipped = volume.volume.clip(normal=plane.local_axes[2], origin=plane.center_m, invert=plane.invert_clip_side)
+        volumetric = _volumetric_flow(plane)
+        if volumetric:
+            anchors, spacing = volume_arrow_grid(clipped.bounds, plane.arrow_density)
+            if len(anchors):
+                anchors = anchors[np.asarray(clipped.find_containing_cell(anchors)) >= 0]
         expanded_ids = np.asarray(volume.volume.find_containing_cell(anchors), dtype=np.int64)
         valid = expanded_ids >= 0
         anchors, expanded_ids = anchors[valid], expanded_ids[valid]
@@ -1089,9 +1096,15 @@ class ObservationPlaneViewport(QObject):
             volume.expanded_points[volume.expanded_tetrahedra[expanded_ids]],
         )
         count = len(results.tetrahedra)
-        mesh = pv.PolyData(np.repeat(anchors, 6, axis=0))
+        vertices_per_arrow = 10 if volumetric else 6
+        mesh = pv.PolyData(np.repeat(anchors, vertices_per_arrow, axis=0))
         mesh.verts = np.empty(0, dtype=np.int64)
-        mesh.lines = np.column_stack((np.full(len(anchors) * 3, 2), np.arange(len(anchors) * 6).reshape(-1, 2)))
+        mesh.lines = np.column_stack(
+            (
+                np.full(len(anchors) * vertices_per_arrow // 2, 2),
+                np.arange(len(anchors) * vertices_per_arrow).reshape(-1, 2),
+            )
+        )
         geometry = _FlowGeometry(
             mesh,
             anchors,
@@ -1099,14 +1112,14 @@ class ObservationPlaneViewport(QObject):
             barycentric,
             _symmetry_image_signs(results.symmetry)[expanded_ids // count],
             spacing,
-            volume.volume.clip(normal=plane.local_axes[2], origin=plane.center_m, invert=plane.invert_clip_side),
+            clipped,
         )
         self._field_cache[key] = (signature, geometry)
         return geometry
 
     def _update_flow_points(self, plane, mesh, values, phase):
         geometry = self._flow_geometry(plane)
-        normal = plane.local_axes[2]
+        normal = None if _volumetric_flow(plane) else plane.local_axes[2]
         vectors, reference = plane_flow_vectors(values[:, 0], values[:, 1:], normal, phase)
         reference = _flow_scale_reference(plane, phase, reference)
         mesh.points = flow_arrow_points(geometry.anchors, vectors, normal, geometry.spacing, reference)
@@ -1957,7 +1970,7 @@ class ObservationPlaneViewport(QObject):
             vectors, reference = plane_flow_vectors(
                 pressure[:, 0],
                 pressure[:, 1:],
-                plane.local_axes[2],
+                None if _volumetric_flow(plane) else plane.local_axes[2],
                 animation_phase_deg,
             )
             reference = _flow_scale_reference(plane, animation_phase_deg, reference)
@@ -1966,9 +1979,11 @@ class ObservationPlaneViewport(QObject):
                 if animation_phase_deg is None
                 else "In-plane Instantaneous Velocity (m/s)"
             )
+            if _volumetric_flow(plane):
+                title = title.removeprefix("In-plane ")
             return FieldScalarProjection(
                 # Bright magenta-to-yellow keeps low-magnitude arrows visible on dark backgrounds.
-                np.repeat(np.linalg.norm(vectors, axis=1), 6),
+                np.repeat(np.linalg.norm(vectors, axis=1), 10 if _volumetric_flow(plane) else 6),
                 title,
                 "spring",
                 (0, reference),
@@ -2508,6 +2523,8 @@ def _scalar_bar_title(title: str) -> str:
         return PARTICLE_VELOCITY_SCALAR_BAR_TITLE
     if title.startswith("In-plane "):
         return title.replace("In-plane ", "In-plane\n").replace(" (", "\n(")
+    if title in {"Active Intensity (W/m^2)", "Instantaneous Velocity (m/s)"}:
+        return title.replace(" (", "\n(")
     return title
 
 
@@ -2908,3 +2925,11 @@ def _flow_scale_reference(plane: ObservationPlane, phase: float | None, automati
 
 def _is_vector_display(plane: ObservationPlane) -> bool:
     return plane.display in {ObservationPlaneDisplay.FLOW_ARROWS, ObservationPlaneDisplay.PARTICLE_VELOCITY}
+
+
+def _volumetric_flow(plane: ObservationPlane) -> bool:
+    return (
+        plane.plane_type == ObservationPlaneType.INTERIOR
+        and plane.interior_rendering == InteriorRenderingMode.ELEMENT_FIELD
+        and plane.display == ObservationPlaneDisplay.FLOW_ARROWS
+    )

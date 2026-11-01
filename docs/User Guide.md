@@ -490,6 +490,14 @@ BEM boundary are omitted. The existing density and scale controls apply across
 both acoustic regions; changing the display does not require another solve when
 the boundary traces were retained.
 
+For Interior planes, selecting **Element Field** with **Acoustic Flow Arrows**
+shows full 3D vectors throughout the visible, clipped FEM volume, with translucent
+tetrahedra as context. Static arrows show 3D active intensity; **Animate Cycle**
+shows instantaneous 3D particle velocity. **Arrow density** controls equal spacing
+throughout the volume, with an internal sample limit for responsiveness. The
+existing scale controls apply, and **Invert clip side** selects the visible side.
+**Smooth Field** retains the planar arrows.
+
 The **Pressure color range** is automatic by default and uses a symmetric range
 based on the current pressure field. To keep the scale fixed while changing or
 sweeping frequency, clear **Automatic** and enter the positive limit in Pa. The
