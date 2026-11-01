@@ -417,14 +417,6 @@ class ObservationPlanePropertiesDialog(QDialog):
 
     def _refresh_dependent_controls(self) -> None:
         plane_type = self.type_combo.currentData()
-        interior_only = plane_type == ObservationPlaneType.INTERIOR.value
-        interior_displays = (ObservationPlaneDisplay.PARTICLE_VELOCITY, ObservationPlaneDisplay.FLOW_ARROWS)
-        for display in interior_displays:
-            item = self.display_combo.model().item(self.display_combo.findData(display.value))
-            if item is not None:
-                item.setEnabled(interior_only)
-        if not interior_only and self.display_combo.currentData() in {d.value for d in interior_displays}:
-            self._select_data(self.display_combo, ObservationPlaneDisplay.SPL.value)
         display = ObservationPlaneDisplay(self.display_combo.currentData())
         supports_cycle = display.supports_cycle_animation
         if not supports_cycle and self.animate_button.isChecked():

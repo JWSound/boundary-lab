@@ -100,11 +100,6 @@ class ObservationPlane:
             )
         plane_type = ObservationPlaneType(self.plane_type)
         display = ObservationPlaneDisplay(self.display)
-        if (
-            display in {ObservationPlaneDisplay.PARTICLE_VELOCITY, ObservationPlaneDisplay.FLOW_ARROWS}
-            and plane_type != ObservationPlaneType.INTERIOR
-        ):
-            display = ObservationPlaneDisplay.SPL
         flow_scales = {}
         for key in ("velocity_scale_m_per_s", "intensity_scale_w_per_m2", "particle_velocity_limit_m_per_s"):
             value = getattr(self, key)

@@ -33,6 +33,7 @@ class BemFieldEvaluationRequest:
     frequency_hz: float
     sound_speed_m_per_s: float
     symmetry: str = "off"
+    pressure_gradient: bool = False
 
 
 def evaluate_bem_field(
@@ -41,7 +42,12 @@ def evaluate_bem_field(
     backend_id: str,
     julia_executable: str = "julia",
 ) -> np.ndarray:
-    """Evaluate one synthesized BEM response on arbitrary exterior points."""
+    """Evaluate one synthesized BEM response on arbitrary exterior points.
+
+    Returns complex pressure, or (point, 4) pressure and XYZ pressure derivatives
+    when pressure_gradient is enabled. Gradients have units Pa/m; callers convert
+    to velocity using the exterior density and positive-time phasor convention.
+    """
 
     normalized_backend = normalize_backend_id(backend_id)
     if normalized_backend == "beat_remote" or not supports_physical_system_solves(normalized_backend):
@@ -64,6 +70,9 @@ def evaluate_bem_field(
             if event_type == "field_result":
                 if event.get("phasor_convention") != "exp(+i omega t)":
                     raise RuntimeError("BEAT field worker returned an incompatible phasor convention.")
+                expected_quantity = "pressure_gradient_v1" if request.pressure_gradient else "pressure"
+                if event.get("field_quantity", "pressure") != expected_quantity:
+                    raise RuntimeError("BEAT field worker returned an incompatible field quantity.")
                 if "values_binary" in event:
                     values = _read_binary_array(request_dir, event["values_binary"])
                 else:
@@ -72,7 +81,8 @@ def evaluate_bem_field(
                 raise RuntimeError(str(event.get("error", "Exterior field evaluation failed.")))
         if values is None:
             raise RuntimeError("The BEAT Engine field worker returned no exterior pressure values.")
-        if values.dtype.kind != "c" or values.shape != (np.asarray(request.points_m).shape[0],):
+        expected_shape = (len(request.points_m), 4) if request.pressure_gradient else (len(request.points_m),)
+        if values.dtype.kind != "c" or values.shape != expected_shape:
             raise RuntimeError("The BEAT Engine field worker returned an invalid exterior pressure array.")
         return values
 
@@ -103,8 +113,11 @@ def _validated_evaluation_request(
     *,
     backend_id: str,
 ) -> tuple[dict[str, object], dict[str, np.ndarray]]:
-    points = np.asarray(request.points_m, dtype=np.float32)
-    boundary_points = np.asarray(request.boundary_points_m, dtype=np.float32)
+    coordinate_dtype = np.float64 if request.pressure_gradient else np.float32
+    points = np.asarray(request.points_m, dtype=coordinate_dtype)
+    boundary_points = np.asarray(request.boundary_points_m, dtype=coordinate_dtype)
+    if request.pressure_gradient and backend_id not in {"beat_cpu", "beat_cuda"}:
+        raise ValueError("BEM pressure gradients require BEAT CPU or CUDA.")
     triangles = np.asarray(request.boundary_triangles, dtype=np.int64)
     pressure = np.asarray(request.boundary_pressure)
     normal = np.asarray(request.boundary_normal_derivative)
@@ -127,7 +140,7 @@ def _validated_evaluation_request(
     symmetry = str(request.symmetry).strip().lower()
     if symmetry not in {"off", "x", "xy"}:
         raise ValueError("Exterior field symmetry must be off, x, or xy.")
-    dtype = np.result_type(pressure.dtype, normal.dtype)
+    dtype = np.dtype(np.complex128) if request.pressure_gradient else np.result_type(pressure.dtype, normal.dtype)
     if dtype not in {np.dtype(np.complex64), np.dtype(np.complex128)}:
         dtype = np.dtype(np.complex64)
     domain_key = str(request.domain_key).strip()
@@ -141,11 +154,12 @@ def _validated_evaluation_request(
             "symmetry": symmetry,
             "bem_backend": _bem_backend_for_id(backend_id),
             "precision": "float64" if dtype == np.dtype(np.complex128) else "float32",
-            "quadrature_order": 2,
+            "quadrature_order": 4 if request.pressure_gradient else 2,
+            "field_quantity": "pressure_gradient_v1" if request.pressure_gradient else "pressure",
         },
         {
-            "points_m": np.ascontiguousarray(points, dtype=np.dtype("<f4")),
-            "boundary_points_m": np.ascontiguousarray(boundary_points, dtype=np.dtype("<f4")),
+            "points_m": np.ascontiguousarray(points, dtype=coordinate_dtype),
+            "boundary_points_m": np.ascontiguousarray(boundary_points, dtype=coordinate_dtype),
             "boundary_triangles": np.ascontiguousarray(triangles, dtype=np.dtype("<i8")),
             "boundary_pressure": np.ascontiguousarray(pressure, dtype=dtype.newbyteorder("<")),
             "boundary_normal_derivative": np.ascontiguousarray(normal, dtype=dtype.newbyteorder("<")),
