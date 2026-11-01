@@ -64,6 +64,21 @@ when live plot streaming is enabled. Use the save button in a plot's title bar
 to export that plot as a PNG. Horizontal and vertical isobars also provide
 buttons to capture and clear contour overlays.
 
+Each isobar's **Traces** menu selects the channels contributing to that plot.
+All channels are selected initially. Select one channel to isolate its directivity,
+or several to view their combined response, including phase interference and
+the configured channel gain, delay, polarity, and crossover. The selected response
+is normalized at that plane's configured reference angle. Horizontal and vertical
+selections are independent and do not change other plots or the channel settings.
+Clearing every channel leaves an empty plot; select a channel to restore it.
+
+Plot image and plot data exports follow that plot's selection. The **File > Export
+Polar Data** command continues to export the full system. Previous-solve comparisons
+use the current selection with the previous solve's channel data; captured contours
+remain frozen for comparison. Results without retained complex channel data show
+the combined response with **Traces** disabled. Selection is kept during the session
+and live updates, but is not saved in the project.
+
 <img src="../assets/plotviewer.png" alt="Boundary Lab plot panel" width="400">
 
 All plot types share the same mouse interactions:
