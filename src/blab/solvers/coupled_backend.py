@@ -1029,7 +1029,7 @@ class CoupledReferenceBackend(_CoupledBackend):
 
 
 class PhysicalSystemProductionBackend(_CoupledBackend):
-    """FP32 physical-system backend for exterior, interior, and coupled BEAT solves."""
+    """Physical-system backend with FP32 defaults and configurable solve precision."""
 
     backend_id = "coupled_production"
     label = "Coupled FEM-BEM (FP32)"
@@ -1039,6 +1039,7 @@ class PhysicalSystemProductionBackend(_CoupledBackend):
         self,
         *,
         bem_backend: str,
+        precision: str = "float32",
         julia_executable: str = "julia",
         solver_script: str | Path = DEFAULT_COUPLED_SOLVER_SCRIPT,
         julia_threads: str | int | None = None,
@@ -1054,7 +1055,7 @@ class PhysicalSystemProductionBackend(_CoupledBackend):
             julia_project=julia_project,
             julia_threads=resolved_threads,
             persistent_worker=persistent_worker,
-            precision="float32",
+            precision=precision,
             bem_backend=normalized_bem_backend,
         )
 

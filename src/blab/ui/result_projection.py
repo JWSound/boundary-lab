@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 
@@ -16,7 +16,8 @@ from blab.live import (
     TransducerMotionDataset,
 )
 from blab.max_spl import MaxSplLimit
-from blab.postprocess import PrepConfig
+from blab.polar_channels import PolarChannelBasis, finite_pressure_spl
+from blab.postprocess import PrepConfig, _normalize_plane_to_reference_angle, prepare_visualization_data_from_arrays
 from blab.spinorama import SpinoramaCurves, compute_spinorama_from_planes
 
 
@@ -41,6 +42,49 @@ class IsobarProjection:
     vertical_db: np.ndarray
     clip_min_db: float
     clip_max_db: float
+    channel_basis: PolarChannelBasis | None = None
+    prep_config: PrepConfig | None = None
+
+    def select_channels(self, selected: frozenset[str]) -> IsobarProjection | None:
+        """Rebuild only the isobars; other response projections keep the full system."""
+        basis = self.channel_basis
+        if basis is None or self.prep_config is None:
+            return self
+        if not selected.intersection(basis.names):
+            return None
+        if (
+            selected.issuperset(basis.names)
+            and np.all(np.isfinite(self.horizontal_db))
+            and np.all(np.isfinite(self.vertical_db))
+        ):
+            return self
+        horizontal, vertical = basis.sum(selected)
+        cfg = self.prep_config
+        planes = []
+        for pressure, reference in ((horizontal, cfg.hor_ref_angle), (vertical, cfg.vert_ref_angle)):
+            values = finite_pressure_spl(pressure)
+            values = _normalize_plane_to_reference_angle(values.T, basis.angle_deg, reference).T
+            values[np.all(np.abs(pressure) <= 1e-12, axis=1)] = cfg.min_db
+            planes.append(values)
+        arrays = prepare_visualization_data_from_arrays(
+            freq_hz=basis.freq_hz,
+            polar_angle_deg=basis.angle_deg,
+            horizontal_spl_norm_db=planes[0],
+            vertical_spl_norm_db=planes[1],
+            impedance_freq_hz=basis.freq_hz,
+            impedance_radiator_names=np.asarray([]),
+            impedance_real=np.empty((0, basis.freq_hz.size)),
+            impedance_imag=np.empty((0, basis.freq_hz.size)),
+            cfg=replace(cfg, normalize_polar=False),
+        )
+        return IsobarProjection(
+            arrays["isobar_freq_hz"],
+            arrays["isobar_angle_deg"],
+            arrays["horizontal_isobar_db"],
+            arrays["vertical_isobar_db"],
+            float(arrays["clip_min_db"]),
+            float(arrays["clip_max_db"]),
+        )
 
     def snapshot(self) -> IsobarProjection:
         return IsobarProjection(
@@ -50,6 +94,8 @@ class IsobarProjection:
             vertical_db=np.asarray(self.vertical_db).copy(),
             clip_min_db=self.clip_min_db,
             clip_max_db=self.clip_max_db,
+            channel_basis=None if self.channel_basis is None else self.channel_basis.snapshot(),
+            prep_config=None if self.prep_config is None else replace(self.prep_config),
         )
 
 
@@ -327,6 +373,16 @@ class ResultProjectionService:
                 vertical_db=arrays["vertical_isobar_db"],
                 clip_min_db=float(arrays["clip_min_db"]),
                 clip_max_db=float(arrays["clip_max_db"]),
+                channel_basis=dataset.polar_channel_basis(),
+                prep_config=PrepConfig(
+                    angle_samples=options.angle_samples,
+                    freq_samples=options.freq_samples,
+                    octave_smoothing=options.octave_smoothing,
+                    hor_ref_angle=options.horizontal_reference_angle_deg,
+                    vert_ref_angle=options.vertical_reference_angle_deg,
+                    min_db=options.min_db,
+                    max_db=options.max_db,
+                ),
             ),
             impedance=impedance_projection,
             response=PolarResponseProjection(

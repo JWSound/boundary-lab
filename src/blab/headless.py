@@ -574,6 +574,7 @@ def run_headless_solve(
     try:
         backend = backend or PhysicalSystemProductionBackend(
             bem_backend=backend_id.removeprefix("beat_"),
+            precision=prepared.request.solver_options.get("precision", "float32"),
             julia_executable=julia_executable,
             julia_threads=julia_threads,
         )

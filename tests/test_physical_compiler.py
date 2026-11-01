@@ -247,6 +247,20 @@ def test_coupled_production_backend_forces_fp32_and_selects_cuda_project() -> No
     assert cpu_session.request.solver_options["static_condensation"] is True
 
 
+@pytest.mark.parametrize("backend", ["cpu", "cuda", "rocm"])
+def test_coupled_production_backend_accepts_configured_float64(backend) -> None:
+    request = SystemSolveRequest(
+        compiled_system=PhysicalSystemCompiler().compile(_fixture_system()),
+        frequencies_hz=(500.0,),
+        excitation_port_ids=("excitation:radiator",),
+        outputs=(OutputRequest(id="output:fem", quantity="fem_nodal_pressure"),),
+    )
+    session = CoupledProductionBackend(bem_backend=backend, precision="float64").create_system_session(request)
+    assert session.request.solver_options["precision"] == "float64"
+    assert session.request.solver_options["bem_backend"] == backend
+    assert session.request.solver_options["static_condensation"] is True
+
+
 def test_coupled_production_backend_keeps_full_matrix_diagnostics_monolithic() -> None:
     compiled = PhysicalSystemCompiler().compile(_fixture_system())
     request = SystemSolveRequest(

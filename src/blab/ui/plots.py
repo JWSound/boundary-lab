@@ -543,6 +543,14 @@ class IsobarCanvas(InteractivePlotCanvas):
         self.figure = Figure(figsize=(5.5, 2.8), dpi=100)
         self.axes = self.figure.add_subplot(111)
         super().__init__(self.figure, title)
+        self._series_labels: tuple[str, ...] = ()
+        self._series_visibility: dict[str, bool] = {}
+        self._series_actions: dict[str, QAction] = {}
+        self.trace_filter_menu = QMenu("Traces", self)
+        self.trace_filter_action = QAction("Traces", self)
+        self.trace_filter_action.setToolTip("Choose channels contributing to this polar plot")
+        self.trace_filter_action.setMenu(self.trace_filter_menu)
+        self.trace_filter_action.setEnabled(False)
         self.show_colorbar = bool(show_colorbar)
         profile = ISOBAR_LAYOUT if self.show_colorbar else SINGLE_AXIS_LAYOUT
         if left_margin is not None or right_margin is not None:
@@ -580,6 +588,31 @@ class IsobarCanvas(InteractivePlotCanvas):
         self._crosshair_db_label = None
         self.set_layout_profile(profile)
         self._draw_empty()
+
+    def set_channel_names(self, labels: tuple[str, ...]) -> None:
+        if labels == self._series_labels:
+            return
+        self._series_labels = labels
+        self.trace_filter_menu.clear()
+        self._series_actions = {}
+        for label in labels:
+            action = self.trace_filter_menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(self.is_series_visible(label))
+            action.toggled.connect(lambda checked, name=label: self.set_series_visible(name, checked))
+            self._series_actions[label] = action
+        self.trace_filter_action.setEnabled(bool(labels))
+
+    def set_series_visible(self, label: str, visible: bool) -> None:
+        if label not in self._series_labels or self.is_series_visible(label) == bool(visible):
+            return
+        self._series_visibility[label] = bool(visible)
+        self._series_actions[label].setChecked(bool(visible))
+        self.trace_visibility_changed.emit()
+
+    def clear_for_solve(self) -> None:
+        self.set_channel_names(())
+        super().clear_for_solve()
 
     def _configure_axes(self) -> None:
         self._apply_layout_profile()

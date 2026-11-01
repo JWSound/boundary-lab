@@ -64,6 +64,21 @@ when live plot streaming is enabled. Use the save button in a plot's title bar
 to export that plot as a PNG. Horizontal and vertical isobars also provide
 buttons to capture and clear contour overlays.
 
+Each isobar's **Traces** menu selects the channels contributing to that plot.
+All channels are selected initially. Select one channel to isolate its directivity,
+or several to view their combined response, including phase interference and
+the configured channel gain, delay, polarity, and crossover. The selected response
+is normalized at that plane's configured reference angle. Horizontal and vertical
+selections are independent and do not change other plots or the channel settings.
+Clearing every channel leaves an empty plot; select a channel to restore it.
+
+Plot image and plot data exports follow that plot's selection. The **File > Export
+Polar Data** command continues to export the full system. Previous-solve comparisons
+use the current selection with the previous solve's channel data; captured contours
+remain frozen for comparison. Results without retained complex channel data show
+the combined response with **Traces** disabled. Selection is kept during the session
+and live updates, but is not saved in the project.
+
 <img src="../assets/plotviewer.png" alt="Boundary Lab plot panel" width="400">
 
 All plot types share the same mouse interactions:
@@ -470,13 +485,42 @@ Observation-plane properties control the plane geometry, sampling resolution,
 result response, frequency, and viewport display metric. Real, imaginary, and
 animated instantaneous pressure use a diverging color map centered on zero.
 
-Interior planes can also display **Particle Velocity Magnitude**. Boundary Lab
-derives the complex particle-velocity vector from the P1 FEM pressure gradient
-using the bounded region density, then colors the plane by its magnitude in
-metres per second on a fixed 0 to 35 m/s color scale. Phase animation shows
-instantaneous particle speed using the same fixed scale. The
-option is unavailable for Exterior and Combined planes because their exterior
-BEM field evaluator currently returns pressure only.
+The properties dialog shows only controls relevant to the selected display.
+SPL supports automatic scaling or manual minimum/maximum values; Normalized SPL
+lets you set the displayed range below 0 dB. **Animate Cycle** is available for
+Pressure, Particle Velocity Magnitude, and Flow Arrows.
+SPL, Normalized SPL, and Phase can sweep frequency but do not animate a cycle.
+
+**Pressure** uses a **Real | Imaginary** component toggle in place of separate
+dropdown entries. The same toggle appears for static **Acoustic Flow Arrows**:
+Real shows active intensity and Imaginary shows reactive intensity, with the
+legend and intensity-scale label identifying the selected quantity. Reactive
+intensity describes the quadrature component of complex intensity, not net
+time-averaged energy transport. **Animate Cycle** hides the toggle and shows
+physical instantaneous pressure or particle velocity; stopping animation restores
+the chosen component. Existing saved Real/Imaginary Pressure selections are preserved.
+
+Interior, Exterior, and Combined planes can display **Particle Velocity Magnitude**
+and **Acoustic Flow Arrows** with BEAT CPU or CUDA. Combined planes automatically
+use FEM fields inside bounded acoustic regions and BEM fields in exterior air.
+Boundary Lab derives complex particle velocity from the pressure gradient and
+the region density, then colors the magnitude display in
+metres per second with an automatic color maximum or a user-specified limit.
+**Animate Cycle** shows physical instantaneous particle speed from the retained
+RMS phasors, using a color range that stays fixed throughout the cycle.
+Flow arrows show active or reactive intensity while static and in-plane particle
+velocity while animated. Solid interiors and exterior samples too close to the
+BEM boundary are omitted. The existing density and scale controls apply across
+both acoustic regions; changing the display does not require another solve when
+the boundary traces were retained.
+
+For Interior planes, selecting **Element Field** with **Acoustic Flow Arrows**
+shows full 3D vectors throughout the visible, clipped FEM volume, with translucent
+tetrahedra as context. Static arrows show 3D active or reactive intensity; **Animate Cycle**
+shows instantaneous 3D particle velocity. **Arrow density** controls equal spacing
+throughout the volume, with an internal sample limit for responsiveness. The
+existing scale controls apply, and **Invert clip side** selects the visible side.
+**Smooth Field** retains the planar arrows.
 
 The **Pressure color range** is automatic by default and uses a symmetric range
 based on the current pressure field. To keep the scale fixed while changing or
@@ -488,8 +532,20 @@ automatic scale. The selected manual limit is stored with the observation
 plane in the project file.
 
 With a plane selected in the viewport, use **W** for Move, **E** for Rotate,
-and **R** for Scale. The manual pressure color limit accepts whole pascal
-values and starts at 10 Pa.
+and **R** for Scale. Drag the axis arrows to translate the plane or the square
+corner grips to resize it. Controls keep a consistent screen size when zooming.
+
+In Rotate mode, drag a red, green, or blue ring to rotate about the plane's
+local X, Y, or Z axis. A radar appears with 45-degree ticks on its inner band,
+10-degree ticks on its middle band, and 5-degree ticks on its outer band.
+Moving within 10 screen pixels of a tick snaps to that relative angle; away
+from the ticks, rotation is continuous. Alt is no longer needed for free
+rotation. The current angle and the top-right hotkey help remain visible.
+Nearly edge-on axes use a face-on radar to keep the ticks accessible.
+Release to finish a change, or press **Escape** during a drag to restore the
+plane's starting geometry.
+
+The manual pressure color limit accepts whole pascal values and starts at 10 Pa.
 
 ## Frequency Controls
 

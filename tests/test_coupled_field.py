@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import threading
+from dataclasses import replace
 
 import numpy as np
+import pytest
 
 from blab.solvers.beat_engine_backend import DEFAULT_BEAT_ENGINE_ROCM_PROJECT
 from blab.solvers.coupled_backend import DEFAULT_COUPLED_CPU_PROJECT
@@ -22,6 +24,24 @@ def _request(*, value: float = 1.0) -> BemFieldEvaluationRequest:
         sound_speed_m_per_s=343.0,
         symmetry="x",
     )
+
+
+@pytest.mark.parametrize("capabilities", [None, {}, {"cpu": ["pressure"]}, {"cpu": "pressure_gradient_v1"}])
+def test_gradient_request_rejects_old_worker_before_submission(monkeypatch, capabilities):
+    import blab.solvers.coupled_field as field_module
+
+    class Worker:
+        worker_info = None
+
+        def ensure_started(self):
+            self.worker_info = {"field_quantities": capabilities}
+
+        def submit(self, *args, **kwargs):
+            pytest.fail("An incompatible gradient request must not reach the worker")
+
+    monkeypatch.setattr(field_module, "get_beat_engine_worker", lambda **kwargs: Worker())
+    with pytest.raises(RuntimeError, match="restart Boundary Lab"):
+        evaluate_bem_field(replace(_request(), pressure_gradient=True), backend_id="beat_cpu")
 
 
 def test_evaluate_bem_field_uses_warmed_worker_protocol(monkeypatch) -> None:

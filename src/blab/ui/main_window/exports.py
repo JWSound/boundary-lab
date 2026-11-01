@@ -183,10 +183,14 @@ class ExportsMixin:
         target = Path(output_target)
         if plot_id in {"horizontal_isobar", "vertical_isobar"}:
             plane = "H" if plot_id == "horizontal_isobar" else "V"
+            basis = dataset.polar_channel_basis()
             return export_polar_text_files(
                 dataset,
                 target,
                 planes=(plane,),
+                selected_channels=(
+                    None if basis is None else frozenset(name for name in basis.names if selected(name))
+                ),
                 reference_angles_deg={
                     "H": self.preferences.horizontal_normalization_angle,
                     "V": self.preferences.vertical_normalization_angle,
