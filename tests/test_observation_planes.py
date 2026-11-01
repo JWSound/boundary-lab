@@ -6,7 +6,7 @@ from types import MethodType, SimpleNamespace
 
 import numpy as np
 import pytest
-from PySide6.QtTest import QTest
+from PySide6.QtTest import QSignalSpy, QTest
 
 from blab.observation_planes import (
     InteriorRenderingMode,
@@ -1872,8 +1872,9 @@ def test_result_sync_preserves_modeless_dialog_frequency_preview(main_window, qa
 
     main_window.preview.observationPlanePropertiesRequested.emit(persisted.id)
     dialog = controller._dialogs[persisted.id]
+    preview_changed = QSignalSpy(dialog.previewChanged)
     dialog.frequency_slider.setValue(2)
-    QTest.qWait(20)
+    assert preview_changed.count() or preview_changed.wait(1000)
     qapp.processEvents()
 
     assert main_window.project.observation_planes[0].frequency_hz is None
