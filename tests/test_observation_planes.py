@@ -6,7 +6,7 @@ from types import MethodType, SimpleNamespace
 
 import numpy as np
 import pytest
-from PySide6.QtTest import QSignalSpy, QTest
+from PySide6.QtTest import QSignalSpy
 
 from blab.observation_planes import (
     InteriorRenderingMode,
@@ -252,16 +252,17 @@ def test_properties_dialog_selects_and_previews_solved_frequency(qapp) -> None:
         assert dialog.frequency_slider.value() == 1
         assert dialog.plane.frequency_hz == 1000.0
         assert dialog.animate_button.isEnabled()
+        preview_changed = QSignalSpy(dialog.previewChanged)
         dialog.frequency_slider.setValue(2)
-        qapp.processEvents()
-        QTest.qWait(20)
+        assert preview_changed.count() or preview_changed.wait(1000)
         qapp.processEvents()
         assert previews[-1][0].frequency_hz == 10_000.0
         previews.clear()
+        preview_changed = QSignalSpy(dialog.previewChanged)
         dialog.frequency_slider.setValue(0)
         dialog.frequency_slider.setValue(1)
         dialog.frequency_slider.setValue(2)
-        QTest.qWait(20)
+        assert preview_changed.count() or preview_changed.wait(1000)
         qapp.processEvents()
         assert len(previews) == 1
         assert previews[0][0].frequency_hz == 10_000.0
@@ -346,10 +347,11 @@ def test_frequency_sweep_oscillates_across_sorted_solved_frequencies(qapp, monke
         assert dialog.frequency_sweep_speed_slider.isEnabled()
 
         clock[0] = 10.1
+        preview_changed = QSignalSpy(dialog.previewChanged)
         dialog._advance_frequency_sweep()
         assert dialog.frequency_slider.value() == 1
         assert dialog.frequency_label.text() == "200 Hz"
-        QTest.qWait(20)
+        assert preview_changed.count() or preview_changed.wait(1000)
         qapp.processEvents()
         assert previews[-1][0].frequency_hz == 200.0
 
