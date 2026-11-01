@@ -19,6 +19,7 @@ from blab.channel_synthesis import (
 from blab.config import DEFAULT_CHANNEL_VOLTAGE_V, ChannelConfig
 from blab.max_spl import MaxSplLimit, calculate_max_spl_curves
 from blab.phasor import solver_phase_deg, solver_to_standard_phasor
+from blab.polar_channels import PolarChannelBasis
 from blab.postprocess import PrepConfig, prepare_visualization_data_from_arrays
 from blab.solve_results.model import DIAPHRAGM_VELOCITY_ID, INTERFACE_VELOCITY_ID, VOICE_COIL_CURRENT_ID
 from blab.solvers.base import FrequencyResult
@@ -113,6 +114,29 @@ class LiveSolveDataset:
             np.complex64, copy=False
         )
         return freqs, self.polar_angle_deg.astype(np.float32, copy=False), horizontal, vertical
+
+    def polar_channel_basis(self) -> PolarChannelBasis | None:
+        """Snapshot weighted channel pressures without changing the solve or its synthesis."""
+        if not self.supports_channel_resynthesis:
+            return None
+        ordered = self.ordered_results()
+        names = tuple(str(name) for name in ordered[0].channel_names)
+        horizontal, vertical = [], []
+        for result in ordered:
+            result_names = tuple(str(name) for name in result.channel_names)
+            if set(result_names) != set(names):
+                return None
+            indices = [result_names.index(name) for name in names]
+            weights = self.channel_basis_weights(result)[:, np.newaxis]
+            horizontal.append((np.asarray(result.horizontal_pressure) * weights)[indices])
+            vertical.append((np.asarray(result.vertical_pressure) * weights)[indices])
+        return PolarChannelBasis(
+            self.solved_frequencies,
+            self.polar_angle_deg.copy(),
+            names,
+            np.stack(horizontal),
+            np.stack(vertical),
+        )
 
     def as_channel_on_axis_export_arrays(
         self,
