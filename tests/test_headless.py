@@ -341,6 +341,54 @@ def _prepared_request() -> PreparedSystemSolve:
     )
 
 
+@pytest.mark.parametrize("backend_id", ["beat_cpu", "beat_cuda", "beat_rocm"])
+@pytest.mark.parametrize("precision", [None, "float32", "float64"])
+def test_headless_precision_reaches_production_session(tmp_path, monkeypatch, backend_id, precision):
+    from blab.solvers.coupled_backend import CoupledSession
+
+    project_file = tmp_path / "sample.blab.json"
+    project_file.write_text('{"schema_version": 8}', encoding="utf-8")
+    project = HeadlessProject(
+        path=project_file,
+        payload={"schema_version": 8},
+        physical_system=PhysicalSystem("system:test", "Test", (), (), ()),
+        preferences=ProjectPreferencesState(),
+        symmetry="off",
+        component_channel_by_id={},
+    )
+    prepared = _prepared_request()
+    options = {} if precision is None else {"precision": precision}
+    prepared = replace(prepared, request=replace(prepared.request, solver_options=options))
+    captured = []
+
+    def solve_stream(session):
+        captured.append(session.request.solver_options["precision"])
+        yield SystemFrequencyResult(
+            freq_hz=100.0,
+            excitation_port_ids=("excitation:source",),
+            quantities=(
+                QuantityResult(
+                    id="ui:exterior-pressure",
+                    quantity="exterior_pressure",
+                    unit="Pa",
+                    values=np.asarray([[1 + 2j, 3 + 4j]], dtype=np.complex128),
+                    axes=("excitation", "observation"),
+                ),
+            ),
+        )
+
+    monkeypatch.setattr(CoupledSession, "solve_stream", solve_stream)
+    result = headless_module.run_headless_solve(
+        project,
+        prepared,
+        output_dir=tmp_path / "run",
+        backend_id=backend_id,
+        public_request={"schema_version": 1, "solver_options": options},
+    )
+    assert result["solved_count"] == 1
+    assert captured == [precision or "float32"]
+
+
 def test_interface_radiation_is_an_explicitly_retainable_project_observation(tmp_path):
     from blab.solve_results.model import INTERFACE_RADIATION_ID, RADIATION_SOURCE_DOMAIN_ID
 
