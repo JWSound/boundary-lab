@@ -38,9 +38,13 @@ def test_dialog_shows_only_applicable_rows(qapp, display):
         assert dialog.animate_button.isEnabled() == display.supports_cycle_animation
         assert dialog.animate_button.text() == "Animate Cycle"
         assert dialog.animation_speed_slider.isHidden()
+        assert dialog.component_control.isHidden() == (
+            display not in {Display.REAL_PRESSURE, Display.IMAGINARY_PRESSURE, Display.FLOW_ARROWS}
+        )
         assert dialog.frequency_sweep_speed_slider.isHidden()
         if display.supports_cycle_animation:
             dialog.animate_button.setChecked(True)
+            assert dialog.component_control.isHidden()
             assert not dialog.animation_speed_slider.isHidden()
             if display == Display.FLOW_ARROWS:
                 assert dialog.intensity_scale_auto_check.isHidden()
@@ -49,6 +53,58 @@ def test_dialog_shows_only_applicable_rows(qapp, display):
         assert not dialog.frequency_sweep_speed_slider.isHidden()
         assert not dialog.animate_button.isChecked()
         assert dialog.animation_speed_slider.isHidden()
+    finally:
+        dialog.close()
+
+
+@pytest.mark.parametrize("legacy", [Display.REAL_PRESSURE, Display.IMAGINARY_PRESSURE])
+def test_unified_pressure_control_preserves_legacy_selection_and_animation(qapp, legacy):
+    plane = ObservationPlane.from_payload({"id": "old", "display": legacy.value})
+    assert plane is not None
+    dialog = ObservationPlanePropertiesDialog(plane, solved_frequencies_hz=(100,))
+    try:
+        labels = [dialog.display_combo.itemText(i) for i in range(dialog.display_combo.count())]
+        assert labels.count("Pressure") == 1
+        assert "Real Pressure" not in labels and "Imaginary Pressure" not in labels
+        assert dialog.display_combo.currentText() == "Pressure"
+        assert dialog.plane.display == legacy
+        dialog.imaginary_component_button.click()
+        selected = dialog.plane
+        assert selected.display == Display.IMAGINARY_PRESSURE
+        assert ObservationPlane.from_payload(selected.to_payload()) == selected
+        dialog.animate_button.setChecked(True)
+        assert dialog.component_control.isHidden()
+        assert dialog.plane.display == Display.IMAGINARY_PRESSURE
+        dialog.animate_button.setChecked(False)
+        assert not dialog.component_control.isHidden()
+        assert dialog.imaginary_component_button.isChecked()
+        dialog.real_component_button.click()
+        assert dialog.plane.display == Display.REAL_PRESSURE
+    finally:
+        dialog.close()
+
+
+def test_flow_component_preview_labels_and_persistence(qapp):
+    dialog = ObservationPlanePropertiesDialog(
+        replace(new_observation_plane("Flow"), display=Display.FLOW_ARROWS), solved_frequencies_hz=(100,)
+    )
+    previews = []
+    dialog.previewChanged.connect(lambda plane, animate: previews.append((plane, animate)))
+    try:
+        dialog.imaginary_component_button.click()
+        assert previews[-1][0].complex_component == "imaginary"
+        assert dialog._form.labelForField(dialog._scale_rows["intensity"]).text() == "Reactive intensity scale"
+        plane = dialog.plane
+        assert ObservationPlane.from_payload(plane.to_payload()) == plane
+        dialog.animate_button.setChecked(True)
+        assert dialog.component_control.isHidden()
+        assert not dialog.velocity_scale_auto_check.isHidden()
+        dialog.animate_button.setChecked(False)
+        assert dialog.imaginary_component_button.isChecked()
+        dialog.display_combo.setCurrentIndex(dialog.display_combo.findData(Display.SPL.value))
+        assert dialog.component_control.isHidden()
+        dialog.display_combo.setCurrentIndex(dialog.display_combo.findData(Display.FLOW_ARROWS.value))
+        assert dialog.imaginary_component_button.isChecked()
     finally:
         dialog.close()
 
