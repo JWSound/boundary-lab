@@ -15,6 +15,7 @@ from dataclasses import dataclass, field, replace
 from typing import Callable
 from uuid import uuid4
 
+from blab.defaults import DEFAULT_SOUND_SPEED_M_PER_S
 from blab.solve_results import SolvedSystem
 
 API_VERSION = 1
@@ -35,6 +36,7 @@ class ProviderContext:
     freq_min_hz: float
     freq_max_hz: float
     freq_count: int
+    sound_speed_m_per_s: float = DEFAULT_SOUND_SPEED_M_PER_S  # of the exterior air region, else the default
     schema_version: int = API_VERSION
 
 

@@ -165,20 +165,25 @@ def gui_preferences_with_project_preferences(
     )
 
 
+def _introduced_providers(settings: QSettings) -> list[str]:
+    """Bundled providers already enabled once; earlier versions recorded only the vented enclosure."""
+    introduced = settings_str_list(settings, "providers/introduced")
+    if settings_bool(settings, "providers/vented_enclosure_introduced", False):
+        introduced = list(dict.fromkeys(["blab.vented_enclosure", *introduced]))
+    return introduced
+
+
 def load_gui_preferences(settings: QSettings) -> GuiPreferences:
     defaults = GuiPreferences()
-    enabled = settings.value("providers/enabled", [])
-    if isinstance(enabled, str):
-        enabled = [enabled] if enabled else []
-    if not isinstance(enabled, (list, tuple)):
-        enabled = []
-    enabled = [item for item in enabled if isinstance(item, str) and item]
-    # First-party packages ship with the application. Enable this one once,
+    enabled = settings_str_list(settings, "providers/enabled")
+    # First-party packages ship with the application. Enable each one once,
     # while preserving later opt-outs and every existing default selection.
-    if not settings_bool(settings, "providers/vented_enclosure_introduced", False):
-        enabled = list(dict.fromkeys([*enabled, *bundled_provider_ids()]))
+    introduced = _introduced_providers(settings)
+    new = [item for item in bundled_provider_ids() if item not in introduced]
+    if new:
+        enabled = list(dict.fromkeys([*enabled, *new]))
         settings.setValue("providers/enabled", enabled)
-        settings.setValue("providers/vented_enclosure_introduced", True)
+        settings.setValue("providers/introduced", [*introduced, *new])
     return GuiPreferences(
         default_geometry_provider=settings_str(settings, "providers/default", "ath"),
         enabled_geometry_providers=tuple(item for item in enabled if isinstance(item, str) and item),
@@ -275,7 +280,9 @@ def load_gui_preferences(settings: QSettings) -> GuiPreferences:
 def save_gui_preferences(settings: QSettings, preferences: GuiPreferences) -> None:
     settings.setValue("providers/default", preferences.default_geometry_provider)
     settings.setValue("providers/enabled", list(preferences.enabled_geometry_providers))
-    settings.setValue("providers/vented_enclosure_introduced", True)
+    settings.setValue(
+        "providers/introduced", list(dict.fromkeys([*_introduced_providers(settings), *bundled_provider_ids()]))
+    )
     settings.setValue("preferences/theme", preferences.theme)
     settings.setValue("preferences/solve_backend", preferences.solve_backend)
     settings.setValue("preferences/cuda_worker_reuse", preferences.cuda_worker_reuse)
@@ -392,6 +399,16 @@ def settings_str(settings: QSettings, key: str, default: str) -> str:
         return default
     text = str(value).strip()
     return text or default
+
+
+def settings_str_list(settings: QSettings, key: str) -> list[str]:
+    """Nonempty strings stored under ``key``; QSettings may return one string for a one-item list."""
+    value = settings.value(key, [])
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [item for item in value if isinstance(item, str) and item]
 
 
 def normalize_live_plot_quality(value: object) -> str:

@@ -213,6 +213,71 @@ def test_assembly_rejection_is_atomic(assembly_case, fault):
     assert project == before
 
 
+POSITIVE_XY_MM = (130.0, 80.0, 0.0)  # The fixture's BEM spans about ±125 mm in X and ±76 mm in Y.
+
+
+def _reduced_case(assembly_case, symmetry, translation_mm):
+    """Declare the full fixture reduced and place it in the positive symmetry region."""
+    project, geometry, patch = assembly_case
+    document = replace(project.generator_documents[0], mesh_translation_mm=translation_mm)
+    project = ProjectDocument((document,), document.id, symmetry=symmetry)
+    return project, replace(geometry, reduced=True), patch
+
+
+@pytest.mark.parametrize("symmetry", ["x", "xy"])
+def test_reduced_assembly_in_positive_region_is_accepted_under_symmetry(assembly_case, symmetry):
+    project, geometry, patch = _reduced_case(assembly_case, symmetry, POSITIVE_XY_MM)
+    candidate = stage(project, geometry, patch)
+    assert candidate.symmetry == symmetry
+    assert candidate.generator_documents[0].artifact.reduced
+    compiled = PhysicalSystemCompiler().compile(candidate.physical_system, symmetry_mode=symmetry)
+    assert len(compiled.interfaces) == 1
+    entries = generated_mesh_entries(candidate.generator_documents[0], geometry, symmetry)
+    assert len(entries) == 2
+
+
+@pytest.mark.parametrize(("symmetry", "translation_mm"), [("x", (0.0, 0.0, 0.0)), ("xy", (130.0, 0.0, 0.0))])
+def test_reduced_assembly_outside_positive_region_is_rejected_atomically(assembly_case, symmetry, translation_mm):
+    project, geometry, patch = _reduced_case(assembly_case, symmetry, translation_mm)
+    before = deepcopy(project)
+    with pytest.raises(ValueError, match="positive"):
+        stage(project, geometry, patch)
+    assert project == before
+
+
+def test_reduced_assembly_survives_save_reopen_and_headless_load(assembly_case, tmp_path):
+    from blab.ui.mesh_preparation import MeshPreparationSnapshot, prepare_preview
+
+    project, geometry, patch = _reduced_case(assembly_case, "xy", POSITIVE_XY_MM)
+    project = stage(project, geometry, patch)
+    payload = {
+        "schema_version": PROJECT_SCHEMA_VERSION,
+        "symmetry": "xy",
+        "generator_documents": [generator_document_to_payload(project.generator_documents[0], absolute_paths=True)],
+        "physical_system": physical_system_to_dict(project.physical_system),
+    }
+    path = write_project_file(tmp_path / "reduced.blab.json", payload)
+    document = generator_documents_from_payload(read_project_file(path)["generator_documents"])[0]
+    restored = restore_generator_document(document)
+    assert restored.reduced
+    headless = load_headless_project(path)
+    assert headless.symmetry == "xy"
+    assert len(PhysicalSystemCompiler().compile(headless.physical_system, symmetry_mode="xy").interfaces) == 1
+    snapshot = MeshPreparationSnapshot(
+        (document,), {document.id: restored}, (), (), headless.physical_system, "xy", False, 2
+    )
+    preview, *_ = prepare_preview(snapshot, tmp_path)
+    assert len(preview.mesh_configs) == 2
+
+
+def test_unreduced_assembly_is_still_rejected_under_symmetry(assembly_case):
+    project, geometry, patch = _reduced_case(assembly_case, "x", POSITIVE_XY_MM)
+    before = deepcopy(project)
+    with pytest.raises(ValueError, match="symmetry Off"):
+        stage(project, replace(geometry, reduced=False), patch)
+    assert project == before
+
+
 def test_assembly_enable_transform_and_removal(assembly_case):
     project, geometry, patch = assembly_case
     project = stage(project, geometry, patch)

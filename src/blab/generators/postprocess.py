@@ -18,8 +18,11 @@ def ensure_reduced_geometry(
 ) -> GeneratedGeometry:
     """Materialize a cleaned, unmirrored mesh for native-symmetry solvers."""
     if result.meshes:
+        if result.reduced:
+            return result  # Already reduced; the host never cuts assemblies.
         raise ValueError(
-            "Generated mesh assemblies currently require symmetry Off; automatic coupled reduction is unsupported."
+            "Generated mesh assemblies require symmetry Off unless the provider declares them already reduced; "
+            "automatic coupled reduction is unsupported."
         )
     if result.mesh_data is not None:
         result.solver_mesh_data_for_symmetry("x")

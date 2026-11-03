@@ -29,17 +29,17 @@ def accept(main_window, assembly_case):
     return geometry
 
 
-def test_gui_assembly_mesh_controls_are_linked_and_roundtrip(main_window, assembly_case):
+def test_gui_assembly_rows_lock_scale_and_translation_and_link_enabling(main_window, assembly_case):
     accept(main_window, assembly_case)
     entries = main_window._mesh_config_dialog_entries()
     assert len(entries) == 2 and all(entry.locked for entry in entries)
     dialog = MeshConfigDialog(entries)
-    dialog.x_widgets[0].setValue(25)
-    dialog.scale_widgets[1].setValue(0.002)
+    for widgets in (dialog.scale_widgets, dialog.x_widgets, dialog.y_widgets, dialog.z_widgets):
+        assert not any(widget.isEnabled() for widget in widgets)  # a generated geometry is placed by its design
     dialog.enabled_widgets[0].setChecked(False)
     updated = dialog.meshes()
     assert all(
-        entry.translation_mm == (25, 0, 0) and entry.scale_factor == 0.002 and not entry.enabled for entry in updated
+        entry.translation_mm == (0, 0, 0) and entry.scale_factor == 0.001 and not entry.enabled for entry in updated
     )
     main_window._apply_mesh_config_dialog_entries(updated)
     assert not main_window.project.imported_meshes
@@ -49,7 +49,7 @@ def test_gui_assembly_mesh_controls_are_linked_and_roundtrip(main_window, assemb
     main_window._apply_mesh_config_dialog_entries(dialog.meshes())
     configs = main_window._generated_solver_mesh_configs()
     assert len(configs) == 2
-    assert all(config.translation_m == (0.025, 0, 0) for config in configs)
+    assert all(config.translation_m == (0, 0, 0) and config.scale_factor == 0.001 for config in configs)
     dialog.deleteLater()
 
 

@@ -19,4 +19,5 @@ Keep reusable solve preparation free of Qt; the GUI and CLI should call the same
 core contracts. Preserve complex per-excitation results and record enough
 provenance to reproduce a run. Use Python 3.11+, run focused tests with
 `python -m pytest <test-file>`, and run `python -m ruff check src tests` for
-changed Python code.
+changed Python code. Default pytest skips `slow` tests; the full run is
+`python -m pytest -n auto -m ""`.
