@@ -186,11 +186,13 @@ class _ComponentEditorDialog(QDialog):
         mesh_cache: dict[str, meshio.Mesh],
         projected_geometry_cache: ProjectedAreaGeometryCache | None = None,
         exterior_only: bool = True,
+        exterior_region_ids: set[str] | None = None,
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
         self.setWindowTitle("Component")
         self._exterior_only = exterior_only
+        self._exterior_region_ids = exterior_region_ids
         self._draft = draft
         self.file_dialogs = FileDialogService()
         self._driver_reference = dict(draft.parameters.get("driver_reference") or {})
@@ -295,7 +297,7 @@ class _ComponentEditorDialog(QDialog):
         self.source_motion_note = QLabel(
             "This saved source uses surface-normal velocity."
             if exterior_only
-            else "Prescribed sources in FEM and coupled systems use surface-normal velocity."
+            else "Prescribed sources on interior boundaries use surface-normal velocity."
         )
         self.source_motion_note.setWordWrap(True)
         self.axis_mode_combo = QComboBox()
@@ -597,7 +599,7 @@ class _ComponentEditorDialog(QDialog):
                 parameters = prescribed_source_parameters(
                     parameters,
                     symmetry=self._symmetry_mode,
-                    exterior=self._exterior_only,
+                    exterior=self._selected_boundaries_are_exterior(),
                 )
         parameters[_BOUNDARY_MOTION_WEIGHTS_KEY] = self.boundary_motion_weights()
         return _ComponentDraft(
@@ -619,6 +621,14 @@ class _ComponentEditorDialog(QDialog):
             return
         self.accept()
 
+    def _selected_boundaries_are_exterior(self) -> bool:
+        if self._exterior_region_ids is None:
+            return self._exterior_only
+        return all(
+            self._boundaries_by_id[boundary_id].region_id in self._exterior_region_ids
+            for boundary_id in self.selected_boundary_ids()
+        )
+
     def _uses_axis(self) -> bool:
         return (
             self.type_combo.currentData() == ComponentKind.ELECTRODYNAMIC_TRANSDUCER
@@ -626,6 +636,10 @@ class _ComponentEditorDialog(QDialog):
         )
 
     def _refresh_type_controls(self, _index: int = -1, *, update_geometry: bool = True) -> None:
+        if self._exterior_region_ids is not None and (
+            not self._draft.id or self._draft.kind == ComponentKind.ELECTRODYNAMIC_TRANSDUCER
+        ):
+            self._source_motion_profile = "rigid_translation" if self._selected_boundaries_are_exterior() else "uniform"
         electrodynamic = self.type_combo.currentData() == ComponentKind.ELECTRODYNAMIC_TRANSDUCER
         self.transducer_group.setVisible(electrodynamic)
         self.source_motion_note.setVisible(not self._uses_axis())
@@ -693,6 +707,7 @@ class _ComponentEditorDialog(QDialog):
                 bool(item.flags() & Qt.ItemFlag.ItemIsEnabled) and item.checkState() == Qt.CheckState.Checked
             )
         if self.type_combo.currentData() == ComponentKind.IDEAL_VELOCITY_SOURCE:
+            self._refresh_type_controls(update_geometry=False)
             if self._uses_axis() and self.axis_mode_combo.currentData() == "automatic":
                 self._infer_axis()
             return
