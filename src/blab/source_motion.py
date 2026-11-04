@@ -20,7 +20,7 @@ def prescribed_source_parameters(parameters: dict, *, symmetry: str = "off", ext
     if profile != "rigid_translation":
         raise ValueError("Prescribed-source motion_profile must be uniform_normal or rigid_translation.")
     if not exterior:
-        raise ValueError("Axial prescribed-velocity sources require an exterior-only BEM system.")
+        raise ValueError("Axial prescribed-velocity sources require exterior-only boundary assignments.")
     axis = result.get("motion_axis")
     if (
         not isinstance(axis, (list, tuple))
