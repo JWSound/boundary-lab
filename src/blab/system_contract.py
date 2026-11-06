@@ -43,6 +43,7 @@ from blab.solvers.engine_contract import (
     validate_compiled_system,
     validate_solve_request,
 )
+from blab.warm_up_history import WarmUpKey
 
 
 @dataclass(frozen=True)
@@ -101,6 +102,8 @@ class SystemSolverSession(Protocol):
     ) -> Iterator[SystemFrequencyResult]: ...
 
     def stop(self) -> None: ...
+
+    def warm_up_key(self) -> WarmUpKey: ...
 
 
 class SystemSolverBackend(Protocol):

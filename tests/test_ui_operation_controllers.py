@@ -9,6 +9,7 @@ from blab.system_contract import SystemFrequencyResult
 from blab.ui.application_state import OperationPhase
 from blab.ui.operation_controllers import GeometryController, SolveController
 from blab.ui.system_solve import SystemSolveWorker
+from blab.warm_up_history import WarmUpHistory, WarmUpKey
 
 
 class _SolveWorkerStub(QObject):
@@ -21,6 +22,7 @@ class _SolveWorkerStub(QObject):
     initialized = Signal(object, object, object)
     result_ready = Signal(object)
     status = Signal(str)
+    warm_up_key = Signal(object)
     failed = Signal(str)
     finished = Signal()
 
@@ -44,7 +46,7 @@ def test_rejected_projection_stops_worker_and_cannot_complete_successfully(qapp)
     controller = SolveController()
     worker = _SolveWorkerStub()
     controller._worker = worker
-    controller._expected_count = 1
+    controller._begin_run(1)
     controller._set_state(OperationPhase.RUNNING, "Solving")
     stopped_at_notification = []
     controller.failed.connect(lambda _message: stopped_at_notification.append(worker.stopped))
@@ -65,7 +67,6 @@ def test_solve_controller_owns_worker_thread_and_completion_state(qapp, monkeypa
     app = QCoreApplication.instance() or QCoreApplication([])
     monkeypatch.setattr(controller_module, "SystemSolveWorker", _SolveWorkerStub)
     controller = SolveController()
-    controller._streaming = True  # A new run must restore startup messages.
     statuses = []
     controller.status.connect(statuses.append)
     results = []
@@ -90,8 +91,8 @@ def test_solve_controller_owns_worker_thread_and_completion_state(qapp, monkeypa
     assert started is True
     assert results == [_SolveWorkerStub.result]
     assert statuses == [
-        "Preparing backend",
-        "Solved 1/1 (1000.0 Hz) | Assembly 1.20s | Solve 0.30s | Field 0.04s",
+        "Preparing backend · 0:00",
+        "Solving 1/1 · 0:00 elapsed",
     ]
     assert completions[0].phase == OperationPhase.COMPLETED
     assert completions[0].completed is True
@@ -103,26 +104,29 @@ def test_solve_controller_owns_worker_thread_and_completion_state(qapp, monkeypa
 
 def test_streaming_status_updates_only_for_completed_frequencies(qapp):
     controller = SolveController()
-    controller._expected_count = 2
+    controller.clock = lambda: 0.0
+    controller._begin_run(2)
     controller._set_state(OperationPhase.RUNNING, "Initializing solver")
     statuses = []
     controller.status.connect(statuses.append)
     controller._on_status("Loading backend")
     controller._on_initialized(np.array([0.0]), np.array(["driver"]), None)
-    controller._on_status("Assembling first frequency")
-    assert controller.state.message == "Solving..."
+    assert controller.state.message == "Solving... · 0:00"
+    # BEAT reports its warm-up phases after the worker announces the session.
+    controller._on_status("Preparing BEAT CPU geometry caches")
+    assert controller.state.message == "Preparing BEAT CPU geometry caches · 0:00"
     controller._on_result(_SolveWorkerStub.result)
-    expected = "Solved 1/2 (1000.0 Hz) | Assembly 1.20s | Solve 0.30s | Field 0.04s"
+    expected = "Solving 1/2 · 0:00 elapsed"
     assert controller.state.message == expected
     controller._on_status("Computing field for next frequency")
     assert controller.state.message == expected
-    assert statuses == ["Loading backend", expected]
+    assert statuses == ["Loading backend · 0:00", "Preparing BEAT CPU geometry caches · 0:00", expected]
     controller._on_result(
         SystemFrequencyResult(
             freq_hz=2000.0, quantities=(), excitation_port_ids=(), diagnostics=_SolveWorkerStub.result.diagnostics
         )
     )
-    assert controller.state.message.startswith("Solved 2/2 (2000.0 Hz)")
+    assert controller.state.message == "Solving 2/2 · 0:00 elapsed"
     controller.cancel()
     controller._on_status("Backend still stopping")
     controller._on_result(_SolveWorkerStub.result)
@@ -134,13 +138,123 @@ def test_streaming_status_updates_only_for_completed_frequencies(qapp):
     assert controller.state.message == "Backend failed"
 
 
+def test_streaming_status_shows_elapsed_and_remaining_time(qapp):
+    now = [100.0]
+    controller = SolveController()
+    controller.clock = lambda: now[0]
+    controller._worker = _SolveWorkerStub()
+    controller._begin_run(10)
+    statuses = []
+    controller.status.connect(statuses.append)
+    for arrival_s in (130.0, 140.0, 142.0, 146.0):
+        now[0] = arrival_s
+        controller._on_result(_SolveWorkerStub.result)
+
+    assert statuses == [
+        "Solving 1/10 · 0:30 elapsed",
+        "Solving 2/10 · 0:40 elapsed",
+        "Solving 3/10 · 0:42 elapsed",
+        "Solving 4/10 · 0:46 elapsed · ~0:20 left",
+    ]
+    controller.cancel()
+    controller._on_finished()
+    assert controller.state.message == "Solve finished"
+
+
+def test_warm_up_status_ticks_elapsed_time_until_first_result(qapp):
+    now = [100.0]
+    controller = SolveController()
+    controller.clock = lambda: now[0]
+    controller._begin_run(10)
+    assert controller.state.message == "Initializing solver · 0:00"
+    assert controller._ticker.isActive() and controller._ticker.interval() == 1000
+    statuses = []
+    controller.status.connect(statuses.append)
+
+    now[0] = 142.0
+    controller._on_status("Preparing BEAT CPU geometry caches")
+    now[0] = 150.0
+    controller._ticker.timeout.emit()
+    now[0] = 160.0
+    controller._on_result(_SolveWorkerStub.result)
+
+    assert statuses == [
+        "Preparing BEAT CPU geometry caches · 0:42",
+        "Preparing BEAT CPU geometry caches · 0:50",
+        "Solving 1/10 · 1:00 elapsed",
+    ]
+    assert not controller._ticker.isActive()
+
+
+def test_warm_up_shows_prediction_and_records_duration_at_first_result(qapp, tmp_path):
+    from blab.warm_up_history import WarmUpKey
+
+    key = WarmUpKey("cpu", "0.4.0", "8", True)
+    history = WarmUpHistory(tmp_path / "history.json")
+    history.record(key, 90.0)
+    now = [100.0]
+    controller = SolveController()
+    controller.clock = lambda: now[0]
+    controller.warm_up_history = history
+    controller._begin_run(10)
+    statuses = []
+    controller.status.connect(statuses.append)
+
+    now[0] = 142.0
+    controller._on_warm_up_key(key)
+    now[0] = 195.0
+    controller._on_status("Preparing BEAT CPU geometry caches")
+    now[0] = 225.0
+    controller._ticker.timeout.emit()
+    now[0] = 230.0
+    controller._on_result(_SolveWorkerStub.result)
+    controller._on_result(_SolveWorkerStub.result)
+
+    assert statuses[:3] == [
+        "Initializing solver · 0:42 / ~2:00",
+        "Preparing BEAT CPU geometry caches · 1:35 / ~2:00",
+        "Preparing BEAT CPU geometry caches · 2:05 / longer than usual",
+    ]
+    assert history.durations_s(key) == [90.0, 130.0]
+
+
+def test_warm_up_cancelled_before_first_result_is_not_recorded(qapp, tmp_path):
+    from blab.warm_up_history import WarmUpKey
+
+    key = WarmUpKey("cpu", "0.4.0", "8", True)
+    controller = SolveController()
+    controller.warm_up_history = WarmUpHistory(tmp_path / "history.json")
+    controller._begin_run(10)
+    controller._on_warm_up_key(key)
+    controller.cancel()
+    controller._on_result(_SolveWorkerStub.result)
+    controller._on_finished()
+
+    assert controller.warm_up_history.durations_s(key) == []
+
+
+def test_warm_up_ticking_stops_on_cancel_and_failure(qapp):
+    controller = SolveController()
+    controller._begin_run(10)
+    controller.cancel()
+    assert not controller._ticker.isActive()
+
+    controller._begin_run(10)
+    controller._on_failed("Backend failed")
+    assert not controller._ticker.isActive()
+
+    controller._begin_run(10)
+    controller._on_finished()
+    assert not controller._ticker.isActive()
+
+
 def test_frequency_status_is_visible_in_activity_overlay(main_window):
     controller = main_window.solve_controller
-    controller._expected_count = 2
-    controller._streaming = True
+    controller.clock = lambda: 0.0
+    controller._begin_run(2)
     controller._set_state(OperationPhase.RUNNING, "Solving...")
     controller._on_result(_SolveWorkerStub.result)
-    expected = "Solved 1/2 (1000.0 Hz) | Assembly 1.20s | Solve 0.30s | Field 0.04s"
+    expected = "Solving 1/2 · 0:00 elapsed"
     assert main_window.activities.message == expected
     assert main_window.activity_status.activity_label.text() == expected
     assert main_window.status_label.text() == expected
@@ -174,6 +288,9 @@ def test_solve_worker_logs_and_emits_backend_status(monkeypatch, caplog) -> None
 
         def __init__(self, request):
             self.request = request
+
+        def warm_up_key(self):
+            return WarmUpKey("cpu", "test", "1", True)
 
         def solve_stream(self, *, stop_requested=None):
             del stop_requested

@@ -9,6 +9,7 @@ from blab.system_contract import QuantityResult, SystemFrequencyResult
 from blab.ui.dialogs import PreferencesDialog
 from blab.ui.settings import GuiPreferences, preferences_require_solve_invalidation
 from blab.ui.system_solve import SystemSolveWorker
+from blab.warm_up_history import WarmUpKey
 
 
 def test_preferences_server_fields_round_trip(qapp):
@@ -78,7 +79,10 @@ def test_gui_remote_worker_streams_complex_results(qapp, monkeypatch):
                     "timings": {"assembly_s": 1.2, "solve_s": 0.3, "field_s": 0.4},
                 },
             )
-            return SimpleNamespace(solve_stream=lambda **kwargs: iter([result]))
+            return SimpleNamespace(
+                solve_stream=lambda **kwargs: iter([result]),
+                warm_up_key=lambda: WarmUpKey("remote", "", "", False),
+            )
 
     monkeypatch.setattr("blab.remote.RemoteBackend", Backend)
     worker = SystemSolveWorker(prepared)
