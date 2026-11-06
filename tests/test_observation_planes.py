@@ -6,7 +6,7 @@ from types import MethodType, SimpleNamespace
 
 import numpy as np
 import pytest
-from PySide6.QtTest import QTest
+from PySide6.QtTest import QSignalSpy
 
 from blab.observation_planes import (
     InteriorRenderingMode,
@@ -47,7 +47,7 @@ def test_observation_plane_round_trip_preserves_authoring_and_display_state() ->
     np.testing.assert_allclose(restored.corners_m[0], [-0.1, -0.3, 0.3])
 
 
-def test_particle_velocity_display_round_trips_only_for_interior_planes() -> None:
+def test_particle_velocity_display_round_trips_for_all_planes() -> None:
     interior = replace(
         new_observation_plane("Velocity"),
         display=ObservationPlaneDisplay.PARTICLE_VELOCITY,
@@ -55,10 +55,12 @@ def test_particle_velocity_display_round_trips_only_for_interior_planes() -> Non
 
     assert ObservationPlane.from_payload(interior.to_payload()) == interior
     assert (
-        replace(interior, plane_type=ObservationPlaneType.EXTERIOR).validated().display == ObservationPlaneDisplay.SPL
+        replace(interior, plane_type=ObservationPlaneType.EXTERIOR).validated().display
+        == ObservationPlaneDisplay.PARTICLE_VELOCITY
     )
     assert (
-        replace(interior, plane_type=ObservationPlaneType.COMBINED).validated().display == ObservationPlaneDisplay.SPL
+        replace(interior, plane_type=ObservationPlaneType.COMBINED).validated().display
+        == ObservationPlaneDisplay.PARTICLE_VELOCITY
     )
 
 
@@ -107,10 +109,10 @@ def test_payload_defaults_to_the_inverted_clip_side_without_overriding_saved_cho
 
 
 def test_relative_rotation_overlay_reports_signed_angle() -> None:
-    from blab.ui.observation_plane_viewport import _relative_rotation_text
+    from blab.ui.observation_plane_gizmos import rotation_readout
 
-    assert _relative_rotation_text(15.0) == "Relative rotation: +15.0°"
-    assert _relative_rotation_text(-2.25) == "Relative rotation: -2.2°"
+    assert rotation_readout(15.0) == "+15.0°"
+    assert rotation_readout(-2.25) == "-2.2°"
 
 
 def test_observation_plane_help_is_compact_right_aligned_arial_text() -> None:
@@ -123,7 +125,7 @@ def test_observation_plane_help_is_compact_right_aligned_arial_text() -> None:
     source = source_text("ui", "observation_plane_viewport.py")
     assert 'position="upper_right"' in source
     assert "font_size=8" in source
-    assert source.count("font=OBSERVATION_PLANE_FONT") == 3
+    assert source.count("font=OBSERVATION_PLANE_FONT") == 2
     assert '"font_family": OBSERVATION_PLANE_FONT' in source
 
 
@@ -208,7 +210,7 @@ def test_combined_properties_use_a_single_smooth_rendering_mode(qapp) -> None:
         dialog.deleteLater()
 
 
-def test_properties_dialog_disables_particle_velocity_outside_interior_planes(qapp) -> None:
+def test_properties_dialog_allows_particle_velocity_in_all_plane_types(qapp) -> None:
     from blab.ui.observation_plane_dialog import ObservationPlanePropertiesDialog
 
     dialog = ObservationPlanePropertiesDialog(new_observation_plane("Plane"))
@@ -220,12 +222,12 @@ def test_properties_dialog_disables_particle_velocity_outside_interior_planes(qa
         dialog.display_combo.setCurrentIndex(velocity_index)
         exterior_index = dialog.type_combo.findData(ObservationPlaneType.EXTERIOR.value)
         dialog.type_combo.setCurrentIndex(exterior_index)
-        assert not velocity_item.isEnabled()
-        assert dialog.display_combo.currentData() == ObservationPlaneDisplay.SPL.value
+        assert velocity_item.isEnabled()
+        assert dialog.display_combo.currentData() == ObservationPlaneDisplay.PARTICLE_VELOCITY.value
 
         combined_index = dialog.type_combo.findData(ObservationPlaneType.COMBINED.value)
         dialog.type_combo.setCurrentIndex(combined_index)
-        assert not velocity_item.isEnabled()
+        assert velocity_item.isEnabled()
 
         interior_index = dialog.type_combo.findData(ObservationPlaneType.INTERIOR.value)
         dialog.type_combo.setCurrentIndex(interior_index)
@@ -238,7 +240,7 @@ def test_properties_dialog_disables_particle_velocity_outside_interior_planes(qa
 def test_properties_dialog_selects_and_previews_solved_frequency(qapp) -> None:
     from blab.ui.observation_plane_dialog import ObservationPlanePropertiesDialog
 
-    plane = replace(new_observation_plane("Plane"), frequency_hz=900.0)
+    plane = replace(new_observation_plane("Plane"), frequency_hz=900.0, display=ObservationPlaneDisplay.REAL_PRESSURE)
     dialog = ObservationPlanePropertiesDialog(
         plane,
         solved_frequencies_hz=(10_000.0, 100.0, 1000.0),
@@ -250,16 +252,17 @@ def test_properties_dialog_selects_and_previews_solved_frequency(qapp) -> None:
         assert dialog.frequency_slider.value() == 1
         assert dialog.plane.frequency_hz == 1000.0
         assert dialog.animate_button.isEnabled()
+        preview_changed = QSignalSpy(dialog.previewChanged)
         dialog.frequency_slider.setValue(2)
-        qapp.processEvents()
-        QTest.qWait(20)
+        assert preview_changed.count() or preview_changed.wait(1000)
         qapp.processEvents()
         assert previews[-1][0].frequency_hz == 10_000.0
         previews.clear()
+        preview_changed = QSignalSpy(dialog.previewChanged)
         dialog.frequency_slider.setValue(0)
         dialog.frequency_slider.setValue(1)
         dialog.frequency_slider.setValue(2)
-        QTest.qWait(20)
+        assert preview_changed.count() or preview_changed.wait(1000)
         qapp.processEvents()
         assert len(previews) == 1
         assert previews[0][0].frequency_hz == 10_000.0
@@ -344,10 +347,11 @@ def test_frequency_sweep_oscillates_across_sorted_solved_frequencies(qapp, monke
         assert dialog.frequency_sweep_speed_slider.isEnabled()
 
         clock[0] = 10.1
+        preview_changed = QSignalSpy(dialog.previewChanged)
         dialog._advance_frequency_sweep()
         assert dialog.frequency_slider.value() == 1
         assert dialog.frequency_label.text() == "200 Hz"
-        QTest.qWait(20)
+        assert preview_changed.count() or preview_changed.wait(1000)
         qapp.processEvents()
         assert previews[-1][0].frequency_hz == 200.0
 
@@ -369,7 +373,7 @@ def test_frequency_sweep_and_phase_animation_are_mutually_exclusive(qapp) -> Non
     from blab.ui.observation_plane_dialog import ObservationPlanePropertiesDialog
 
     dialog = ObservationPlanePropertiesDialog(
-        new_observation_plane("Sweep"),
+        replace(new_observation_plane("Sweep"), display=ObservationPlaneDisplay.REAL_PRESSURE),
         solved_frequencies_hz=(100.0, 200.0),
     )
     try:
@@ -633,7 +637,9 @@ def test_exterior_field_results_synthesize_retained_boundary_traces() -> None:
     normal = np.asarray([[[3.0], [4.0]], [[30.0], [40.0]]], dtype=np.complex64)
     available = np.asarray([True, True])
     compiled = SimpleNamespace(
-        regions=(SimpleNamespace(kind=AcousticRegionKind.UNBOUNDED_AIR, sound_speed_m_per_s=344.0),),
+        regions=(
+            SimpleNamespace(kind=AcousticRegionKind.UNBOUNDED_AIR, sound_speed_m_per_s=344.0, density_kg_per_m3=1.21),
+        ),
         excitation_ports=(
             SimpleNamespace(id="port:woofer", component_id="component:woofer", kind=ExcitationPortKind.VOLTAGE),
             SimpleNamespace(id="port:tweeter", component_id="component:tweeter", kind=ExcitationPortKind.VOLTAGE),
@@ -1169,15 +1175,15 @@ def test_field_scalar_projection_uses_stable_ranges_and_animation_phase() -> Non
     normalized = project_field_scalars(pressure, ObservationPlaneDisplay.NORMALIZED_SPL)
     animated = project_field_scalars(
         pressure,
-        ObservationPlaneDisplay.SPL,
+        ObservationPlaneDisplay.REAL_PRESSURE,
         animation_phase_deg=90.0,
     )
     phase = project_field_scalars(pressure, ObservationPlaneDisplay.PHASE)
 
     assert normalized.clim == (-40.0, 0.0)
     np.testing.assert_allclose(normalized.values, [0.0, 0.0])
-    np.testing.assert_allclose(animated.values, [0.0, -1.0], atol=1e-12)
-    assert animated.clim == (-1.0, 1.0)
+    np.testing.assert_allclose(animated.values, [0.0, -np.sqrt(2.0)], atol=1e-12)
+    assert animated.clim == pytest.approx((-np.sqrt(2.0), np.sqrt(2.0)))
     np.testing.assert_allclose(phase.values, [0.0, 90.0], atol=1e-12)
 
     stronger_pressure = np.asarray([2.0 + 0.0j, 0.0 + 1.0j])
@@ -1196,15 +1202,15 @@ def test_field_scalar_projection_uses_stable_ranges_and_animation_phase() -> Non
 
     at_zero = project_field_scalars(
         stronger_pressure,
-        ObservationPlaneDisplay.SPL,
+        ObservationPlaneDisplay.REAL_PRESSURE,
         animation_phase_deg=0.0,
     )
     at_ninety = project_field_scalars(
         stronger_pressure,
-        ObservationPlaneDisplay.SPL,
+        ObservationPlaneDisplay.REAL_PRESSURE,
         animation_phase_deg=90.0,
     )
-    assert at_zero.clim == at_ninety.clim == (-2.0, 2.0)
+    assert at_zero.clim == at_ninety.clim == pytest.approx((-2 * np.sqrt(2.0), 2 * np.sqrt(2.0)))
 
     manual = project_field_scalars(
         stronger_pressure,
@@ -1213,7 +1219,7 @@ def test_field_scalar_projection_uses_stable_ranges_and_animation_phase() -> Non
     )
     animated_manual = project_field_scalars(
         stronger_pressure,
-        ObservationPlaneDisplay.SPL,
+        ObservationPlaneDisplay.REAL_PRESSURE,
         animation_phase_deg=90.0,
         pressure_color_limit_pa=0.5,
     )
@@ -1236,9 +1242,10 @@ def test_field_scalar_projection_uses_stable_ranges_and_animation_phase() -> Non
         animation_phase_deg=90.0,
     )
     np.testing.assert_allclose(velocity_magnitude.values, [5.0, 5.0])
-    np.testing.assert_allclose(velocity_at_zero.values, [5.0, 0.0], atol=1e-6)
-    np.testing.assert_allclose(velocity_at_ninety.values, [0.0, 5.0], atol=1e-6)
-    assert velocity_magnitude.clim == velocity_at_zero.clim == velocity_at_ninety.clim == (0.0, 35.0)
+    np.testing.assert_allclose(velocity_at_zero.values, [5.0 * np.sqrt(2.0), 0.0], atol=1e-6)
+    np.testing.assert_allclose(velocity_at_ninety.values, [0.0, 5.0 * np.sqrt(2.0)], atol=1e-6)
+    assert velocity_magnitude.clim == (0.0, 5.0)
+    assert velocity_at_zero.clim == velocity_at_ninety.clim == pytest.approx((0.0, 5.0 * np.sqrt(2.0)))
     assert velocity_magnitude.title == "Particle Velocity Magnitude (m/s)"
 
 
@@ -1286,7 +1293,7 @@ def test_animation_frame_updates_scalars_without_rebuilding_scene(association: s
         _ActiveFieldState,
     )
 
-    plane = new_observation_plane("Animated")
+    plane = replace(new_observation_plane("Animated"), display=ObservationPlaneDisplay.REAL_PRESSURE)
     pressure = np.asarray([2.0 + 0.0j, 0.0 + 1.0j])
     mesh = pv.PolyData(np.asarray([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]))
     attributes = mesh.cell_data if association == "cell" else mesh.point_data
@@ -1302,7 +1309,7 @@ def test_animation_frame_updates_scalars_without_rebuilding_scene(association: s
     updated = ObservationPlaneViewport._update_animation_frame(editor, plane)
 
     assert updated
-    np.testing.assert_allclose(attributes[FIELD_SCALAR_NAME], [0.0, -1.0], atol=1e-12)
+    np.testing.assert_allclose(attributes[FIELD_SCALAR_NAME], [0.0, -np.sqrt(2.0)], atol=1e-12)
     assert viewer.render_calls == 1
 
 
@@ -1546,9 +1553,13 @@ def test_combined_pressure_merges_complex_fem_and_exterior_values_before_project
         interpolation_weights=np.asarray([[1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.5, 0.5]]),
         exterior_point_ids=np.asarray([2]),
         clipped=None,
+        source_tetrahedron_ids=np.asarray([0, 0]),
     )
     interior = SimpleNamespace(
-        pressure=lambda _frequency, _response: np.asarray([1.0 + 2.0j, 3.0, 5.0 + 1.0j, 7.0 + 3.0j])
+        sample_fields=lambda frequency, response, ids, bary: (
+            bary @ np.asarray([1.0 + 2.0j, 3.0, 5.0 + 1.0j, 7.0 + 3.0j]),
+            np.zeros((len(ids), 3)),
+        )
     )
     editor = SimpleNamespace(
         _field_results=SimpleNamespace(interior=interior),
@@ -1573,6 +1584,7 @@ def test_result_selection_changes_use_fast_viewport_update() -> None:
     updated = replace(original, frequency_hz=200.0)
     calls = []
     editor = SimpleNamespace(
+        _animation_plane_id=None,
         _planes=(original,),
         _selected_id=original.id,
         _active_id=None,
@@ -1612,6 +1624,7 @@ def test_plane_sync_prunes_only_plane_owned_field_cache_entries() -> None:
     shared_boundary = object()
     retained_plane_geometry = object()
     editor = SimpleNamespace(
+        _animation_plane_id=None,
         _planes=(plane,),
         _selected_id=plane.id,
         _active_id=None,
@@ -1662,7 +1675,9 @@ def test_active_plane_animation_continues_without_selection(monkeypatch) -> None
     import blab.ui.observation_plane_viewport as viewport_module
     from blab.ui.observation_plane_viewport import ObservationPlaneViewport
 
-    plane = replace(new_observation_plane("Pinned"), animation_speed_hz=2.0)
+    plane = replace(
+        new_observation_plane("Pinned"), animation_speed_hz=2.0, display=ObservationPlaneDisplay.REAL_PRESSURE
+    )
     updates = []
     editor = SimpleNamespace(
         _planes=(plane,),
@@ -1746,57 +1761,42 @@ def test_qt_tool_shortcuts_select_move_rotate_and_scale_modes() -> None:
 def test_move_gizmo_refresh_reuses_actor_instances_and_updates_transforms() -> None:
     import vtk
 
-    from blab.ui.observation_plane_viewport import ObservationPlaneViewport
+    from blab.ui.observation_plane_viewport import MOVE_LENGTH_PX, ObservationPlaneViewport
 
     plane = replace(new_observation_plane("Plane"), center_m=(1.0, 2.0, 3.0))
     actors = {("move", index): vtk.vtkActor() for index in range(3)}
+    transforms = []
     editor = SimpleNamespace(
         _mode="move",
         _tool_actor_by_control=actors,
-        vtk=vtk,
-        _tool_scale=lambda _plane: 0.25,
+        _screen_tool_transform=lambda *args: transforms.append(args),
         _clear_interactive_tools=lambda: pytest.fail("existing gizmos must not be rebuilt"),
         _add_move_gizmo=lambda _plane: pytest.fail("existing gizmos must not be rebuilt"),
     )
-    editor._set_tool_actor_transform = MethodType(ObservationPlaneViewport._set_tool_actor_transform, editor)
     editor._update_move_gizmo = MethodType(ObservationPlaneViewport._update_move_gizmo, editor)
-
     original_actor_ids = {control: id(actor) for control, actor in actors.items()}
-    ObservationPlaneViewport._refresh_interactive_tools(editor, plane)
-
-    assert {control: id(actor) for control, actor in actors.items()} == original_actor_ids
-    x_matrix = actors[("move", 0)].GetUserMatrix()
-    np.testing.assert_allclose(
-        [x_matrix.GetElement(row, 3) for row in range(3)],
-        plane.center_m,
-    )
-    np.testing.assert_allclose(
-        [x_matrix.GetElement(row, 0) for row in range(3)],
-        np.asarray(plane.local_axes[0]) * 0.25,
-    )
-
-    moved = replace(plane, center_m=(-1.0, 0.5, 4.0))
-    ObservationPlaneViewport._refresh_interactive_tools(editor, moved)
-    assert {control: id(actor) for control, actor in actors.items()} == original_actor_ids
-    x_matrix = actors[("move", 0)].GetUserMatrix()
-    np.testing.assert_allclose(
-        [x_matrix.GetElement(row, 3) for row in range(3)],
-        moved.center_m,
-    )
+    for current in (plane, replace(plane, center_m=(-1.0, 0.5, 4.0))):
+        transforms.clear()
+        ObservationPlaneViewport._refresh_interactive_tools(editor, current)
+        assert {control: id(actor) for control, actor in actors.items()} == original_actor_ids
+        assert len(transforms) == 3
+        for index, (control, center, basis, size) in enumerate(transforms):
+            assert control == ("move", index)
+            np.testing.assert_allclose(center, current.center_m)
+            np.testing.assert_allclose(basis[:, 0], current.local_axes[index])
+            assert size == MOVE_LENGTH_PX
 
 
-def test_properties_dialog_warns_above_point_budget_and_disables_resolution_for_element_field(qapp) -> None:
+def test_properties_dialog_omits_point_readout_and_disables_resolution_for_element_field(qapp) -> None:
     from blab.ui.observation_plane_dialog import ObservationPlanePropertiesDialog
 
     plane = replace(new_observation_plane("Plane"), width_m=1.0, height_m=1.0, resolution_m=0.01)
     dialog = ObservationPlanePropertiesDialog(plane)
     try:
-        assert "10,201" in dialog.point_count_label.text()
-        assert "warning" in dialog.point_count_label.text()
+        assert not hasattr(dialog, "point_count_label")
         index = dialog.rendering_combo.findData(InteriorRenderingMode.ELEMENT_FIELD.value)
         dialog.rendering_combo.setCurrentIndex(index)
         assert not dialog.resolution_spin.isEnabled()
-        assert dialog.point_count_label.text() == "Not used by Element Field"
     finally:
         dialog.close()
         dialog.deleteLater()
@@ -1874,8 +1874,9 @@ def test_result_sync_preserves_modeless_dialog_frequency_preview(main_window, qa
 
     main_window.preview.observationPlanePropertiesRequested.emit(persisted.id)
     dialog = controller._dialogs[persisted.id]
+    preview_changed = QSignalSpy(dialog.previewChanged)
     dialog.frequency_slider.setValue(2)
-    QTest.qWait(20)
+    assert preview_changed.count() or preview_changed.wait(1000)
     qapp.processEvents()
 
     assert main_window.project.observation_planes[0].frequency_hz is None

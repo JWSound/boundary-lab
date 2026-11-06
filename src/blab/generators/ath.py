@@ -110,10 +110,10 @@ def generated_geometry_to_ath_result(result: GeneratedGeometry) -> AthRunResult:
 
 
 class AthGeneratorSession:
-    def __init__(self, request: GenerationRequest, *, ath_exe: Path):
+    def __init__(self, request: GenerationRequest, *, ath_exe: Path, wine_exe=None, wine_prefix=None):
         self.request = request
         self.ath_exe = ath_exe
-        self._runner = AthProcessRunner()
+        self._runner = AthProcessRunner(wine_exe=wine_exe, wine_prefix=wine_prefix)
 
     def generate(self, *, status_callback=None, stop_requested=None) -> GeneratedGeometry:
         if status_callback is not None:
@@ -144,7 +144,9 @@ class AthGeneratorBackend(GeneratorBackend):
     label = "Ath"
     capabilities = GeneratorCapabilities(source_formats=(ATH_SOURCE_FORMAT,))
 
-    def __init__(self, *, ath_exe: str | Path | None = None, **_options: Any):
+    def __init__(self, *, ath_exe: str | Path | None = None, wine_exe=None, wine_prefix=None, **_options: Any):
+        self.wine_exe = wine_exe
+        self.wine_prefix = wine_prefix
         self.ath_exe = None if ath_exe is None else Path(ath_exe)
 
     def create_session(self, request: GenerationRequest) -> GeneratorSession:
@@ -155,7 +157,7 @@ class AthGeneratorBackend(GeneratorBackend):
             raise ValueError(f"Unsupported Ath source format: {source_format}")
         if self.ath_exe is None:
             raise ValueError("Ath executable path was not provided.")
-        return AthGeneratorSession(request, ath_exe=self.ath_exe)
+        return AthGeneratorSession(request, ath_exe=self.ath_exe, wine_exe=self.wine_exe, wine_prefix=self.wine_prefix)
 
     def restore(self, document: GeneratorDocument) -> GeneratedGeometry | None:
         artifact = document.artifact

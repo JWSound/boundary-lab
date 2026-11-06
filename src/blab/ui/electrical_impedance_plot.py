@@ -54,7 +54,7 @@ class ElectricalImpedanceCanvas(RawCoordinatePlotCanvas):
         self._draw_empty()
 
     def _configure_axes(self) -> None:
-        self.axes.set_title(self.title, pad=PLOT_TITLE_PAD)
+        self._set_plot_title(self.title, pad=PLOT_TITLE_PAD)
         self.axes.set_xlabel("Frequency (Hz)")
         self.axes.set_ylabel("Impedance (Ω)")
         self.phase_axes.set_ylabel("Phase (deg)")
@@ -209,6 +209,7 @@ class ElectricalImpedanceCanvas(RawCoordinatePlotCanvas):
         if label not in self._series_labels:
             return
         self._series_visibility[label] = bool(visible)
+        self.trace_visibility_changed.emit()
         self._apply_series_visibility()
         self._update_magnitude_limits()
         self._apply_manual_axis_limits()

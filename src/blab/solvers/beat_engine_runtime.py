@@ -29,6 +29,8 @@ DEFAULT_BEAT_ENGINE_PROJECT = DEFAULT_BEAT_ENGINE_CPU_PROJECT
 BEAT_ENGINE_CUDA_BACKEND = "cuda"
 BEAT_ENGINE_CPU_BACKEND = "cpu"
 BEAT_ENGINE_ROCM_BACKEND = "rocm"
+# A fresh Metal compiler cache can exceed the engine's five-minute startup budget.
+METAL_STARTUP_TIMEOUT_S = 900.0
 BEAT_ENGINE_BACKENDS = frozenset(info.backend_id for info in backend_catalog())
 
 
@@ -171,6 +173,11 @@ def get_beat_engine_worker(
         julia_project=julia_project,
         julia_sysimage=julia_sysimage,
         environment=julia_process_env(julia_threads, julia_project),
+        **(
+            {"startup_timeout_s": METAL_STARTUP_TIMEOUT_S}
+            if julia_project is not None and Path(julia_project).name == "julia_metal"
+            else {}
+        ),
         backend_label=_julia_project_backend_label(julia_project, None)
         if julia_project is not None
         else "the selected BEAT Engine backend",

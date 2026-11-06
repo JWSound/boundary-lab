@@ -145,7 +145,7 @@ def conform_bem_interface_to_fem(
     if resolved_geometry_tolerance <= 0.0:
         raise InterfaceConformError("geometry_tolerance must be greater than zero.")
     resolved_seam_tolerance = (
-        max(interface_diameter * 5e-5, merge_tolerance) if seam_tolerance is None else float(seam_tolerance)
+        max(interface_diameter * 5e-4, merge_tolerance) if seam_tolerance is None else float(seam_tolerance)
     )
     if resolved_seam_tolerance <= 0.0:
         raise InterfaceConformError("seam_tolerance must be greater than zero.")
@@ -199,7 +199,20 @@ def conform_bem_interface_to_fem(
         tolerance=resolved_seam_tolerance,
         closed=not interface_symmetry_axes,
     )
-    if direct_seam_mapping is not None:
+    # Direct replacement moves shared seam nodes. A disconnected patch needs
+    # the planar fallback to reconnect its perimeter to the surrounding shell.
+    surrounding_edges = {
+        tuple(sorted((int(a), int(b))))
+        for triangle in bem_data.triangles[~bem_interface_mask]
+        for a, b in zip(triangle, np.roll(triangle, -1), strict=True)
+    }
+    seam_edges = zip(old_bem_opening_path[:-1], old_bem_opening_path[1:], strict=True)
+    seam_attached = all(tuple(sorted((int(a), int(b)))) in surrounding_edges for a, b in seam_edges)
+    if not interface_symmetry_axes:
+        seam_attached &= (
+            tuple(sorted((int(old_bem_opening_path[-1]), int(old_bem_opening_path[0])))) in surrounding_edges
+        )
+    if direct_seam_mapping is not None and seam_attached:
         output_mesh, interface_orientation_flipped = _replace_bem_interface_directly(
             fem_mesh,
             bem_mesh,
@@ -304,7 +317,21 @@ def conform_bem_interface_to_fem(
     adjacent_mask = (
         (~bem_interface_mask) & (~protected_mask) & (triangle_plane_deviation <= resolved_geometry_tolerance)
     )
+    adjacent_mask = _opening_connected_triangles(
+        bem_mesh.points,
+        bem_data.triangles,
+        bem_data.physical_tags,
+        adjacent_mask,
+        bem_mesh.points[old_bem_opening_path],
+        tolerance=resolved_geometry_tolerance,
+        closed=not interface_symmetry_axes,
+    )
     if not np.any(adjacent_mask):
+        if direct_seam_mapping is not None and not seam_attached:
+            raise InterfaceConformError(
+                "BEM interface has open boundary edges away from the active symmetry planes, "
+                "and no planar surrounding surface is available to reconnect them."
+            )
         raise InterfaceConformError(
             "Could not find a planar non-interface BEM surface surrounding the interface perimeter. "
             "A curved interface seam can be replaced only when its FEM and BEM vertices and edges "
@@ -877,6 +904,53 @@ def _boundary_loops(triangles: np.ndarray) -> list[np.ndarray]:
             previous, current = current, next_vertex
         loops.append(np.asarray(loop, dtype=np.int64))
     return loops
+
+
+def _opening_connected_triangles(
+    points: np.ndarray,
+    triangles: np.ndarray,
+    physical_tags: np.ndarray,
+    candidates: np.ndarray,
+    opening: np.ndarray,
+    *,
+    tolerance: float,
+    closed: bool,
+) -> np.ndarray:
+    """Keep edge-connected planar patches that border the opening.
+
+    Match seed edges geometrically so separately indexed interface seams remain
+    supported. Require one physical tag at the opening and propagate within that
+    tag through shared edges, never through a lone vertex. Other coplanar surfaces
+    may meet the patch's outer perimeter without belonging to the remesh region.
+    """
+    edge_faces: dict[tuple[int, int], list[int]] = defaultdict(list)
+    for index in np.flatnonzero(candidates):
+        a, b, c = map(int, triangles[index])
+        for edge in ((a, b), (b, c), (c, a)):
+            edge_faces[tuple(sorted(edge))].append(int(index))
+    selected = np.zeros(len(triangles), dtype=bool)
+    if not edge_faces:
+        return selected
+    edges = np.asarray(list(edge_faces), dtype=np.int64)
+    samples = np.stack((points[edges[:, 0]], points[edges[:, 1]], points[edges].mean(axis=1)), axis=1)
+    path = np.vstack((opening, opening[0])) if closed else opening
+    distances = _points_to_open_polyline_distances(samples.reshape(-1, 3), path).reshape(-1, 3)
+    pending = [face for edge in edges[np.all(distances <= tolerance, axis=1)] for face in edge_faces[tuple(edge)]]
+    if len(np.unique(physical_tags[pending])) > 1:
+        raise InterfaceConformError("The surrounding BEM surface must have exactly one physical tag.")
+    while pending:
+        index = pending.pop()
+        if selected[index]:
+            continue
+        selected[index] = True
+        a, b, c = map(int, triangles[index])
+        for edge in ((a, b), (b, c), (c, a)):
+            pending.extend(
+                face
+                for face in edge_faces[tuple(sorted(edge))]
+                if not selected[face] and physical_tags[face] == physical_tags[index]
+            )
+    return selected
 
 
 def _surface_boundary_edges(triangles: np.ndarray) -> np.ndarray:
@@ -1596,7 +1670,7 @@ def _build_arg_parser(prog: str | None = None) -> argparse.ArgumentParser:
         "--seam-tol",
         type=float,
         default=None,
-        help=("Maximum targeted curved-seam snap in mesh units (default: 0.005%% of interface diameter)"),
+        help=("Maximum targeted curved-seam snap in mesh units (default: 0.05%% of interface diameter)"),
     )
     parser.add_argument(
         "--symmetry",

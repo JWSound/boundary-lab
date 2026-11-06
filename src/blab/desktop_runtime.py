@@ -1,13 +1,15 @@
-"""Isolated Windows distribution startup, deliberately independent of Qt."""
+"""Isolated desktop distribution startup, deliberately independent of Qt."""
 
 from __future__ import annotations
 
+import atexit
 import ctypes
 import json
 import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import traceback
 import uuid
 from pathlib import Path
@@ -59,21 +61,29 @@ def configure_runtime(root: Path, *, documents: Path | None = None, local_data: 
     root = root.resolve()
     manifest = json.loads((root / "runtime-manifest.json").read_text(encoding="utf-8"))
     user = (documents if documents is not None else documents_directory()) / "Boundary Lab"
-    local = (local_data if local_data is not None else Path(os.environ["LOCALAPPDATA"])) / "Boundary Lab"
+    macos = manifest.get("platform") == "darwin"
+    base = Path.home() / "Library/Application Support" if macos else Path(os.environ.get("LOCALAPPDATA", ""))
+    local = (local_data if local_data is not None else base) / "Boundary Lab"
+    temporary = Path(tempfile.mkdtemp(prefix="boundary-lab-", dir="/tmp")) if macos else local / "tmp"
+    if macos:
+        atexit.register(shutil.rmtree, temporary, ignore_errors=True)
+    separator = ":" if macos else ";"
     cache = local / "runtime" / manifest["runtime_id"]
     for folder in (cache / "julia-depot", local / "logs", local / "tmp", local / "matplotlib"):
         folder.mkdir(parents=True, exist_ok=True)
     # Keep the bundled interpreter and solver independent of developer installs.
     for key in list(os.environ):
-        if key.upper().startswith(("JULIA_", "PYTHON", "BLAB_", "QT_", "QML", "CUDA_PATH", "CUDA_HOME")):
+        if key.upper().startswith(
+            ("JULIA_", "PYTHON", "BLAB_", "QT_", "QML", "CUDA_PATH", "CUDA_HOME", "DYLD_", "LD_LIBRARY_PATH")
+        ):
             del os.environ[key]
     os.environ.update(
         BLAB_RESOURCE_ROOT=str(root / "resources"),
         BLAB_USER_ROOT=str(user),
         BLAB_PACKAGED_BACKENDS=",".join(manifest["backends"]),
-        BLAB_JULIA_EXE=str(root / "runtime/julia/bin/julia.exe"),
-        JULIA_DEPOT_PATH=f"{cache / 'julia-depot'};{root / 'runtime/julia-depot'};",
-        JULIA_LOAD_PATH="@;@stdlib",
+        BLAB_JULIA_EXE=str(root / "runtime/julia/bin" / ("julia" if macos else "julia.exe")),
+        JULIA_DEPOT_PATH=separator.join([str(cache / "julia-depot"), str(root / "runtime/julia-depot"), ""]),
+        JULIA_LOAD_PATH=separator.join(["@", "@stdlib"]),
         JULIA_PKG_OFFLINE="true",
         JULIA_PKG_PRECOMPILE_AUTO="0",
         JULIA_CPU_TARGET="generic",
@@ -81,8 +91,8 @@ def configure_runtime(root: Path, *, documents: Path | None = None, local_data: 
         PYTHONDONTWRITEBYTECODE="1",
         PYTHONUTF8="1",
         MPLCONFIGDIR=str(local / "matplotlib"),
-        TEMP=str(local / "tmp"),
-        TMP=str(local / "tmp"),
+        TEMP=str(temporary),
+        TMP=str(temporary),
         PATH=os.pathsep.join(
             (
                 str(root / "runtime/python"),
@@ -91,6 +101,8 @@ def configure_runtime(root: Path, *, documents: Path | None = None, local_data: 
             )
         ),
     )
+    if macos:
+        os.environ.update(TMPDIR=str(temporary), PATH="/usr/bin:/bin:/usr/sbin:/sbin")
     sys.dont_write_bytecode = True
     seed_documents(root / "user-files", user)
     os.chdir(user)
@@ -136,7 +148,7 @@ def check_cuda(root: Path) -> bool:
 
 
 def _main() -> None:
-    root = Path(sys.executable).resolve().parents[2]
+    root = Path(sys.executable).resolve().parents[3 if sys.platform == "darwin" else 2]
     manifest = configure_runtime(root)
     args = sys.argv[1:]
     if args == ["--initialize"]:

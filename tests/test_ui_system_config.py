@@ -7,7 +7,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import meshio
 import numpy as np
 import pytest
-from PySide6.QtCore import QLocale
+from PySide6.QtCore import QLocale, Qt
 from PySide6.QtTest import QSignalSpy, QTest
 from PySide6.QtWidgets import QApplication, QComboBox, QPushButton
 
@@ -57,6 +57,7 @@ from blab.ui.component_editor import _ComponentDraft, _ComponentEditorDialog, _S
 from blab.ui.dialogs import MeshDialogEntry
 from blab.ui.main_window.radiators import RadiatorsMixin
 from blab.ui.mesh_assembly import MeshAssemblyService
+from blab.ui.numeric_locale import parse_decimal_number
 from blab.ui.system_config import SystemConfigDialog
 from blab.ui.system_solve import CoupledSolveWorker, prepare_coupled_ui_solve
 
@@ -888,9 +889,9 @@ def test_component_editor_applies_automatic_axis_to_a_two_sided_transducer(monke
     )
 
     assert projected_area_calls == 1
-    assert float(editor.parameter_edits["le_h"].text()) == pytest.approx(0.5)
-    assert float(editor.parameter_edits["mmd_kg"].text()) == pytest.approx(15.0)
-    assert float(editor.parameter_edits["cms_m_per_n"].text()) == pytest.approx(500.0)
+    for key, expected in (("le_h", 0.5), ("mmd_kg", 15.0), ("cms_m_per_n", 500.0)):
+        edit = editor.parameter_edits[key]
+        assert parse_decimal_number(edit.text(), edit.locale()) == pytest.approx(expected)
     assert not editor.parameter_edits["le_h"].isEnabled()
     assert editor.semi_inductance_button.text() == "Semi-Inductance: On…"
     assert editor.rear_chamber_check.isChecked()
@@ -917,8 +918,10 @@ def test_component_editor_applies_automatic_axis_to_a_two_sided_transducer(monke
     editor.parameter_edits["le_h"].setText("0.75")
     editor.parameter_edits["mmd_kg"].setText("18")
     editor.parameter_edits["cms_m_per_n"].setText("625")
+    editor._driver_reference = {"name": "Measured driver", "sd_m2": 0.0522}
     updated = editor.component_draft()
 
+    assert updated.parameters["driver_reference"] == {"name": "Measured driver", "sd_m2": 0.0522}
     assert updated.boundary_ids == ("boundary:front", "boundary:rear")
     assert np.abs(updated.parameters["motion_axis"]) == pytest.approx((0.0, 0.0, 1.0))
     assert updated.parameters["le_h"] == pytest.approx(0.00075)
@@ -1113,6 +1116,210 @@ def test_identify_interfaces_reuses_each_transformed_mesh(monkeypatch) -> None:
     dialog._identify_interfaces()
 
     assert sorted(transformed_resources) == ["mesh:exterior", "mesh:interior"]
+
+
+def test_failed_interface_stays_visible_and_can_be_retried(monkeypatch) -> None:
+    dialog = _configured_fixture_dialog()
+    original = dialog._match_interface_pair
+    warnings = []
+    monkeypatch.setattr(system_config_module.QMessageBox, "warning", lambda *args: warnings.append(args))
+
+    def fail(*args, **kwargs):
+        raise InterfaceConformError("Maximum perimeter deviation 0.002 exceeds tolerance 0.0005.")
+
+    monkeypatch.setattr(dialog, "_match_interface_pair", fail)
+    dialog._identify_interfaces()
+
+    assert dialog.interfaces_table.rowCount() == 1
+    assert dialog.interfaces_table.item(0, 3).text() == "Failed"
+    assert dialog.tabs.currentWidget() is dialog.interfaces_tab
+    details = dialog.interface_details.toPlainText()
+    assert "Interior / Interface" in details
+    assert "Exterior / Interface" in details
+    assert "0.002 exceeds tolerance 0.0005" in details
+    assert "Source-surface measurements" in details
+    assert "Maximum sampled perimeter deviation:" in details
+    assert dialog.interface_details.isHidden()
+    assert dialog.physical_system().interfaces == ()
+    assert len(warnings) == 1
+    assert dialog.identify_interfaces_button.isEnabled()
+
+    monkeypatch.setattr(dialog, "_match_interface_pair", original)
+    dialog._identify_interfaces()
+    assert dialog.interfaces_table.rowCount() == 1
+    assert dialog.interfaces_table.item(0, 3).text() == "Ready"
+    assert "0.002" not in dialog.interface_details.toPlainText()
+    assert len(dialog.physical_system().interfaces) == 1
+
+
+def test_interface_discovery_continues_after_failed_interior(monkeypatch) -> None:
+    dialog = _configured_fixture_dialog()
+    boundaries = dialog._collect_boundaries()
+    fem = next(b for b in boundaries if b.kind == BoundaryKind.INTERFACE and b.group.mesh_id == "mesh:interior")
+    failed_fem = replace(fem, id="failed-mouth", name="Failed mouth", group=replace(fem.group, name="Failed mouth"))
+    monkeypatch.setattr(dialog, "_collect_boundaries", lambda: (failed_fem, *boundaries))
+    original = dialog._match_interface_pair
+    calls = []
+
+    def match(fem_boundary, *args, **kwargs):
+        calls.append(fem_boundary.id)
+        if fem_boundary.id == failed_fem.id:
+            raise InterfaceConformError("Perimeter mismatch.")
+        return original(fem_boundary, *args, **kwargs)
+
+    monkeypatch.setattr(dialog, "_match_interface_pair", match)
+    monkeypatch.setattr(system_config_module.QMessageBox, "warning", lambda *args: None)
+    dialog._identify_interfaces()
+
+    assert calls == [failed_fem.id, fem.id]
+    assert [dialog.interfaces_table.item(r, 3).text() for r in range(2)] == ["Ready", "Failed"]
+    assert dialog.interfaces_table.currentRow() == 1
+    assert "Perimeter mismatch" in dialog.interface_details.toPlainText()
+    assert "Source measurements unavailable:" in dialog.interface_details.toPlainText()
+    assert [p.bounded_boundary_id for p in dialog._interfaces] == [fem.id]
+
+
+def test_interface_measurements_use_resource_translation(monkeypatch) -> None:
+    dialog = _configured_fixture_dialog()
+    measured = []
+    original_measure = system_config_module.measure_interface_geometry
+
+    def measure(*args, **kwargs):
+        result = original_measure(*args, **kwargs)
+        measured.append(result)
+        return result
+
+    monkeypatch.setattr(system_config_module, "measure_interface_geometry", measure)
+    dialog._show_interface_details()
+    original_geometry = measured[-1]
+    regions, resources = dialog._collect_regions_and_resources()
+    offset = original_geometry.fem.plane_normal * 0.003
+    resources = tuple(
+        replace(resource, translation_m=tuple(offset)) if resource.id == "mesh:exterior" else resource
+        for resource in resources
+    )
+    monkeypatch.setattr(dialog, "_collect_regions_and_resources", lambda: (regions, resources))
+    dialog._show_interface_details()
+    geometry = measured[-1]
+    assert geometry.centroid_normal_offset_m == pytest.approx(0.003, abs=1e-12)
+    np.testing.assert_allclose(geometry.bem.points, original_geometry.bem.points + offset)
+    assert "Centroid offset along FEM fitted normal: 3 mm" in dialog.interface_details.toPlainText()
+
+
+def test_interface_details_collapse_preserves_measurements_and_selection_updates() -> None:
+    dialog = _configured_fixture_dialog()
+    toggle = dialog.interface_details_toggle
+    assert not toggle.isChecked()
+    assert dialog.interface_details.isHidden()
+    assert toggle.arrowType() == Qt.ArrowType.RightArrow
+    assert not any(button.text() == "Show pair in 3D" for button in dialog.findChildren(QPushButton))
+
+    toggle.click()
+    assert not dialog.interface_details.isHidden()
+    assert toggle.arrowType() == Qt.ArrowType.DownArrow
+    assert "Source-surface measurements" in dialog.interface_details.toPlainText()
+    dialog._load_interfaces()
+    assert toggle.isChecked()
+    assert not dialog.interface_details.isHidden()
+
+    toggle.click()
+    assert dialog.interface_details.isHidden()
+    assert toggle.arrowType() == Qt.ArrowType.RightArrow
+    dialog.stitch_exterior_meshes_check.setChecked(True)
+    assert dialog.interface_details.isHidden()
+    toggle.click()
+    assert "Needs recheck" in dialog.interface_details.toPlainText()
+    assert "Source-surface measurements" in dialog.interface_details.toPlainText()
+
+
+def test_interface_settings_changes_mark_existing_pair_stale() -> None:
+    dialog = _configured_fixture_dialog()
+    dialog.stitch_exterior_meshes_check.setChecked(True)
+    assert dialog.interfaces_table.item(0, 3).text() == "Needs recheck"
+    assert not dialog._interfaces
+    assert "check again" in dialog.interface_details.toPlainText()
+
+
+def test_removing_exterior_assignment_keeps_unpaired_interior_visible() -> None:
+    dialog = _configured_fixture_dialog()
+    for row in range(dialog.boundaries_table.rowCount()):
+        if (
+            dialog.boundaries_table.item(row, 1).text() == "Exterior"
+            and dialog.boundaries_table.item(row, 2).text() == "Interface"
+        ):
+            combo = dialog.boundaries_table.cellWidget(row, 3)
+            combo.setCurrentIndex(combo.findData(BoundaryKind.RIGID))
+    assert dialog.interfaces_table.rowCount() == 1
+    assert dialog.interfaces_table.item(0, 3).text() == "Not checked"
+    assert "Interior / Interface" in dialog.interface_details.toPlainText()
+    assert not dialog._interfaces
+
+
+def test_ambiguous_interface_lists_each_compatible_exterior(monkeypatch) -> None:
+    dialog = _configured_fixture_dialog()
+    boundaries = dialog._collect_boundaries()
+    bem = next(b for b in boundaries if b.kind == BoundaryKind.INTERFACE and b.group.mesh_id == "mesh:exterior")
+    duplicate = replace(bem, id="other-exterior", name="Other exterior")
+    monkeypatch.setattr(dialog, "_collect_boundaries", lambda: (*boundaries, duplicate))
+    monkeypatch.setattr(system_config_module.QMessageBox, "warning", lambda *args: None)
+    dialog._identify_interfaces()
+    assert dialog.interfaces_table.rowCount() == 2
+    assert [dialog.interfaces_table.item(r, 3).text() for r in range(2)] == ["Ambiguous", "Ambiguous"]
+    assert "More than one" in dialog.interface_details.toPlainText()
+    assert not dialog._interfaces
+
+
+def test_missing_exterior_assignment_has_actionable_diagnostic(monkeypatch) -> None:
+    dialog = _configured_fixture_dialog()
+    boundaries = tuple(
+        replace(b, kind=BoundaryKind.RIGID) if b.group.mesh_id == "mesh:exterior" else b
+        for b in dialog._collect_boundaries()
+    )
+    monkeypatch.setattr(dialog, "_collect_boundaries", lambda: boundaries)
+    monkeypatch.setattr(system_config_module.QMessageBox, "warning", lambda *args: None)
+    dialog._identify_interfaces()
+    assert dialog.interfaces_table.rowCount() == 1
+    assert dialog.interfaces_table.item(0, 3).text() == "Failed"
+    assert "No unpaired exterior" in dialog.interface_details.toPlainText()
+    assert not dialog._interfaces
+
+
+def test_global_build_error_is_retained_without_claiming_pair_success(monkeypatch) -> None:
+    dialog = _configured_fixture_dialog()
+    dialog.stitch_exterior_meshes_check.setChecked(True)
+
+    def fail(*args, **kwargs):
+        raise ValueError("Exterior seam has no compatible boundary loop.")
+
+    monkeypatch.setattr(system_config_module, "prepare_exterior_system", fail)
+    monkeypatch.setattr(system_config_module.QMessageBox, "warning", lambda *args: None)
+    dialog._identify_interfaces()
+    assert dialog.interfaces_table.item(dialog.interfaces_table.currentRow(), 3).text() == "Build failed"
+    assert "no compatible boundary loop" in dialog.interface_details.toPlainText()
+    assert not dialog._interfaces
+
+
+def test_stitched_interface_failure_identifies_source_pair(monkeypatch) -> None:
+    from blab.interface_diagnostics import InterfaceBuildError, InterfaceDiagnostic
+
+    dialog = _configured_fixture_dialog()
+    pair = dialog._interfaces[0]
+    dialog.stitch_exterior_meshes_check.setChecked(True)
+
+    def fail(*args, **kwargs):
+        raise InterfaceBuildError(
+            "Mismatch",
+            (InterfaceDiagnostic(pair.bounded_boundary_id, pair.unbounded_boundary_id, "Failed", "Plane mismatch."),),
+        )
+
+    monkeypatch.setattr(system_config_module, "prepare_exterior_system", fail)
+    monkeypatch.setattr(system_config_module.QMessageBox, "warning", lambda *args: None)
+    dialog._identify_interfaces()
+    assert dialog.interfaces_table.rowCount() == 1
+    assert dialog.interfaces_table.item(0, 3).text() == "Failed"
+    assert "Plane mismatch" in dialog.interface_details.toPlainText()
+    assert "Exterior / Interface" in dialog.interface_details.toPlainText()
+    assert not dialog._interfaces
 
 
 def test_saved_regions_rebind_to_unique_compatible_renamed_meshes() -> None:

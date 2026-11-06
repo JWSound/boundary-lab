@@ -10,6 +10,7 @@ from blab.interface_conform import (
     _best_fit_plane,
     _boundary_loops,
     _matching_discrete_paths,
+    _opening_connected_triangles,
     _physical_opening_path,
     _physical_surface_tag,
     _triangle_data,
@@ -111,7 +112,7 @@ def test_fixture_interfaces_are_made_connectivity_identical_and_watertight() -> 
     fem_mesh = meshio.read(FEM_FIXTURE)
     bem_mesh = meshio.read(BEM_FIXTURE)
 
-    conformed_mesh, result = conform_bem_interface_to_fem(fem_mesh, bem_mesh)
+    conformed_mesh, result = conform_bem_interface_to_fem(fem_mesh, bem_mesh, seam_tolerance=1e-8)
 
     assert result.fem_interface_triangles == 180
     assert result.original_bem_interface_triangles == 196
@@ -131,6 +132,77 @@ def test_original_fixture_interfaces_are_rejected_as_nonconforming() -> None:
 
     with pytest.raises(InterfaceConformError, match="Interface triangle counts differ"):
         validate_conforming_interfaces(fem_mesh, bem_mesh)
+
+
+@pytest.mark.parametrize("different_tag", [False, True])
+def test_disconnected_coplanar_shell_is_preserved(different_tag: bool) -> None:
+    fem_mesh = meshio.read(FEM_FIXTURE)
+    bem_mesh = meshio.read(BEM_FIXTURE)
+    data = _triangle_data(bem_mesh, require_geometrical=True)
+    interface = data.triangles[data.physical_tags == _physical_surface_tag(bem_mesh, "Interface")]
+    loop = _boundary_loops(interface)[0]
+    direction = bem_mesh.points[loop[1]] - bem_mesh.points[loop[0]]
+    offset = direction / np.linalg.norm(direction) * 10000.0
+    remote_points = bem_mesh.points + offset
+    remote_tag = (
+        int(data.physical_tags.max()) + 1
+        if different_tag
+        else int(data.physical_tags[data.physical_tags != _physical_surface_tag(bem_mesh, "Interface")][0])
+    )
+    combined = meshio.Mesh(
+        np.vstack((bem_mesh.points, remote_points)),
+        [("triangle", np.vstack((data.triangles, data.triangles + len(bem_mesh.points))))],
+        cell_data={
+            "gmsh:physical": [np.concatenate((data.physical_tags, np.full(len(data.triangles), remote_tag)))],
+            "gmsh:geometrical": [np.tile(data.geometrical_tags, 2)],
+        },
+        field_data={**bem_mesh.field_data, "Remote": np.asarray((remote_tag, 2))},
+    )
+
+    conformed, result = conform_bem_interface_to_fem(fem_mesh, combined, seam_tolerance=1e-8)
+
+    assert result.original_adjacent_triangles == 670
+    assert result.identity.bem_boundary_edges == 0
+    output = _triangle_data(conformed, require_geometrical=True)
+    # Compare coordinates, winding, and tags: output vertex indices may change.
+    expected = {tuple(remote_points[t].ravel()) for t in data.triangles}
+    actual = {
+        tuple(conformed.points[t].ravel())
+        for t, tag in zip(output.triangles, output.physical_tags, strict=True)
+        if tag == remote_tag
+    }
+    assert expected <= actual
+
+
+def test_surrounding_patch_stops_at_physical_tag_and_vertex_connections() -> None:
+    points = np.asarray([(0, 0, 0), (1, 0, 0), (0, 1, 0), (1, 1, 0), (2, 1, 0), (2, 2, 0)], dtype=float)
+    triangles = np.asarray([(0, 1, 2), (1, 3, 2), (2, 3, 4), (3, 4, 5)])
+    # The third triangle touches the patch by an edge but has a different tag;
+    # the fourth has the same tag but only touches the patch at a vertex.
+    selected = _opening_connected_triangles(
+        points,
+        triangles,
+        np.asarray([1, 1, 2, 1]),
+        np.ones(4, dtype=bool),
+        points[[0, 1]],
+        tolerance=1e-8,
+        closed=False,
+    )
+    assert selected.tolist() == [True, True, False, False]
+
+
+def test_multiple_physical_tags_bordering_opening_are_rejected() -> None:
+    points = np.asarray([(0, 0, 0), (1, 0, 0), (0, 1, 0), (1, 1, 0)], dtype=float)
+    with pytest.raises(InterfaceConformError, match="exactly one physical tag"):
+        _opening_connected_triangles(
+            points,
+            np.asarray([(0, 1, 2), (1, 3, 2)]),
+            np.asarray([1, 2]),
+            np.ones(2, dtype=bool),
+            points[[0, 1, 3]],
+            tolerance=1e-8,
+            closed=False,
+        )
 
 
 def test_generated_fixture_round_trips_as_a_conforming_gmsh_mesh() -> None:
@@ -154,6 +226,7 @@ def test_closed_interface_away_from_global_symmetry_planes_is_conformed_as_close
     conformed_mesh, result = conform_bem_interface_to_fem(
         fem_mesh,
         bem_mesh,
+        seam_tolerance=1e-8,
         symmetry_mode="xy",
     )
     report = validate_conforming_interfaces(
@@ -224,6 +297,35 @@ def test_curved_interface_with_disconnected_perimeter_and_split_geometry_is_conf
         np.abs((conformed_mesh.points[np.unique(conformed_interface)] - plane_origin) @ plane_normal)
     )
     assert interface_deviation > 0.5
+
+
+def test_default_seam_allowance_snaps_near_matching_curved_seam() -> None:
+    fem_mesh = meshio.read(CURVED_FEM_FIXTURE)
+    bem_mesh = meshio.read(CURVED_BEM_FIXTURE)
+    data = _triangle_data(bem_mesh, require_geometrical=True)
+    faces = data.triangles[data.physical_tags == _physical_surface_tag(bem_mesh, "INTERFACE")]
+    loop = _boundary_loops(faces)[0]
+    diameter = float(np.linalg.norm(np.ptp(bem_mesh.points[np.unique(faces)], axis=0)))
+    vertex = next(int(i) for i in loop if np.all(bem_mesh.points[i, :2] > diameter * 1e-3))
+    bem_mesh.points[vertex, 2] += diameter * 2e-4
+
+    conformed, result = conform_bem_interface_to_fem(
+        fem_mesh,
+        bem_mesh,
+        fem_interface_name="INTERFACE",
+        bem_interface_name="INTERFACE",
+        symmetry_mode="xy",
+    )
+    assert result.original_adjacent_triangles == 0
+    assert result.max_original_boundary_deviation > diameter * 5e-5
+    identity = validate_conforming_interfaces(
+        fem_mesh,
+        conformed,
+        fem_interface_name="INTERFACE",
+        bem_interface_name="INTERFACE",
+        symmetry_mode="xy",
+    )
+    assert identity.max_coordinate_error <= 1e-8
 
 
 def test_nonplanar_curved_interface_with_matching_discrete_seam_is_replaced_directly(

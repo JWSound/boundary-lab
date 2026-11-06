@@ -44,7 +44,7 @@ class MaxSplCanvas(RawCoordinatePlotCanvas):
         self._draw_empty()
 
     def _configure_axes(self) -> None:
-        self.axes.set_title(self.title, pad=PLOT_TITLE_PAD)
+        self._set_plot_title(self.title, pad=PLOT_TITLE_PAD)
         self.axes.set_xlabel("Frequency (Hz)")
         self.axes.set_ylabel("SPL (dB)")
         apply_audio_frequency_axis(self.axes)
@@ -156,6 +156,7 @@ class MaxSplCanvas(RawCoordinatePlotCanvas):
         if label not in self._series_labels:
             return
         self._series_visibility[label] = bool(visible)
+        self.trace_visibility_changed.emit()
         self._apply_series_visibility()
         self._update_y_limits()
         self._apply_manual_axis_limits()

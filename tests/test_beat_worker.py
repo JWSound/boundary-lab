@@ -172,3 +172,20 @@ def test_application_worker_forwards_startup_timeout_only_when_supplied(worker_s
         assert "startup_timeout_s" not in captured
     else:
         assert captured["startup_timeout_s"] == timeout
+
+
+@pytest.mark.parametrize("project", ["julia_local", "julia_metal"])
+def test_only_metal_workers_get_cold_compiler_startup_budget(worker_script, monkeypatch, tmp_path, project):
+    from types import SimpleNamespace
+
+    from blab.solvers import beat_engine_runtime as runtime
+
+    captured = {}
+    monkeypatch.setattr(runtime, "_WORKER_POOL", SimpleNamespace(get_worker=lambda **kwargs: captured.update(kwargs)))
+    settings = options(worker_script)
+    settings["julia_project"] = tmp_path / project
+    runtime.get_beat_engine_worker(**settings)
+    if project == "julia_metal":
+        assert captured["startup_timeout_s"] == runtime.METAL_STARTUP_TIMEOUT_S
+    else:
+        assert "startup_timeout_s" not in captured

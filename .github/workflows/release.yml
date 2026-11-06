@@ -37,7 +37,7 @@ jobs:
           /tmp/release-smoke/bin/python -m pip install dist/*.whl
           cd /tmp
           /tmp/release-smoke/bin/python -c "import importlib.metadata; print(importlib.metadata.version('boundary-lab'))"
-      - run: cp 01_install_update_boundary-lab.bat dist/
+      - run: cp 01_install_update_boundary-lab.bat 02_start_boundary_lab.bat dist/
       - run: python scripts/release_tools.py checksums dist
       - name: Create draft with complete assets
         env:

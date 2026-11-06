@@ -52,6 +52,20 @@ class PreferencesMixin:
     Mixed into :class:`~blab.ui.main_window.window.MainWindow`.
     """
 
+    @Slot()
+    def open_ath_setup(self) -> None:
+        import sys
+
+        if sys.platform != "darwin" or self.generator_plugins_busy():
+            return
+        from blab.ui.ath_setup import AthSetupDialog
+
+        dialog = AthSetupDialog(self.settings, self)
+        try:
+            dialog.exec()
+        finally:
+            dialog.deleteLater()
+
     def _load_preferences(self) -> GuiPreferences:
         return load_gui_preferences(self.settings)
 
@@ -221,6 +235,7 @@ class PreferencesMixin:
         elif preferences_require_visualization_refresh(previous_preferences, self.preferences):
             self.visualization_settings_changed.emit("preferences_changed")
         self.status_label.setText("Preferences updated")
+        self.backend_health.check_selected_backend()
 
     def generator_plugins_busy(self) -> bool:
         return self.geometry_controller.active or self.solve_controller.active or self.preparations.active

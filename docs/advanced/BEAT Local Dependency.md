@@ -1,8 +1,11 @@
 # BEAT Engine dependency
 
 Boundary Lab requires the independently released `beat-engine` package. Its
-`pyproject.toml` pins the `v0.4.0` wheel URL and SHA-256, so ordinary installation
-downloads and verifies that exact artifact without a sibling engine checkout:
+`pyproject.toml` selects the exact engine requirement and must agree with
+`packaging/runtime-lock.json`. Releases pin a published wheel URL and SHA-256,
+so installation verifies that artifact without a sibling engine checkout.
+Release-preparation branches may temporarily pin a Git commit while qualifying
+the new engine; the release gate rejects those Git pins.
 
 ```text
 python -m pip install -e ".[gui,dev]"
@@ -47,8 +50,9 @@ packages. Previous Julia package downloads may be reused from the local depot;
 the installed release's own project still needs to be instantiated. Restart
 Boundary Lab after updating so existing workers do not retain the old engine.
 
-The release is [v0.4.0](https://github.com/JWSound/BEAT_Engine/releases/tag/v0.4.0).
-It contains wheel and source distributions. No PyPI publication is configured.
+Engine releases contain wheel and source distributions on
+[GitHub Releases](https://github.com/JWSound/BEAT_Engine/releases).
+No PyPI publication is configured.
 The compiled-system contract, worker negotiation, transport, numerical sources,
 and fixtures belong to BEAT Engine. Boundary Lab owns project compilation,
 backend/SDK selection policy, GUI/CLI integration, and result models.
@@ -72,17 +76,33 @@ feature branch, update the dependency pin, supported-version check and associate
 test expectations to that candidate version. Never relabel candidate code as an
 existing stable version.
 Reinstalling Boundary Lab may restore the pinned release; use a separate virtual
-environment for engine development. To restore the release explicitly:
+environment for engine development. To restore the application's declared
+dependencies, run this from the intended Boundary Lab checkout:
 
 ```text
-python -m pip install --force-reinstall --no-deps "beat-engine @ https://github.com/JWSound/BEAT_Engine/releases/download/v0.4.0/beat_engine-0.4.0-py3-none-any.whl#sha256=70e22574437f0dcbf1c4ad4e227883fcbc6b4e5a654f36ea0ab601ea93a59594"
+python -m pip install --force-reinstall .
 ```
 
 ## Updating the engine
 
-BEAT 0.4.0 changes the default CPU regular quadrature to fixed order and enables
+Boundary Lab 0.5.0 targets BEAT 0.6.0. Its projected FEM-BEM interface correction
+uses the same DP0 face flux for FEM loading and BEM radiation. It rejects
+rank-deficient or poorly conditioned interface coefficient transfers, including
+some previously accepted triangulations. Recompute affected results and verify
+mesh convergence; refinement alone does not guarantee an admissible interface.
+See the engine's
+[projected-interface documentation](https://github.com/JWSound/BEAT_Engine/blob/main/docs/Projected%20interface%20flux.md).
+
+The Vented_Sub qualification fixture retains an existing CUDA precision
+limitation: 50 Hz voice-coil current differs from production CPU by 0.134%,
+exceeding the 0.1% backend-agreement screen (BEAT 0.5.1: 0.135%).
+Use CPU when this low-current accuracy matters. See the
+[0.5.0 qualification notes](../releases/0.5.0.md#known-cuda-precision-limitation)
+for the double-precision diagnostic and scope of the comparison.
+
+BEAT 0.4.0 introduced fixed-order CPU regular quadrature and
 coupled reductions with Float64 assembly and refined Float32 LU. Dense-system
-memory use can be approximately three times the previous default. See the
+memory use can be approximately three times the pre-0.4 default. See the
 [engine release notes](https://github.com/JWSound/BEAT_Engine/releases/tag/v0.4.0)
 for controls and compatibility details. Boundary Lab continues to emit compiled
 contract v1 for its existing model features; its legacy uniform source setting

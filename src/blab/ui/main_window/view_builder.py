@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 from PySide6.QtCore import QSignalBlocker, Qt
@@ -106,7 +107,11 @@ class ViewBuilderMixin:
             data_action.setEnabled(False)
             data_action.triggered.connect(lambda _checked=False, plot_id=entry.plot_id: self.export_plot_data(plot_id))
             self.export_plot_data_actions[entry.plot_id] = data_action
+            entry.widget.trace_visibility_changed.connect(
+                lambda plot_id=entry.plot_id: self.refresh_plot_data_export(plot_id)
+            )
             if entry.plot_id in {"horizontal_isobar", "vertical_isobar"}:
+                entry.widget.trace_visibility_changed.connect(self.refresh_polar_channel_selection)
                 capture_action = QAction("Capture Contours", self)
                 capture_action.setToolTip(f"Capture contours for {entry.title}")
                 capture_action.setEnabled(False)
@@ -173,6 +178,10 @@ class ViewBuilderMixin:
         self.generator_plugins_action = QAction("Generator Plugins...", self)
         self.generator_plugins_action.triggered.connect(self.open_generator_plugins)
         edit_menu.addAction(self.generator_plugins_action)
+        if sys.platform == "darwin":
+            ath_setup_action = QAction("Ath Setup…", self)
+            ath_setup_action.triggered.connect(self.open_ath_setup)
+            edit_menu.addAction(ath_setup_action)
         edit_menu.addSeparator()
         preferences_action = QAction("Preferences", self)
         preferences_action.triggered.connect(self.open_preferences)
@@ -262,6 +271,8 @@ class ViewBuilderMixin:
             if entry.plot_id in {"electrical_impedance", "on_axis_frequency_response"}:
                 tool_actions.extend((entry.widget.trace_filter_action, entry.widget.show_phase_action))
             elif entry.plot_id in {
+                "horizontal_isobar",
+                "vertical_isobar",
                 "acoustic_impedance",
                 "group_delay",
                 "transducer_excursion",
@@ -515,7 +526,7 @@ class ViewBuilderMixin:
         for plot_id, action in self.export_plot_actions.items():
             action.setEnabled(available and self.plot_data_is_available(plot_id))
         for plot_id, action in self.export_plot_data_actions.items():
-            action.setEnabled(available and self.plot_data_is_available(plot_id))
+            action.setEnabled(available and self.selected_plot_data_is_available(plot_id))
 
     def set_max_spl_available(self, available: bool) -> None:
         self.max_spl_plot.calculate_action.setEnabled(available)
@@ -526,7 +537,7 @@ class ViewBuilderMixin:
             action.setEnabled(available)
         data_action = self.export_plot_data_actions.get("max_spl")
         if data_action is not None:
-            data_action.setEnabled(available)
+            data_action.setEnabled(available and self.selected_plot_data_is_available("max_spl"))
 
     def set_system_config_available(self, available: bool) -> None:
         self.system_config_button.setEnabled(available)

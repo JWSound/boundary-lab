@@ -21,6 +21,7 @@ from blab.interface_conform import (
     build_conforming_interface_map,
     conform_bem_interface_to_fem,
 )
+from blab.interface_diagnostics import InterfaceBuildError, InterfaceDiagnostic
 from blab.mesh_clean import stitch_meshes
 from blab.mesh_data import MeshData, read_resource_mesh
 from blab.mesh_topology import analyze_exterior_mesh_topology
@@ -164,11 +165,33 @@ def prepare_exterior_system(
                         )
                         matches.append((bem_boundary, candidate, report))
                     except InterfaceConformError as exc:
-                        failures.append(str(exc))
+                        failures.append(InterfaceDiagnostic(fem_boundary.id, bem_boundary.id, "Failed", str(exc)))
                 if len(matches) != 1:
-                    raise InterfaceConformError(
+                    diagnostics = (
+                        tuple(
+                            InterfaceDiagnostic(
+                                fem_boundary.id,
+                                b.id,
+                                "Ambiguous",
+                                "More than one exterior surface is compatible. Check the boundary assignments.",
+                            )
+                            for b, _candidate, _report in matches
+                        )
+                        if matches
+                        else tuple(failures)
+                        or (
+                            InterfaceDiagnostic(
+                                fem_boundary.id,
+                                None,
+                                "Failed",
+                                "No unpaired exterior Interface surface is available. Check the boundary assignments.",
+                            ),
+                        )
+                    )
+                    raise InterfaceBuildError(
                         f"Interface '{fem_boundary.name}' requires exactly one compatible exterior side; "
-                        f"found {len(matches)}. " + " ".join(failures)
+                        f"found {len(matches)}. " + " ".join(d.detail for d in failures),
+                        diagnostics,
                     )
                 bem_boundary, assembled, report = matches[0]
                 if report.seam_simplification_used:
@@ -196,13 +219,19 @@ def prepare_exterior_system(
                     fem, assembled, **options, coordinate_tolerance=pair.coordinate_tolerance_m
                 )
             except InterfaceConformError:
-                assembled, report = conform_bem_interface_to_fem(
-                    fem,
-                    assembled,
-                    **options,
-                    geometry_tolerance=APPLICATION_INTERFACE_GEOMETRY_TOLERANCE_M,
-                    protected_bem_interface_names=tuple(b.group.name for b in exterior if b.id != bem_boundary.id),
-                )
+                try:
+                    assembled, report = conform_bem_interface_to_fem(
+                        fem,
+                        assembled,
+                        **options,
+                        geometry_tolerance=APPLICATION_INTERFACE_GEOMETRY_TOLERANCE_M,
+                        protected_bem_interface_names=tuple(b.group.name for b in exterior if b.id != bem_boundary.id),
+                    )
+                except (ValueError, OSError) as exc:
+                    raise InterfaceBuildError(
+                        str(exc),
+                        (InterfaceDiagnostic(fem_boundary.id, bem_boundary.id, "Failed", str(exc)),),
+                    ) from exc
                 if report.seam_simplification_used:
                     simplified_boundary_ids.add(bem_boundary.id)
         # Recheck every interface after all modifications, including closure.
@@ -210,14 +239,20 @@ def prepare_exterior_system(
             fem_boundary = by_id[pair.bounded_boundary_id]
             bem_boundary = by_id[pair.unbounded_boundary_id]
             fem = _read(resources[fem_boundary.group.mesh_id], symmetry_mode)
-            build_conforming_interface_map(
-                fem,
-                assembled,
-                fem_interface_name=_surface_name(fem, fem_boundary.group),
-                bem_interface_name=bem_boundary.group.name,
-                coordinate_tolerance=pair.coordinate_tolerance_m,
-                symmetry_mode=symmetry_mode,
-            )
+            try:
+                build_conforming_interface_map(
+                    fem,
+                    assembled,
+                    fem_interface_name=_surface_name(fem, fem_boundary.group),
+                    bem_interface_name=bem_boundary.group.name,
+                    coordinate_tolerance=pair.coordinate_tolerance_m,
+                    symmetry_mode=symmetry_mode,
+                )
+            except (ValueError, OSError) as exc:
+                raise InterfaceBuildError(
+                    str(exc),
+                    (InterfaceDiagnostic(fem_boundary.id, bem_boundary.id, "Failed", str(exc)),),
+                ) from exc
         data = MeshData.from_meshio(assembled) if in_memory else None
         path = None
         if not in_memory:

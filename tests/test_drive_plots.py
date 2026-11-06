@@ -173,6 +173,20 @@ def test_drive_plot_canvases_stream_capture_and_export(main_window, monkeypatch,
         target = tmp_path / f"{plot_id}.txt"
         assert window._write_plot_data(plot_id, target) == [target]
         assert expected in target.read_text()
+    monkeypatch.setattr(window, "plot_data_is_available", lambda _plot_id: True)
+    window.real_input_power_plot.set_series_visible("A", False)
+    target = tmp_path / "selected_power.txt"
+    window._write_plot_data("real_input_power", target)
+    header = target.read_text().splitlines()[1]
+    assert "Total Real power" in header
+    assert "A Real power" not in header
+    assert window.export_plot_data_actions["real_input_power"].isEnabled()
+    window.real_input_power_plot.set_series_visible("Total", False)
+    assert not window.export_plot_data_actions["real_input_power"].isEnabled()
+    with pytest.raises(ValueError, match="At least one export trace"):
+        window._write_plot_data("real_input_power", tmp_path / "empty.txt")
+    window.real_input_power_plot.set_series_visible("A", True)
+    assert window.export_plot_data_actions["real_input_power"].isEnabled()
     window._update_interface_velocity_plot(VisualizationProjection(None, None, None))
     assert not window.interface_velocity_plot.isEnabled()
     assert window.interface_velocity_plot._plot_state is None

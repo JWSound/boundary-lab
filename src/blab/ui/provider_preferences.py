@@ -1,5 +1,7 @@
 """Local package management; discovery displays manifests without executing code."""
 
+import sys
+
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
@@ -30,7 +32,12 @@ class ProviderPackagesDialog(QDialog):
         layout = QVBoxLayout(self)
         label = QLabel(
             "Enable plugins you trust: plugins execute Python inside Boundary Lab.\n"
-            "Ath is built in. Use Rescan after adding plugins to the install folder."
+            + (
+                "The Ath adapter is built in; configure external tools in Edit → Ath Setup…. "
+                if sys.platform == "darwin"
+                else "Ath is built in. "
+            )
+            + "Use Rescan after adding plugins to the install folder."
         )
         label.setWordWrap(True)
         layout.addWidget(label)
@@ -79,7 +86,28 @@ class ProviderPackagesDialog(QDialog):
         builtin.setChecked(True)
         builtin.setEnabled(False)
         self.table.setCellWidget(0, 0, builtin)
-        for column, value in enumerate(("Ath", "", "Built-in", "Bundled with Boundary Lab"), 1):
+        ath_status = "Built-in"
+        if sys.platform == "darwin":
+            from blab.ath_setup import ATH_PATH_KEY, WINE_PATH_KEY, validate_paths
+            from blab.ui.settings import application_settings
+
+            settings = application_settings()
+            try:
+                validate_paths(str(settings.value(ATH_PATH_KEY, "")), str(settings.value(WINE_PATH_KEY, "")))
+                ath_status = "Configured"
+            except ValueError:
+                ath_status = "Setup required"
+        for column, value in enumerate(
+            (
+                "Ath",
+                "",
+                ath_status,
+                "External Ath and Wine (Edit → Ath Setup…)"
+                if sys.platform == "darwin"
+                else "Bundled with Boundary Lab",
+            ),
+            1,
+        ):
             item = QTableWidgetItem(value)
             item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.table.setItem(0, column, item)
