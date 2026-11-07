@@ -1130,8 +1130,8 @@ class ObservationPlaneViewport(QObject):
         exterior = None if self._field_results is None else self._field_results.exterior
         if exterior is None:
             raise ValueError("No exterior field results are available.")
-        if exterior.backend_id not in {"beat_cpu", "beat_cuda"}:
-            raise ValueError("Exterior velocity fields require BEAT CPU or CUDA.")
+        if exterior.backend_id not in {"beat_cpu", "beat_cuda", "beat_rocm"}:
+            raise ValueError("Exterior velocity fields require BEAT CPU, CUDA, or ROCm.")
         interior = self._field_results.interior if plane.plane_type == ObservationPlaneType.COMBINED else None
         if plane.plane_type == ObservationPlaneType.COMBINED and interior is None:
             raise ValueError("No interior field results are available.")
