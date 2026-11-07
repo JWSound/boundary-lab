@@ -305,12 +305,13 @@ def test_combined_vector_sampling_preserves_fem_and_exterior_phase(display):
 
 
 @pytest.mark.parametrize("display", [ObservationPlaneDisplay.FLOW_ARROWS, ObservationPlaneDisplay.PARTICLE_VELOCITY])
-def test_exterior_vector_geometry_masks_enclosed_and_boundary_samples(display):
+@pytest.mark.parametrize("backend", ["beat_cpu", "beat_cuda", "beat_rocm"])
+def test_exterior_vector_geometry_masks_enclosed_and_boundary_samples(display, backend):
     import pyvista as pv
 
     boundary = pv.Cube().triangulate()
     editor = SimpleNamespace(
-        _field_results=SimpleNamespace(exterior=SimpleNamespace(backend_id="beat_cpu", run_id="test")),
+        _field_results=SimpleNamespace(exterior=SimpleNamespace(backend_id=backend, run_id="test")),
         _field_generation=1,
         _field_cache={},
         _combined_boundary_mesh=lambda results: boundary,
