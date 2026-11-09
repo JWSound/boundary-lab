@@ -8,8 +8,8 @@ import pytest
 from blab.solvers.coupled_field import BemFieldEvaluationRequest, evaluate_bem_field
 
 
-@pytest.mark.skipif(os.environ.get("BLAB_TEST_BEM_GRADIENT") != "1", reason="requires Julia CPU/CUDA runtime")
-@pytest.mark.parametrize("backend", ["beat_cpu", "beat_cuda"])
+@pytest.mark.skipif(os.environ.get("BLAB_TEST_BEM_GRADIENT") != "1", reason="requires matching Julia backend runtime")
+@pytest.mark.parametrize("backend", ["beat_cpu", "beat_cuda", "beat_rocm"])
 def test_real_gradient_worker_matches_solid_angle_and_spatial_derivative(backend):
     from dataclasses import replace
 
