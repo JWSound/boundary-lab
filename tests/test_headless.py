@@ -152,6 +152,99 @@ def test_result_writer_persists_partial_complex_frequency_result(tmp_path: Path)
     np.testing.assert_array_equal(arrays["q0000"], np.asarray([[1 + 2j, 3 + 4j]], dtype=np.complex64))
 
 
+def test_headless_events_carry_elapsed_eta_and_warm_up_prediction(tmp_path: Path) -> None:
+    from blab.warm_up_history import WarmUpHistory, WarmUpKey
+
+    key = WarmUpKey("cpu", "0.4.0", "8", True)
+    WarmUpHistory().record(key, 90.0)
+    frequencies = (100.0, 200.0, 300.0, 400.0, 500.0)
+    prepared = _prepared_request()
+    prepared = replace(prepared, request=replace(prepared.request, frequencies_hz=frequencies))
+
+    class Session:
+        def __init__(self, request):
+            self.request = request
+
+        def warm_up_key(self):
+            return key
+
+        def solve_stream(self):
+            self.request.status_callback("Preparing BEAT CPU geometry caches")
+            for freq_hz in frequencies[:4]:
+                yield _raw_exterior_result(freq_hz)
+
+        def stop(self):
+            pass
+
+    backend = SimpleNamespace(create_system_session=Session)
+    events = []
+    with pytest.raises(RuntimeError, match="all requested frequencies"):
+        headless_module.run_headless_solve(
+            _headless_project(tmp_path),
+            prepared,
+            output_dir=tmp_path / "run",
+            backend_id="beat_cpu",
+            public_request={"schema_version": 1},
+            event_callback=events.append,
+            backend=backend,
+        )
+
+    (status,) = [event for event in events if event["event"] == "status"]
+    assert status["predicted_warm_up_s"] == 90.0
+    assert status["elapsed_s"] >= 0.0
+    completed = [event for event in events if event["event"] == "frequency_completed"]
+    assert [event["eta_s"] is None for event in completed] == [True, True, True, False]
+    assert completed[-1]["eta_s"] >= 0.0
+    assert all(event["elapsed_s"] >= 0.0 for event in completed)
+    assert len(WarmUpHistory().durations_s(key)) == 2
+
+
+def test_text_events_use_the_status_bar_format() -> None:
+    from blab.project_cli import format_solve_event
+
+    assert (
+        format_solve_event(
+            {"event": "frequency_completed", "solved_count": 4, "frequency_count": 10, "elapsed_s": 46.0, "eta_s": 18.0}
+        )
+        == "Solving 4/10 · 0:46 elapsed · ~0:20 left"
+    )
+    assert (
+        format_solve_event({"event": "status", "message": "Preparing", "elapsed_s": 42.0, "predicted_warm_up_s": 90.0})
+        == "Preparing · 0:42 / ~2:00"
+    )
+    assert format_solve_event({"event": "failed", "message": "Backend failed"}) == "Backend failed"
+    assert format_solve_event({"event": "started"}) is None
+
+
+def _headless_project(tmp_path: Path) -> HeadlessProject:
+    project_file = tmp_path / "sample.blab.json"
+    project_file.write_text('{"schema_version": 8}', encoding="utf-8")
+    return HeadlessProject(
+        path=project_file,
+        payload={"schema_version": 8},
+        physical_system=PhysicalSystem("system:test", "Test", (), (), ()),
+        preferences=ProjectPreferencesState(),
+        symmetry="off",
+        component_channel_by_id={},
+    )
+
+
+def _raw_exterior_result(freq_hz: float) -> SystemFrequencyResult:
+    return SystemFrequencyResult(
+        freq_hz=freq_hz,
+        excitation_port_ids=("excitation:source",),
+        quantities=(
+            QuantityResult(
+                id="ui:exterior-pressure",
+                quantity="exterior_pressure",
+                unit="Pa",
+                values=np.asarray([[1 + 2j, 3 + 4j]], dtype=np.complex64),
+                axes=("excitation", "observation"),
+            ),
+        ),
+    )
+
+
 def test_project_cli_exposes_validate_and_solve_commands() -> None:
     parser = _build_arg_parser("blab project")
 

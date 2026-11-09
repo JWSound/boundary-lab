@@ -30,6 +30,7 @@ from blab.headless import (
     run_headless_solve,
     validation_summary,
 )
+from blab.solve_eta import format_solve_status, format_warm_up_status
 from blab.speaker_package import (
     SpeakerPackageConfig,
     SpeakerPackageCoupledRepresentation,
@@ -218,6 +219,18 @@ def _validate(args: argparse.Namespace) -> None:
         print(f"[{assumption['status']}] {assumption['statement']}")
 
 
+def format_solve_event(event: dict[str, Any]) -> str | None:
+    """Text-mode line for a solve event, matching the GUI status bar."""
+    event_name = event.get("event")
+    if event_name == "frequency_completed":
+        return format_solve_status(event["solved_count"], event["frequency_count"], event["elapsed_s"], event["eta_s"])
+    if event_name == "status" and "elapsed_s" in event:
+        return format_warm_up_status(str(event["message"]), event["elapsed_s"], event["predicted_warm_up_s"])
+    if event_name in {"status", "failed", "interrupted"}:
+        return str(event.get("message", event_name))
+    return None
+
+
 def _solve(args: argparse.Namespace) -> None:
     project = load_headless_project(args.project_file)
     spec = load_headless_solve_spec(args.request)
@@ -243,15 +256,9 @@ def _solve(args: argparse.Namespace) -> None:
         if args.events == "ndjson":
             print(json.dumps(event, separators=(",", ":")), flush=True)
             return
-        event_name = event.get("event")
-        if event_name == "frequency_completed":
-            print(
-                f"Solved {event['solved_count']}/{event['frequency_count']}: {event['freq_hz']:.6g} Hz",
-                file=sys.stderr,
-                flush=True,
-            )
-        elif event_name in {"status", "failed", "interrupted"}:
-            print(str(event.get("message", event_name)), file=sys.stderr, flush=True)
+        text = format_solve_event(event)
+        if text is not None:
+            print(text, file=sys.stderr, flush=True)
 
     if remote_backend is not None:
         emit(
@@ -415,12 +422,8 @@ def _export_speaker(args: argparse.Namespace) -> None:
         def emit(event: dict[str, Any]) -> None:
             if args.events == "ndjson":
                 print(json.dumps(event, separators=(",", ":")), flush=True)
-            elif event.get("event") == "frequency_completed":
-                print(
-                    f"Solved {event['solved_count']}/{event['frequency_count']}: {event['freq_hz']:.6g} Hz",
-                    file=sys.stderr,
-                    flush=True,
-                )
+            elif (text := format_solve_event(event)) is not None:
+                print(text, file=sys.stderr, flush=True)
 
         solved = solve_speaker_package_system(
             prepared,
