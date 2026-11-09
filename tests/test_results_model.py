@@ -290,7 +290,7 @@ def test_velocity_to_excursion_uses_the_solver_phasor_convention() -> None:
     assert excursion.values[0, 0, 0] == pytest.approx(1.0 + 0.0j)
 
 
-def test_live_transducer_excursion_uses_normalized_channel_drive_before_magnitude() -> None:
+def test_live_transducer_peak_excursion_uses_normalized_channel_drive_before_magnitude() -> None:
     frequency_hz = 1.0 / (2.0 * np.pi)
     acoustic = LiveSolveDataset(
         polar_angle_deg=np.asarray([0.0], dtype=np.float32),
@@ -333,12 +333,13 @@ def test_live_transducer_excursion_uses_normalized_channel_drive_before_magnitud
     assert freqs.tolist() == pytest.approx([frequency_hz])
     assert names.tolist() == ["Woofer"]
     # The 2 Pa on-axis channel basis applies a 0.5 normalized correction.
-    assert excursion_mm[0, 0] == pytest.approx(1000.0)
+    # The resulting 1 m RMS displacement is sqrt(2) m one-way peak.
+    assert excursion_mm[0, 0] == pytest.approx(np.sqrt(2.0) * 1000.0)
 
     acoustic.voltage_channel_names = frozenset({"main"})
     acoustic.set_channel_synthesis((ChannelConfig(name="main", voltage_v=5.66),))
     _freqs, _names, excursion_mm = motion.as_excursion_arrays(acoustic)
-    assert excursion_mm[0, 0] == pytest.approx(2000.0)
+    assert excursion_mm[0, 0] == pytest.approx(np.sqrt(2.0) * 2000.0)
 
 
 def test_live_transducer_excursion_sums_complex_excitation_bases_before_magnitude() -> None:
