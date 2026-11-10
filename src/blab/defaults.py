@@ -1,4 +1,4 @@
-"""Shared default paths for the command-line workflow."""
+"""Shared defaults: paths for the command-line workflow and the default sound speed."""
 
 from __future__ import annotations
 
@@ -12,3 +12,5 @@ SOLVER_OUTPUT_NPZ = Path(f"{SOLVER_OUTPUT_NPZ_BASE}.npz")
 FORMATTED_OUTPUT_NPZ = Path("pressure_data_formatted.npz")
 
 PLOT_OUTPUT_DIR = Path(".")
+
+DEFAULT_SOUND_SPEED_M_PER_S = 343.0  # air, when the project's exterior region sets none
