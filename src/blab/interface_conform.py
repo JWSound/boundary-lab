@@ -6,6 +6,9 @@ The implementation supports two bounded Boundary Lab cases:
 * when the FEM and BEM interface seams have identical discrete topology and are
   geometrically near-coincident, the BEM interface is replaced directly and
   may be fully curved or span multiple geometrical surfaces;
+* attached planar openings adjoining a cabinet edge can collapse redundant
+  ordered BEM seam edges across incident shell surfaces, subject to geometry,
+  orientation, quality, and protected-interface checks;
 * otherwise the FEM and BEM interface perimeters describe the same planar
   opening, surrounded by a planar BEM physical surface, possibly split across
   multiple geometrical entities.
@@ -253,6 +256,25 @@ def conform_bem_interface_to_fem(
         bem_mesh.points[old_bem_opening_path],
         fem_mesh.points[fem_opening_path],
     )
+    # A cabinet-edge opening has no planar annulus: some seam edges meet
+    # a noncoplanar shell face. Simplify its attached seam locally instead,
+    # updating all incident surfaces together while retaining the FEM facets.
+    surrounding = bem_data.triangles[~bem_interface_mask]
+    opening_edges = {
+        tuple(sorted((int(a), int(b))))
+        for a, b in zip(old_bem_opening_path[:-1], old_bem_opening_path[1:], strict=True)
+    }
+    if not interface_symmetry_axes:
+        opening_edges.add(tuple(sorted((int(old_bem_opening_path[-1]), int(old_bem_opening_path[0])))))
+    crosses_cabinet_edge = seam_attached and any(
+        any(
+            tuple(sorted((int(a), int(b)))) in opening_edges
+            for a, b in zip(triangle, np.roll(triangle, -1), strict=True)
+        )
+        and np.max(np.abs((bem_mesh.points[triangle] - seam_plane_origin) @ seam_plane_normal))
+        > resolved_geometry_tolerance
+        for triangle in surrounding
+    )
     seam_simplification = (
         _ordered_seam_simplification_correspondence(
             fem_mesh.points,
@@ -262,7 +284,7 @@ def conform_bem_interface_to_fem(
             tolerance=resolved_geometry_tolerance,
             closed=not interface_symmetry_axes,
         )
-        if seam_plane_deviation > resolved_geometry_tolerance
+        if seam_plane_deviation > resolved_geometry_tolerance or crosses_cabinet_edge
         else None
     )
     if seam_simplification is not None:
@@ -280,6 +302,9 @@ def conform_bem_interface_to_fem(
             merge_tolerance=merge_tolerance,
             closed=not interface_symmetry_axes,
             protected_bem_tags=protected_bem_tags,
+            surface_tolerance=(
+                resolved_geometry_tolerance if seam_plane_deviation <= resolved_geometry_tolerance else None
+            ),
         )
         identity = validate_conforming_interfaces(
             fem_mesh,
@@ -1188,6 +1213,7 @@ def _replace_bem_interface_with_simplified_seam(
     merge_tolerance: float,
     closed: bool,
     protected_bem_tags: set[int],
+    surface_tolerance: float | None = None,
 ) -> tuple[meshio.Mesh, bool, int]:
     """Collapse redundant ordered BEM seam edges and copy exact FEM facets."""
 
@@ -1240,6 +1266,26 @@ def _replace_bem_interface_with_simplified_seam(
         simplified_points[representative] = np.asarray(fem_mesh.points, dtype=float)[fem_path[fem_index]]
 
     mapped_kept_triangles = point_map[kept_original_triangles]
+    old_coordinates = np.asarray(bem_mesh.points)[kept_original_triangles]
+    new_coordinates = simplified_points[mapped_kept_triangles]
+    changed = np.any(old_coordinates != new_coordinates, axis=(1, 2))
+    if np.any(changed & np.isin(bem_data.physical_tags[kept_original_indices], tuple(protected_bem_tags))):
+        raise InterfaceConformError(
+            "Ordered seam simplification rejected: it would modify another protected interface surface."
+        )
+    if surface_tolerance is not None:
+        normals = np.cross(
+            old_coordinates[:, 1] - old_coordinates[:, 0],
+            old_coordinates[:, 2] - old_coordinates[:, 0],
+        )
+        lengths = np.linalg.norm(normals, axis=1)
+        if np.any(lengths <= 0):
+            raise InterfaceConformError("Ordered seam simplification rejected: a surrounding triangle has zero area.")
+        distances = np.abs(np.einsum("tki,ti->tk", new_coordinates - old_coordinates, normals / lengths[:, None]))
+        if np.any(distances > surface_tolerance):
+            raise InterfaceConformError(
+                "Ordered seam simplification rejected: it would move the seam off an adjoining cabinet surface."
+            )
     degenerate_mask = (
         (mapped_kept_triangles[:, 0] == mapped_kept_triangles[:, 1])
         | (mapped_kept_triangles[:, 1] == mapped_kept_triangles[:, 2])
