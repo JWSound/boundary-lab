@@ -89,12 +89,22 @@ implicitly included, and FEM volume meshes are never stitched.
 Preparation transforms exterior parts to project coordinates, stitches them
 using `project_preferences.stitch_tolerance_mm`, and then conforms configured
 interfaces to the authoritative FEM facets. Application interface construction
-allows up to 0.55 mm of geometry deviation when rebuilding an interface. This
+allows up to 0.75 mm of geometry deviation when rebuilding an interface. This
 allowance is separate from exterior stitching tolerance and does not relax the
 final FEM-to-BEM coordinate/connectivity checks. Closure is checked on the assembled
 exterior, allowing edges on active symmetry planes. Intentional cutouts may be
 open in source assets but must be closed by the assembly. Missing parts or
 unmatched seams still fail validation.
+
+Planar interface openings that meet a cabinet edge can also be conformed when
+the attached BEM seam has redundant vertices that can be collapsed onto the
+ordered FEM seam. This updates all incident shell surfaces together, retains
+the exact FEM facets and boundary tags, and checks adjoining surface planes,
+triangle orientation and area, protected interfaces, and exterior closure.
+The operation produces a seam-simplification quality warning; inspect the
+interface and surrounding triangles in the viewport before solving. This is
+not general cabinet-edge remeshing: seams requiring additional BEM vertices or
+without a valid ordered correspondence remain unsupported.
 
 Derived meshes and preparation manifests are written under `runs/`; source
 assets, FEM connectivity, component IDs, excitation ports, and channel assignments
