@@ -10,6 +10,7 @@ from blab.generators.base import GenerationCompleted, GenerationRequest
 from blab.solve_eta import SolveProgress, format_solve_status, format_warm_up_status
 from blab.ui.application_state import OperationPhase, OperationState, SolveCompletion
 from blab.ui.generator_worker import GeneratorWorker
+from blab.ui.solve_progress import format_frequency_solve_timings
 from blab.ui.system_solve import PreparedSystemSolve, SystemSolveWorker
 from blab.warm_up_history import WarmUpHistory, WarmUpKey
 
@@ -216,8 +217,9 @@ class SolveController(QObject):
         if self.state.phase == OperationPhase.RUNNING:
             timing = self._progress.frequency_fields()
             message = format_solve_status(
-                self._solved_count, self._expected_count, timing["elapsed_s"], timing["eta_s"]
+                self._solved_count, self._expected_count, result.freq_hz, timing["elapsed_s"], timing["eta_s"]
             )
+            message += f" | {format_frequency_solve_timings(result)}"
             self._set_state(OperationPhase.RUNNING, message)
             self.status.emit(message)
 

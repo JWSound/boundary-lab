@@ -223,7 +223,9 @@ def format_solve_event(event: dict[str, Any]) -> str | None:
     """Text-mode line for a solve event, matching the GUI status bar."""
     event_name = event.get("event")
     if event_name == "frequency_completed":
-        return format_solve_status(event["solved_count"], event["frequency_count"], event["elapsed_s"], event["eta_s"])
+        return format_solve_status(
+            event["solved_count"], event["frequency_count"], event["freq_hz"], event["elapsed_s"], event["eta_s"]
+        )
     if event_name == "status" and "elapsed_s" in event:
         return format_warm_up_status(str(event["message"]), event["elapsed_s"], event["predicted_warm_up_s"])
     if event_name in {"status", "failed", "interrupted"}:

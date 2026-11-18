@@ -61,9 +61,9 @@ def test_estimate_rounds_to_five_seconds_under_a_minute_and_whole_minutes_above(
 
 
 def test_solve_status_shows_count_elapsed_and_remaining_time() -> None:
-    assert format_solve_status(37, 120, 65.0, 135.0) == "Solving 37/120 · 1:05 elapsed · ~2:00 left"
-    assert format_solve_status(2, 120, 65.0, None) == "Solving 2/120 · 1:05 elapsed"
-    assert format_solve_status(120, 120, 65.0, 0.0) == "Solving 120/120 · 1:05 elapsed"
+    assert format_solve_status(37, 120, 125.0, 65.0, 135.0) == "Solving 37/120 (125 Hz) · 1:05 elapsed · ~2:00 left"
+    assert format_solve_status(2, 120, 125.0, 65.0, None) == "Solving 2/120 (125 Hz) · 1:05 elapsed"
+    assert format_solve_status(120, 120, 125.0, 65.0, 0.0) == "Solving 120/120 (125 Hz) · 1:05 elapsed"
 
 
 def test_remaining_time_is_mean_frequency_solve_time_times_remaining_frequencies() -> None:

@@ -204,9 +204,16 @@ def test_text_events_use_the_status_bar_format() -> None:
 
     assert (
         format_solve_event(
-            {"event": "frequency_completed", "solved_count": 4, "frequency_count": 10, "elapsed_s": 46.0, "eta_s": 18.0}
+            {
+                "event": "frequency_completed",
+                "solved_count": 4,
+                "frequency_count": 10,
+                "freq_hz": 125.5,
+                "elapsed_s": 46.0,
+                "eta_s": 18.0,
+            }
         )
-        == "Solving 4/10 · 0:46 elapsed · ~0:20 left"
+        == "Solving 4/10 (125.5 Hz) · 0:46 elapsed · ~0:20 left"
     )
     assert (
         format_solve_event({"event": "status", "message": "Preparing", "elapsed_s": 42.0, "predicted_warm_up_s": 90.0})

@@ -35,8 +35,8 @@ def format_warm_up_status(message: str, elapsed_s: float, predicted_s: float | N
     return f"{text} / ~{format_estimate(predicted_s)}"
 
 
-def format_solve_status(completed: int, total: int, elapsed_s: float, remaining_s: float | None) -> str:
-    message = f"Solving {completed}/{total} · {format_elapsed(elapsed_s)} elapsed"
+def format_solve_status(completed: int, total: int, freq_hz: float, elapsed_s: float, remaining_s: float | None) -> str:
+    message = f"Solving {completed}/{total} ({freq_hz:.6g} Hz) · {format_elapsed(elapsed_s)} elapsed"
     if remaining_s is not None and completed < total:
         message += f" · ~{format_estimate(remaining_s)} left"
     return message

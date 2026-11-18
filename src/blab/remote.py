@@ -131,7 +131,12 @@ class RemoteSession:
 
     def warm_up_key(self) -> WarmUpKey:
         # The server's engine, threads and worker state are not visible to the client.
-        return WarmUpKey(backend="remote", engine_version="", julia_threads="", cold_worker=False)
+        endpoint = urlsplit(self.backend.url)
+        port = endpoint.port if endpoint.port is not None else (443 if endpoint.scheme == "https" else 80)
+        host = f"[{endpoint.hostname}]" if ":" in endpoint.hostname else endpoint.hostname
+        return WarmUpKey(
+            backend=f"remote:{endpoint.scheme}://{host}:{port}", engine_version="", julia_threads="", cold_worker=False
+        )
 
     def solve_stream(self, *, stop_requested=None):
         if self._stop:
