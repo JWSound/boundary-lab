@@ -34,7 +34,8 @@ def _cabinet_edge_meshes() -> tuple[meshio.Mesh, meshio.Mesh]:
     # edge is subdivided on both incident faces, unlike the authoritative FEM.
     points = np.asarray([(1, 0, 0), (2, 0, 0), (1, 1, 0), (1, 0, 1)], dtype=float)
     fem = meshio.Mesh(
-        points.copy(), [("triangle", [[0, 2, 1]]), ("tetra", [[0, 1, 2, 3]])],
+        points.copy(),
+        [("triangle", [[0, 2, 1]]), ("tetra", [[0, 1, 2, 3]])],
         cell_data={"gmsh:physical": [np.array([1]), np.array([5])]},
         field_data={"Interface": np.array([1, 2])},
     )
@@ -45,8 +46,9 @@ def _cabinet_edge_meshes() -> tuple[meshio.Mesh, meshio.Mesh]:
             "gmsh:physical": [np.array([1, 1, 2, 2, 3, 4])],
             "gmsh:geometrical": [np.array([11, 11, 12, 12, 13, 14])],
         },
-        field_data={name: np.array([tag, 2]) for tag, name in
-                    enumerate(("Interface", "Bottom", "Side", "Back"), start=1)},
+        field_data={
+            name: np.array([tag, 2]) for tag, name in enumerate(("Interface", "Bottom", "Side", "Back"), start=1)
+        },
     )
     return fem, bem
 
@@ -102,11 +104,19 @@ def test_cabinet_edge_simplification_rejects_motion_off_adjoining_plane() -> Non
     data = _triangle_data(bem, require_geometrical=True)
     with pytest.raises(InterfaceConformError, match="off an adjoining cabinet surface"):
         _replace_bem_interface_with_simplified_seam(
-            fem, bem, fem.cells[0].data, data, data.physical_tags == 1, 1,
+            fem,
+            bem,
+            fem.cells[0].data,
+            data,
+            data.physical_tags == 1,
+            1,
             fem_seam_path=np.array([0, 1, 2]),
             bem_seam_path=np.array([0, 4, 1, 2]),
             bem_to_fem_path_indices=np.array([0, 0, 1, 2]),
-            merge_tolerance=1e-8, closed=True, protected_bem_tags=set(), surface_tolerance=1e-4,
+            merge_tolerance=1e-8,
+            closed=True,
+            protected_bem_tags=set(),
+            surface_tolerance=1e-4,
         )
 
 
