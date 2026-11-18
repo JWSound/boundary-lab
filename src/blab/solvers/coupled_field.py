@@ -128,8 +128,8 @@ def _validated_evaluation_request(
     coordinate_dtype = np.float64 if request.pressure_gradient else np.float32
     points = np.asarray(request.points_m, dtype=coordinate_dtype)
     boundary_points = np.asarray(request.boundary_points_m, dtype=coordinate_dtype)
-    if request.pressure_gradient and backend_id not in {"beat_cpu", "beat_cuda"}:
-        raise ValueError("BEM pressure gradients require BEAT CPU or CUDA.")
+    if request.pressure_gradient and backend_id not in {"beat_cpu", "beat_cuda", "beat_rocm"}:
+        raise ValueError("BEM pressure gradients require BEAT CPU, CUDA, or ROCm.")
     triangles = np.asarray(request.boundary_triangles, dtype=np.int64)
     pressure = np.asarray(request.boundary_pressure)
     normal = np.asarray(request.boundary_normal_derivative)
