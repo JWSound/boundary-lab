@@ -272,29 +272,43 @@ def test_engine_coupled_axial_fem_and_bem_sources():
 
     def solve(direction, weight=1.0, combined=False):
         components = tuple(
-            replace(component, parameters={
-                "motion_profile": "rigid_translation", "motion_axis": [0, 0, direction],
-                "boundary_motion_weights": {boundary: weight for boundary in component.boundary_ids},
-            }) for component in system.components
+            replace(
+                component,
+                parameters={
+                    "motion_profile": "rigid_translation",
+                    "motion_axis": [0, 0, direction],
+                    "boundary_motion_weights": {boundary: weight for boundary in component.boundary_ids},
+                },
+            )
+            for component in system.components
         )
         ports = system.excitation_ports
         if combined:
             boundary_ids = tuple(boundary for component in components for boundary in component.boundary_ids)
-            components = (replace(components[0], boundary_ids=boundary_ids, parameters={
-                "motion_profile": "rigid_translation", "motion_axis": [0, 0, direction],
-                "boundary_motion_weights": {boundary: weight for boundary in boundary_ids},
-            }),)
+            components = (
+                replace(
+                    components[0],
+                    boundary_ids=boundary_ids,
+                    parameters={
+                        "motion_profile": "rigid_translation",
+                        "motion_axis": [0, 0, direction],
+                        "boundary_motion_weights": {boundary: weight for boundary in boundary_ids},
+                    },
+                ),
+            )
             ports = ports[:1]
         compiled = PhysicalSystemCompiler().compile(replace(system, components=components, excitation_ports=ports))
         request = SystemSolveRequest(
-            compiled_system=compiled, frequencies_hz=(500,),
+            compiled_system=compiled,
+            frequencies_hz=(500,),
             excitation_port_ids=tuple(port.id for port in ports),
             outputs=(
                 OutputRequest(id="fem", quantity="fem_nodal_pressure"),
                 OutputRequest(id="bem", quantity="bem_boundary_pressure"),
                 OutputRequest(id="q", quantity="bem_boundary_neumann"),
                 OutputRequest(id="field", quantity="exterior_pressure", options={"points_m": [[0, 0, 1]]}),
-            ), solver_options={"quadrature_order": 1, "singular_order": 1, "validation_diagnostics": False},
+            ),
+            solver_options={"quadrature_order": 1, "singular_order": 1, "validation_diagnostics": False},
         )
         (result,) = backend.create_system_session(request).solve_stream()
         assert result.excitation_port_ids == request.excitation_port_ids
