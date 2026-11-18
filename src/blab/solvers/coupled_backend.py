@@ -13,6 +13,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Callable, Iterator
 
+import beat_engine
 import numpy as np
 
 from blab.acoustic_materials import (
@@ -41,6 +42,7 @@ from blab.solvers.beat_engine_runtime import (
     get_beat_engine_worker,
     julia_process_env,
     normalize_beat_engine_backend,
+    resolve_julia_threads,
 )
 from blab.source_motion import prescribed_source_parameters
 from blab.system_contract import (
@@ -51,6 +53,7 @@ from blab.system_contract import (
     system_solve_request_to_dict,
     validate_system_solve_request,
 )
+from blab.warm_up_history import WarmUpKey
 
 DEFAULT_COUPLED_SOLVER_SCRIPT = DEFAULT_BEAT_ENGINE_SYSTEM_SOLVER_SCRIPT
 DEFAULT_COUPLED_CPU_PROJECT = DEFAULT_BEAT_ENGINE_CPU_PROJECT
@@ -131,6 +134,24 @@ class CoupledSession:
     @property
     def metadata(self) -> SystemSolveMetadata:
         return self._metadata
+
+    def _pooled_worker(self) -> BeatEngineWorkerProcess:
+        return get_beat_engine_worker(
+            julia_executable=self.julia_executable,
+            solver_script=self.solver_script,
+            julia_threads=self.julia_threads,
+            julia_project=self.julia_project,
+        )
+
+    def warm_up_key(self) -> WarmUpKey:
+        # A pooled worker without a ready announcement has no live process yet.
+        cold = not self.persistent_worker or self._pooled_worker().worker_info is None
+        return WarmUpKey(
+            backend=str(self.request.solver_options.get("bem_backend", "cpu")),
+            engine_version=beat_engine.__version__,
+            julia_threads=resolve_julia_threads(self.julia_threads),
+            cold_worker=cold,
+        )
 
     def solve_stream(
         self,
@@ -226,12 +247,7 @@ class CoupledSession:
         *,
         stop_requested: Callable[[], bool] | None,
     ) -> Iterator[SystemFrequencyResult]:
-        self._worker = get_beat_engine_worker(
-            julia_executable=self.julia_executable,
-            solver_script=self.solver_script,
-            julia_threads=self.julia_threads,
-            julia_project=self.julia_project,
-        )
+        self._worker = self._pooled_worker()
         callback = self.request.status_callback
         request = self.request
         if self.cuda_worker_reuse and request.solver_options.get("bem_backend") == "cuda":

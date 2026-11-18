@@ -41,6 +41,14 @@ if PYSIDE6_ERROR is not None:
         raise missing_stack_error("PySide6", PYSIDE6_ERROR)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_warm_up_history(tmp_path, monkeypatch) -> None:
+    """Keep tests away from the developer's real warm-up history."""
+    import blab.warm_up_history
+
+    monkeypatch.setattr(blab.warm_up_history, "default_history_path", lambda: tmp_path / "warm_up_history.json")
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _isolate_qsettings(tmp_path_factory) -> None:
     """Keep tests away from the developer's real Boundary Lab preferences."""
