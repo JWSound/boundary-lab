@@ -13,6 +13,7 @@ from blab.interface_conform import (
     _opening_connected_triangles,
     _physical_opening_path,
     _physical_surface_tag,
+    _replace_bem_interface_with_simplified_seam,
     _triangle_data,
     conform_bem_interface_to_fem,
     validate_conforming_interfaces,
@@ -26,6 +27,104 @@ SAWMOD_FIXTURE_ROOT = REPOSITORY_ROOT / "tests" / "fixtures" / "SAWMOD"
 CURVED_FEM_FIXTURE = REPOSITORY_ROOT / "tests" / "fixtures" / "curvedinterfaceFEM.msh"
 CURVED_BEM_FIXTURE = REPOSITORY_ROOT / "tests" / "fixtures" / "curvedinterfaceBEM.msh"
 NONPLANAR_MULTISURFACE_FIXTURE_ROOT = REPOSITORY_ROOT / "tests" / "fixtures" / "nonplanar_multisurface_interface"
+
+
+def _cabinet_edge_meshes() -> tuple[meshio.Mesh, meshio.Mesh]:
+    # A planar interface meets three noncoplanar shell faces. One BEM seam
+    # edge is subdivided on both incident faces, unlike the authoritative FEM.
+    points = np.asarray([(1, 0, 0), (2, 0, 0), (1, 1, 0), (1, 0, 1)], dtype=float)
+    fem = meshio.Mesh(
+        points.copy(),
+        [("triangle", [[0, 2, 1]]), ("tetra", [[0, 1, 2, 3]])],
+        cell_data={"gmsh:physical": [np.array([1]), np.array([5])]},
+        field_data={"Interface": np.array([1, 2])},
+    )
+    bem = meshio.Mesh(
+        np.vstack((points, (points[0] + points[1]) / 2)),
+        [("triangle", [[0, 2, 4], [4, 2, 1], [0, 4, 3], [4, 1, 3], [1, 2, 3], [2, 0, 3]])],
+        cell_data={
+            "gmsh:physical": [np.array([1, 1, 2, 2, 3, 4])],
+            "gmsh:geometrical": [np.array([11, 11, 12, 12, 13, 14])],
+        },
+        field_data={
+            name: np.array([tag, 2]) for tag, name in enumerate(("Interface", "Bottom", "Side", "Back"), start=1)
+        },
+    )
+    return fem, bem
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("symmetry", ["off", "x"])
+def test_planar_cabinet_edge_seam_preserves_shell_and_fem(tmp_path, reverse, symmetry) -> None:
+    fem, bem = _cabinet_edge_meshes()
+    if reverse:
+        bem.cells[0].data = bem.cells[0].data[:, [0, 2, 1]]
+    original_fem = copy.deepcopy(fem)
+    original_bem = copy.deepcopy(bem)
+    output, result = conform_bem_interface_to_fem(fem, bem, symmetry_mode=symmetry)
+    assert result.seam_simplification_used
+    assert result.simplified_bem_seam_edges == 1
+    assert result.identity.bem_boundary_edges == 0
+    assert result.identity.max_coordinate_error == 0
+    assert result.identity.fem_facets_on_tetra_boundary == 1
+    assert result.interface_orientation_flipped == reverse
+    data = _triangle_data(output, require_geometrical=True)
+    assert sorted(data.physical_tags) == [1, 2, 3, 4]
+    assert sorted(data.geometrical_tags) == [11, 12, 13, 14]
+    # Each shell facet retains its geometry and winding despite compaction.
+    expected_faces = [[0, 1, 3], [1, 2, 3], [2, 0, 3]]
+    for tag, face in zip((2, 3, 4), expected_faces, strict=True):
+        actual = output.points[data.triangles[data.physical_tags == tag][0]]
+        expected = fem.points[face]
+        assert set(map(tuple, actual)) == set(map(tuple, expected))
+        normal = np.cross(actual[1] - actual[0], actual[2] - actual[0])
+        expected_normal = np.cross(expected[1] - expected[0], expected[2] - expected[0])
+        assert np.dot(normal, expected_normal) * (-1 if reverse else 1) > 0
+    for original, current in ((original_fem, fem), (original_bem, bem)):
+        np.testing.assert_array_equal(original.points, current.points)
+        for old, new in zip(original.cells, current.cells, strict=True):
+            np.testing.assert_array_equal(old.data, new.data)
+    path = tmp_path / "edge.msh"
+    meshio.write(path, output, file_format="gmsh22", binary=False)
+    assert validate_conforming_interfaces(fem, meshio.read(path), symmetry_mode=symmetry) == result.identity
+
+
+@pytest.mark.parametrize("protected", ["Bottom", "Back"])
+def test_cabinet_edge_simplification_rejects_protected_neighbor(protected) -> None:
+    fem, bem = _cabinet_edge_meshes()
+    # Back retains its triangle but shares a vertex that would be moved.
+    fem.points[0, 0] += 1e-5
+    with pytest.raises(InterfaceConformError, match="protected interface"):
+        conform_bem_interface_to_fem(fem, bem, protected_bem_interface_names=(protected,))
+
+
+def test_cabinet_edge_simplification_rejects_motion_off_adjoining_plane() -> None:
+    fem, bem = _cabinet_edge_meshes()
+    fem.points[0, 0] += 0.01  # Leaves the Back plane, x=1.
+    data = _triangle_data(bem, require_geometrical=True)
+    with pytest.raises(InterfaceConformError, match="off an adjoining cabinet surface"):
+        _replace_bem_interface_with_simplified_seam(
+            fem,
+            bem,
+            fem.cells[0].data,
+            data,
+            data.physical_tags == 1,
+            1,
+            fem_seam_path=np.array([0, 1, 2]),
+            bem_seam_path=np.array([0, 4, 1, 2]),
+            bem_to_fem_path_indices=np.array([0, 0, 1, 2]),
+            merge_tolerance=1e-8,
+            closed=True,
+            protected_bem_tags=set(),
+            surface_tolerance=1e-4,
+        )
+
+
+def test_cabinet_edge_simplification_rejects_different_opening() -> None:
+    fem, bem = _cabinet_edge_meshes()
+    fem.points[:, 2] += 0.1
+    with pytest.raises(InterfaceConformError):
+        conform_bem_interface_to_fem(fem, bem, geometry_tolerance=1e-4)
 
 
 def _split_bem_opening_edges(mesh: meshio.Mesh, interface_name: str, count: int) -> meshio.Mesh:
