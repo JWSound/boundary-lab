@@ -225,8 +225,8 @@ def test_interior_projection_retains_motion_and_electrical_data_without_polar_sa
     assert projection.group_delay is None
     assert projection.spinorama_planes is None
     assert projection.max_spl is None
-    np.testing.assert_allclose(projection.excursion.excursion_mm, [[2.0]])
+    np.testing.assert_allclose(projection.excursion.excursion_mm, [[2.0 * np.sqrt(2.0)]])
     np.testing.assert_allclose(projection.electrical_impedance.magnitude_ohm, [[6.0]])
     snapshot = projection.snapshot()
     projection.excursion.excursion_mm[:] = 0
-    np.testing.assert_allclose(snapshot.excursion.excursion_mm, [[2.0]])
+    np.testing.assert_allclose(snapshot.excursion.excursion_mm, [[2.0 * np.sqrt(2.0)]])
