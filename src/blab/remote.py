@@ -14,6 +14,7 @@ from blab.phasor import SOLVER_PHASOR_CONVENTION
 from blab.remote_contract import REMOTE_VERSION, build_job_bundle
 from blab.solvers.engine_contract import SYSTEM_RESULT_VERSION, SYSTEM_SOLVE_REQUEST_VERSION
 from blab.system_contract import SystemSolveMetadata, system_frequency_result_from_dict
+from blab.warm_up_history import WarmUpKey
 
 
 class _NoRedirect(HTTPRedirectHandler):
@@ -126,6 +127,15 @@ class RemoteSession:
             assumptions=request.compiled_system.assumptions,
             excitation_port_ids=request.excitation_port_ids,
             available_quantity_ids=tuple(output.id for output in request.outputs),
+        )
+
+    def warm_up_key(self) -> WarmUpKey:
+        # The server's engine, threads and worker state are not visible to the client.
+        endpoint = urlsplit(self.backend.url)
+        port = endpoint.port if endpoint.port is not None else (443 if endpoint.scheme == "https" else 80)
+        host = f"[{endpoint.hostname}]" if ":" in endpoint.hostname else endpoint.hostname
+        return WarmUpKey(
+            backend=f"remote:{endpoint.scheme}://{host}:{port}", engine_version="", julia_threads="", cold_worker=False
         )
 
     def solve_stream(self, *, stop_requested=None):
