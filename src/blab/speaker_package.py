@@ -18,6 +18,7 @@ import numpy as np
 from blab.config import normalize_symmetry
 from blab.phasor import LEGACY_PHASOR_CONVENTION, SOLVER_PHASOR_CONVENTION, convert_phasor
 from blab.physical_model import AcousticRegionKind, PhysicalSolveKind
+from blab.solve_eta import SolveProgress
 from blab.solve_results import (
     BEM_BOUNDARY_DOMAIN_ID,
     BEM_BOUNDARY_NEUMANN_ID,
@@ -347,7 +348,9 @@ def solve_speaker_package_system(
         julia_executable=julia_executable,
         julia_threads=julia_threads,
     )
+    progress = SolveProgress(len(request.frequencies_hz))
     session = backend.create_system_session(request)
+    progress.start_warm_up(session.warm_up_key())
     emit({"event": "started", "frequency_count": len(request.frequencies_hz)})
     try:
         for raw_result in session.solve_stream():
@@ -360,6 +363,7 @@ def solve_speaker_package_system(
                     "freq_hz": float(result.freq_hz),
                     "solved_count": builder.solved_count,
                     "frequency_count": len(request.frequencies_hz),
+                    **progress.frequency_fields(),
                 }
             )
     except Exception:
