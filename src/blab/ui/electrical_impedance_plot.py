@@ -10,6 +10,7 @@ from matplotlib.ticker import AutoMinorLocator, LogLocator, MaxNLocator
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QMenu
 
+from blab.ui.marker_readout import MarkerReadoutCurve, phase_readout_curves
 from blab.ui.plots import (
     DUAL_AXIS_LAYOUT,
     GRID_LINE_ALPHA,
@@ -35,7 +36,6 @@ class ElectricalImpedanceCanvas(RawCoordinatePlotCanvas):
         self._lines: list[Any] = []
         self._series_labels: tuple[str, ...] = ()
         self._series_visibility: dict[str, bool] = {}
-        self._series_actions: dict[str, QAction] = {}
         self._phase_available = False
         self._plot_state = None
         super().__init__(self.figure, "Electrical Impedance", secondary_axes=self.phase_axes)
@@ -105,6 +105,9 @@ class ElectricalImpedanceCanvas(RawCoordinatePlotCanvas):
 
     def _format_secondary_crosshair_y(self, value: float) -> str:
         return f"{value:.1f} deg"
+
+    def _format_secondary_marker_y(self, value: float) -> str:
+        return f"{value:.1f}°"
 
     def set_comparison_plot(
         self,
@@ -186,34 +189,12 @@ class ElectricalImpedanceCanvas(RawCoordinatePlotCanvas):
         self._phase_available = bool(labels) and bool(np.any(np.isfinite(phase_deg)))
         self.show_phase_action.setEnabled(self._phase_available)
         self._apply_series_visibility()
-        self._update_magnitude_limits()
+        self._update_visible_series_limits()
         self._apply_manual_axis_limits()
         apply_compact_plot_text(self.axes)
         apply_compact_plot_text(self.phase_axes)
         if self._crosshair_visible:
             self._redraw_crosshair()
-        self.draw_idle()
-
-    def _sync_trace_filter_actions(self, labels: tuple[str, ...]) -> None:
-        self.trace_filter_menu.clear()
-        self._series_actions = {}
-        for label in labels:
-            action = self.trace_filter_menu.addAction(label)
-            action.setCheckable(True)
-            action.setChecked(self._series_visibility.get(label, True))
-            action.toggled.connect(lambda checked, series_label=label: self.set_series_visible(series_label, checked))
-            self._series_actions[label] = action
-        self.trace_filter_action.setEnabled(bool(labels))
-
-    def set_series_visible(self, label: str, visible: bool) -> None:
-        if label not in self._series_labels:
-            return
-        self._series_visibility[label] = bool(visible)
-        self.trace_visibility_changed.emit()
-        self._apply_series_visibility()
-        self._update_magnitude_limits()
-        self._apply_manual_axis_limits()
-        self._invalidate_crosshair_background()
         self.draw_idle()
 
     def _set_phase_visible(self, _visible: bool) -> None:
@@ -225,23 +206,19 @@ class ElectricalImpedanceCanvas(RawCoordinatePlotCanvas):
         show_phase = self.show_phase_action.isChecked() and self._phase_available
         any_phase_visible = False
         for label in self._series_labels:
-            visible = self._series_visibility.get(label, True)
+            visible = self.is_series_visible(label)
             self._magnitude_lines[label].set_visible(visible)
             phase_line = self._phase_lines[label]
             phase_visible = visible and show_phase and np.asarray(phase_line.get_ydata()).size > 0
             phase_line.set_visible(phase_visible)
             any_phase_visible = any_phase_visible or phase_visible
         self.phase_axes.set_visible(any_phase_visible)
-        legend = self.axes.get_legend()
-        if legend is not None:
-            legend.remove()
-        visible_lines = [
-            self._magnitude_lines[label] for label in self._series_labels if self._series_visibility.get(label, True)
-        ]
-        if visible_lines:
-            self.axes.legend(visible_lines, [line.get_label() for line in visible_lines], loc="best")
+        self._show_series_legend((label, self._magnitude_lines[label]) for label in self._series_labels)
 
-    def _update_magnitude_limits(self) -> None:
+    def _marker_readout_curves(self) -> tuple[MarkerReadoutCurve, ...]:
+        return (*super()._marker_readout_curves(), *phase_readout_curves(self._series_labels, self._phase_lines))
+
+    def _update_visible_series_limits(self) -> None:
         finite_rows = []
         for label in self._series_labels:
             line = self._magnitude_lines[label]

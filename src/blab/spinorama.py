@@ -8,6 +8,7 @@ than a third-party measurement file format.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 
 import numpy as np
 
@@ -23,6 +24,32 @@ DI_CURVE_NAMES = (
     "SPDI",
 )
 
+_ON_AXIS_LIGHT_BACKGROUND_COLOR = "#000000"
+_ON_AXIS_DARK_BACKGROUND_COLOR = "#ffffff"
+_LISTENING_WINDOW_COLOR = "#2ca02c"
+_EARLY_REFLECTIONS_COLOR = "#1f77b4"
+_SOUND_POWER_COLOR = "#d62728"
+_ESTIMATED_IN_ROOM_COLOR = "#e6b800"
+
+
+class SpinoramaSeriesId(str, Enum):
+    """Stable identities for Spinorama series, independent of display labels."""
+
+    ON_AXIS = "on_axis"
+    LISTENING_WINDOW = "listening_window"
+    EARLY_REFLECTIONS = "early_reflections"
+    SOUND_POWER = "sound_power"
+    ESTIMATED_IN_ROOM = "estimated_in_room"
+    EARLY_REFLECTIONS_DI = "early_reflections_di"
+    SOUND_POWER_DI = "sound_power_di"
+
+
+@dataclass(frozen=True)
+class SpinoramaSeries:
+    identity: SpinoramaSeriesId
+    label: str
+    values_db: np.ndarray
+
 
 @dataclass(frozen=True)
 class SpinoramaCurves:
@@ -36,20 +63,45 @@ class SpinoramaCurves:
     sound_power_di_db: np.ndarray
     sound_power_di_label: str = "SPDI"
 
-    def spl_curves(self) -> tuple[tuple[str, np.ndarray], ...]:
+    def spl_series(self) -> tuple[SpinoramaSeries, ...]:
         return (
-            ("On Axis", self.on_axis_db),
-            ("Listen. Wind.", self.listening_window_db),
-            ("Early Refl.", self.early_reflections_db),
-            ("Sound Power", self.sound_power_db),
-            ("PIR", self.estimated_in_room_db),
+            SpinoramaSeries(SpinoramaSeriesId.ON_AXIS, "On Axis", self.on_axis_db),
+            SpinoramaSeries(SpinoramaSeriesId.LISTENING_WINDOW, "Listen. Wind.", self.listening_window_db),
+            SpinoramaSeries(SpinoramaSeriesId.EARLY_REFLECTIONS, "Early Refl.", self.early_reflections_db),
+            SpinoramaSeries(SpinoramaSeriesId.SOUND_POWER, "Sound Power", self.sound_power_db),
+            SpinoramaSeries(SpinoramaSeriesId.ESTIMATED_IN_ROOM, "PIR", self.estimated_in_room_db),
         )
 
-    def di_curves(self) -> tuple[tuple[str, np.ndarray], ...]:
+    def di_series(self) -> tuple[SpinoramaSeries, ...]:
         return (
-            ("ERDI", self.early_reflections_di_db),
-            (self.sound_power_di_label, self.sound_power_di_db),
+            SpinoramaSeries(SpinoramaSeriesId.EARLY_REFLECTIONS_DI, "ERDI", self.early_reflections_di_db),
+            SpinoramaSeries(SpinoramaSeriesId.SOUND_POWER_DI, self.sound_power_di_label, self.sound_power_di_db),
         )
+
+    def spl_curves(self) -> tuple[tuple[str, np.ndarray], ...]:
+        return tuple((series.label, series.values_db) for series in self.spl_series())
+
+    def di_curves(self) -> tuple[tuple[str, np.ndarray], ...]:
+        return tuple((series.label, series.values_db) for series in self.di_series())
+
+
+def spinorama_curve_colors(*, dark_background: bool = False) -> dict[SpinoramaSeriesId, str]:
+    """Return the conventional colour for each stable curve identity.
+
+    The sound-power DI colour therefore cannot change when its displayed label
+    switches between SPDI and Spherical DI.
+    On Axis is black, or white when drawn on a dark background.
+    """
+    on_axis = _ON_AXIS_DARK_BACKGROUND_COLOR if dark_background else _ON_AXIS_LIGHT_BACKGROUND_COLOR
+    return {
+        SpinoramaSeriesId.ON_AXIS: on_axis,
+        SpinoramaSeriesId.LISTENING_WINDOW: _LISTENING_WINDOW_COLOR,
+        SpinoramaSeriesId.EARLY_REFLECTIONS: _EARLY_REFLECTIONS_COLOR,
+        SpinoramaSeriesId.SOUND_POWER: _SOUND_POWER_COLOR,
+        SpinoramaSeriesId.ESTIMATED_IN_ROOM: _ESTIMATED_IN_ROOM_COLOR,
+        SpinoramaSeriesId.EARLY_REFLECTIONS_DI: _EARLY_REFLECTIONS_COLOR,
+        SpinoramaSeriesId.SOUND_POWER_DI: _SOUND_POWER_COLOR,
+    }
 
 
 def compute_spinorama_from_planes(
