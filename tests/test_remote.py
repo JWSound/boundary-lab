@@ -13,10 +13,11 @@ import pytest
 
 from blab import __version__
 from blab.headless import HeadlessSolveSpec, load_headless_project, prepare_headless_solve
-from blab.remote import RemoteBackend
+from blab.remote import RemoteBackend, RemoteSession
 from blab.remote_contract import build_job_bundle, stage_job_bundle
 from blab.server import SolveService, create_http_server
 from blab.system_contract import QuantityResult, SystemFrequencyResult
+from blab.warm_up_history import WarmUpHistory, WarmUpKey
 
 
 @pytest.mark.parametrize("method", ["GET", "POST", "DELETE"])
@@ -66,6 +67,23 @@ def prepared():
         backend_id="beat_cpu",
         include_observation_planes=False,
     )
+
+
+def test_remote_warm_up_prediction_follows_server(prepared, tmp_path):
+    def key(url, token=None):
+        return RemoteSession(RemoteBackend(url, token=token), prepared.request).warm_up_key()
+
+    history = WarmUpHistory(tmp_path / "history.json")
+    history.record(WarmUpKey("remote", "", "", False), 90.0)
+    first = key("https://first.example")
+    assert history.predict(first) is None
+    history.record(first, 12.0)
+    second = key("https://second.example")
+    assert history.predict(second) is None
+    assert history.predict(key("https://first.example:8443")) is None
+    assert history.predict(key("http://first.example:443")) is None
+    history.record(second, 42.0)
+    assert history.predict(key("https://FIRST.example:443/", token="new-token")) == 12.0
 
 
 def rewrite_bundle(bundle, change, extra=None):
