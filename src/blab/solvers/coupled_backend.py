@@ -532,8 +532,6 @@ def validate_coupled_capabilities(request: SystemSolveRequest) -> None:
             "Coupled solver supports prescribed-velocity and linear electrodynamic components; unsupported: "
             + ", ".join(unsupported_components)
         )
-    exterior_region_ids = {region.id for region in system.regions if region.kind == AcousticRegionKind.UNBOUNDED_AIR}
-    boundaries_by_id = {boundary.id: boundary for boundary in system.boundaries}
     for component in system.components:
         _validate_boundary_motion_weights(component)
         if component.kind == ComponentKind.ELECTRODYNAMIC_TRANSDUCER:
@@ -546,11 +544,7 @@ def validate_coupled_capabilities(request: SystemSolveRequest) -> None:
             )
             continue
         prescribed_source_parameters(
-            component.parameters,
-            symmetry=symmetry_mode,
-            exterior=all(
-                boundaries_by_id[boundary_id].region_id in exterior_region_ids for boundary_id in component.boundary_ids
-            ),
+            component.parameters, symmetry="off" if symmetry_mode == "ground" else symmetry_mode, coupled=True
         )
     components_by_id = {component.id: component for component in system.components}
     unsupported_ports = []

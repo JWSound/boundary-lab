@@ -149,10 +149,8 @@ class PhysicalSystemCompiler:
                     parameters = prescribed_source_parameters(
                         component.parameters,
                         symmetry=symmetry_mode,
-                        exterior=all(
-                            boundaries_by_id[boundary_id].region_id in unbounded_region_ids
-                            for boundary_id in component.boundary_ids
-                        ),
+                        exterior=not any(region.kind == AcousticRegionKind.BOUNDED_AIR for region in system.regions),
+                        coupled=bool(unbounded_region_ids),
                     )
                 except ValueError as exc:
                     raise PhysicalModelCompileError(f"Component '{component.name}': {exc}") from exc

@@ -38,14 +38,7 @@ transducers, or both. A component can own several moving surface groups, and
 each group can have a relative velocity weight. This supports idealized motion
 profiles such as a dome and surround moving at different amplitudes.
 
-Prescribed-velocity components use a canonical 1 m/s velocity basis. New
-sources assigned only to exterior boundaries default to a shared rigid-translation
-axis, inferred automatically or entered manually; normal velocity is the signed projection
-onto each face's normal. Saved surface-normal sources and new sources touching interior boundaries
-apply the basis as normal velocity on each face. Relative boundary weights apply in both modes. Axis magnitude is
-normalized away. Axial prescribed sources are supported in coupled systems when
-all of their boundaries belong to the exterior region; interior boundary
-assignments remain unsupported.
+Prescribed-velocity components use a canonical 1 m/s velocity basis. New exterior and coupled sources default to axial motion. A shared normalized axis projects velocity onto each assigned FEM or BEM face normal. Saved surface-normal sources retain their profile. Interior-only FEM sources use surface-normal velocity. Relative boundary weights apply in both modes.
 Electrodynamic components use a canonical 2.83 V basis and a single rigid-body
 translation degree of freedom with direct Re, Le, Bl, Mmd, Cms, and Rms
 parameters. Their front and rear acoustic surfaces may belong to different
