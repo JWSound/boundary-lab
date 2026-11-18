@@ -586,6 +586,30 @@ def test_coupled_backend_accepts_mmd_electrodynamic_component_and_voltage_port()
     assert "Linear single-axis rigid-body electrodynamic transducers with dry moving mass" in assumptions
 
 
+@pytest.mark.parametrize("reference", [{"name": "21SW152-4"}, {"name": "Measured", "sd_m2": 0.0522}])
+def test_imported_driver_reference_stays_out_of_solver_parameters(reference) -> None:
+    system = _electrodynamic_fixture_system()
+    component = replace(
+        system.components[0],
+        parameters={**system.components[0].parameters, "driver_reference": reference},
+    )
+    system = replace(system, components=(component,))
+    compiled = PhysicalSystemCompiler().compile(system)
+    request = SystemSolveRequest(
+        compiled_system=compiled,
+        frequencies_hz=(500.0,),
+        excitation_port_ids=("excitation:radiator",),
+    )
+
+    CoupledProductionBackend(bem_backend="cpu").create_system_session(request)
+
+    assert "driver_reference" not in compiled.components[0].parameters
+    wire_parameters = system_solve_request_to_dict(request)["compiled_system"]["components"][0]["parameters"]
+    assert "driver_reference" not in wire_parameters
+    assert system.components[0].parameters["driver_reference"] == reference
+    assert physical_system_to_dict(system)["components"][0]["parameters"]["driver_reference"] == reference
+
+
 def test_coupled_backend_accepts_enabled_semi_inductance_model() -> None:
     system = _electrodynamic_fixture_system()
     component = replace(

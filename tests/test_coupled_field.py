@@ -27,7 +27,8 @@ def _request(*, value: float = 1.0) -> BemFieldEvaluationRequest:
 
 
 @pytest.mark.parametrize("capabilities", [None, {}, {"cpu": ["pressure"]}, {"cpu": "pressure_gradient_v1"}])
-def test_gradient_request_rejects_old_worker_before_submission(monkeypatch, capabilities):
+@pytest.mark.parametrize("backend", ["beat_cpu", "beat_rocm"])
+def test_gradient_request_rejects_old_worker_before_submission(monkeypatch, capabilities, backend):
     import blab.solvers.coupled_field as field_module
 
     class Worker:
@@ -41,7 +42,7 @@ def test_gradient_request_rejects_old_worker_before_submission(monkeypatch, capa
 
     monkeypatch.setattr(field_module, "get_beat_engine_worker", lambda **kwargs: Worker())
     with pytest.raises(RuntimeError, match="restart Boundary Lab"):
-        evaluate_bem_field(replace(_request(), pressure_gradient=True), backend_id="beat_cpu")
+        evaluate_bem_field(replace(_request(), pressure_gradient=True), backend_id=backend)
 
 
 def test_evaluate_bem_field_uses_warmed_worker_protocol(monkeypatch) -> None:

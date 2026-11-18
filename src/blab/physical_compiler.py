@@ -210,6 +210,9 @@ class PhysicalSystemCompiler:
             parameters = {
                 key: value for key, value in component.parameters.items() if key not in SYMMETRY_PARAMETER_KEYS
             }
+            # Imported driver identity and reference Sd belong to the authoring
+            # model; the engine uses the moving mesh for diaphragm geometry.
+            parameters.pop("driver_reference", None)
             parameters.update(inference.parameters())
             try:
                 area = infer_projected_diaphragm_area(

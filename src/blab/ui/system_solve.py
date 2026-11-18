@@ -28,6 +28,7 @@ class SystemSolveWorker(QObject):
     initialized = Signal(object, object, object)
     result_ready = Signal(object)
     status = Signal(str)
+    warm_up_key = Signal(object)
     failed = Signal(str, str)
     finished = Signal()
 
@@ -73,6 +74,7 @@ class SystemSolveWorker(QObject):
         if self.prepared.backend_id != "beat_remote":
             session.cuda_worker_reuse = self.prepared.cuda_worker_reuse
         self._session = session
+        self.warm_up_key.emit(session.warm_up_key())
         self.initialized.emit(
             self.prepared.polar_angle_deg,
             self.prepared.excitation_component_names,
