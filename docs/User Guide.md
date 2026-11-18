@@ -154,7 +154,7 @@ is treated as peak and compared with the peak displacement derived from the
 RMS solve basis. The linear model does not include thermal compression,
 amplifier voltage/current limits, or excursion-dependent motor parameters.
 
-New **Prescribed Velocity** components in exterior-only BEM projects default to
+New **Prescribed Velocity** components assigned only to exterior boundaries default to
 a shared motion axis with **Automatic from surface normals** selected. Choose
 **Manual** to enter an X/Y/Z direction, and use **Flip** to reverse it. The direction is normalized;
 its length does not change the source speed. Automatic inference reports its
@@ -166,8 +166,9 @@ normal velocity, multiplied by its boundary's relative velocity weight. With a
 single direction, that velocity is additionally multiplied by the signed dot
 product of the face normal and the unit axis. Existing projects keep their
 surface-normal motion, indicated by a note in the component editor. The editor
-has no velocity-motion selector. Interior FEM and coupled FEM?BEM projects support only
-surface-normal prescribed sources. Under X or XY symmetry, a prescribed axis
+has no velocity-motion selector. Sources touching interior FEM boundaries support
+only surface-normal prescribed velocity. Coupled projects also support axial prescribed sources whose boundaries
+are all in the exterior region. Under X or XY symmetry, a prescribed axis
 must lie in all active symmetry planes.
 
 Use **View > Show Motion Directions** to inspect saved axial assignments in the

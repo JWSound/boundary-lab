@@ -1546,6 +1546,7 @@ class SystemConfigDialog(QDialog):
             mesh_cache=self._motion_axis_mesh_cache,
             projected_geometry_cache=self._projected_area_geometry_cache,
             exterior_only=not any(region.kind == AcousticRegionKind.BOUNDED_AIR for region in _regions),
+            exterior_region_ids={region.id for region in _regions if region.kind == AcousticRegionKind.UNBOUNDED_AIR},
             parent=self,
         )
         if editor.exec() != QDialog.DialogCode.Accepted:
@@ -1838,12 +1839,15 @@ class SystemConfigDialog(QDialog):
         )
         self._refresh_component_symmetry_parameters(boundaries, resources)
         components, ports, component_channels = self._collect_components(boundaries)
-        if any(region.kind == AcousticRegionKind.BOUNDED_AIR for region in regions) and any(
+        interior_region_ids = {region.id for region in regions if region.kind == AcousticRegionKind.BOUNDED_AIR}
+        interior_boundary_ids = {boundary.id for boundary in boundaries if boundary.region_id in interior_region_ids}
+        if any(
             component.kind == ComponentKind.IDEAL_VELOCITY_SOURCE
             and component.parameters.get("motion_profile") == "rigid_translation"
+            and interior_boundary_ids.intersection(component.boundary_ids)
             for component in components
         ):
-            raise ValueError("Axial prescribed-velocity sources require an exterior-only BEM system.")
+            raise ValueError("Axial prescribed-velocity sources require exterior-only boundary assignments.")
         if not any(region.kind == AcousticRegionKind.BOUNDED_AIR for region in regions):
             unsupported = [
                 component.name for component in components if component.kind != ComponentKind.IDEAL_VELOCITY_SOURCE

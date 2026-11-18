@@ -172,8 +172,13 @@ def test_editor_source_modes_and_flip():
     bounded = _ComponentEditorDialog(replace(draft, id="", parameters={}), exterior_only=False, **options)
     assert bounded.component_draft().parameters["motion_profile"] == "uniform"
     assert bounded.motion_group.isHidden()
+    coupled = _ComponentEditorDialog(
+        replace(draft, id="", parameters={}), exterior_only=False, exterior_region_ids={"air"}, **options
+    )
+    assert coupled.component_draft().parameters["motion_profile"] == "rigid_translation"
+    assert not coupled.motion_group.isHidden()
     assert app is not None
-    for dialog in (editor, reopened, bounded, legacy):
+    for dialog in (editor, reopened, bounded, legacy, coupled):
         dialog.close()
 
 
