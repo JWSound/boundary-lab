@@ -154,7 +154,7 @@ is treated as peak and compared with the peak displacement derived from the
 RMS solve basis. The linear model does not include thermal compression,
 amplifier voltage/current limits, or excursion-dependent motor parameters.
 
-New **Prescribed Velocity** components in exterior-only BEM projects default to
+New **Prescribed Velocity** components in exterior BEM and coupled FEM-BEM projects default to
 a shared motion axis with **Automatic from surface normals** selected. Choose
 **Manual** to enter an X/Y/Z direction, and use **Flip** to reverse it. The direction is normalized;
 its length does not change the source speed. Automatic inference reports its
@@ -165,10 +165,18 @@ Saved surface-normal sources retain their existing behavior: each face receives 
 normal velocity, multiplied by its boundary's relative velocity weight. With a
 single direction, that velocity is additionally multiplied by the signed dot
 product of the face normal and the unit axis. Existing projects keep their
-surface-normal motion, indicated by a note in the component editor. The editor
-has no velocity-motion selector. Interior FEM and coupled FEM?BEM projects support only
-surface-normal prescribed sources. Under X or XY symmetry, a prescribed axis
-must lie in all active symmetry planes.
+surface-normal motion until explicitly changed. Use the component editor's
+**Surface-normal velocity / Axial velocity** selector to switch modes. For a
+coupled source, the same axis drives every assigned FEM and BEM surface; FEM
+normals point out of the acoustic volume, independently of input triangle winding.
+Opposing sides therefore receive the appropriate opposite normal components.
+Interior-only FEM projects still support only surface-normal prescribed sources.
+Under X or XY symmetry, a prescribed axis must lie in all active symmetry planes.
+
+Coupled axial sources assigned to FEM surfaces require an engine worker advertising
+`coupled_source_profiles: ["uniform_normal", "rigid_translation"]`. Older workers
+reject the request and require an engine update and restart; they do not silently
+substitute normal motion.
 
 Use **View > Show Motion Directions** to inspect saved axial assignments in the
 Mesh Preview. One yellow arrow per component shows its positive mechanical

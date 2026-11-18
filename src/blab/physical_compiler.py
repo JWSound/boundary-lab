@@ -150,6 +150,7 @@ class PhysicalSystemCompiler:
                         component.parameters,
                         symmetry=symmetry_mode,
                         exterior=not any(region.kind == AcousticRegionKind.BOUNDED_AIR for region in system.regions),
+                        coupled=bool(unbounded_region_ids),
                     )
                 except ValueError as exc:
                     raise PhysicalModelCompileError(f"Component '{component.name}': {exc}") from exc

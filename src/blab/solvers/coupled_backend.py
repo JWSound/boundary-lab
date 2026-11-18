@@ -527,21 +527,9 @@ def validate_coupled_capabilities(request: SystemSolveRequest) -> None:
                 ),
             )
             continue
-        unsupported_parameters = set(component.parameters) - {
-            "motion_profile",
-            "boundary_motion_weights",
-        }
-        if unsupported_parameters:
-            raise ValueError(
-                f"Coupled solver does not support component parameters on '{component.id}': "
-                + ", ".join(sorted(unsupported_parameters))
-            )
-        motion_profile = component.parameters.get("motion_profile", "uniform")
-        if motion_profile != "uniform":
-            raise ValueError(
-                f"Coupled solver supports only uniform prescribed motion; component "
-                f"'{component.id}' requests {motion_profile!r}."
-            )
+        prescribed_source_parameters(
+            component.parameters, symmetry="off" if symmetry_mode == "ground" else symmetry_mode, coupled=True
+        )
     components_by_id = {component.id: component for component in system.components}
     unsupported_ports = []
     for port in system.excitation_ports:

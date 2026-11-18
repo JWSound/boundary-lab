@@ -186,11 +186,13 @@ class _ComponentEditorDialog(QDialog):
         mesh_cache: dict[str, meshio.Mesh],
         projected_geometry_cache: ProjectedAreaGeometryCache | None = None,
         exterior_only: bool = True,
+        coupled: bool = False,
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
         self.setWindowTitle("Component")
         self._exterior_only = exterior_only
+        self._coupled = coupled
         self._draft = draft
         self.file_dialogs = FileDialogService()
         self._driver_reference = dict(draft.parameters.get("driver_reference") or {})
@@ -289,15 +291,21 @@ class _ComponentEditorDialog(QDialog):
         self._source_motion_profile = (
             "rigid_translation"
             if draft.parameters.get("motion_profile") == "rigid_translation"
-            or (exterior_only and (new_source or draft.kind == ComponentKind.ELECTRODYNAMIC_TRANSDUCER))
+            or ((exterior_only or coupled) and (new_source or draft.kind == ComponentKind.ELECTRODYNAMIC_TRANSDUCER))
             else "uniform"
         )
         self.source_motion_note = QLabel(
-            "This saved source uses surface-normal velocity."
-            if exterior_only
-            else "Prescribed sources in FEM and coupled systems use surface-normal velocity."
+            "Surface-normal velocity applies the same normal speed to each selected face, scaled by its relative weight."
+            if exterior_only or coupled
+            else "Prescribed sources in interior-only FEM systems use surface-normal velocity."
         )
         self.source_motion_note.setWordWrap(True)
+        self.motion_profile_combo = QComboBox()
+        self.motion_profile_combo.addItem("Surface-normal velocity", "uniform")
+        self.motion_profile_combo.addItem("Axial velocity", "rigid_translation")
+        self.motion_profile_combo.setCurrentIndex(self.motion_profile_combo.findData(self._source_motion_profile))
+        self.motion_profile_combo.currentIndexChanged.connect(self._change_source_motion)
+
         self.axis_mode_combo = QComboBox()
         self.axis_mode_combo.addItem("Automatic from surface normals", "automatic")
         self.axis_mode_combo.addItem("Manual", "manual")
@@ -400,6 +408,7 @@ class _ComponentEditorDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addLayout(identity_form)
         layout.addWidget(surfaces_group)
+        layout.addWidget(self.motion_profile_combo)
         layout.addWidget(self.source_motion_note)
         layout.addWidget(self.motion_group)
         layout.addWidget(self.transducer_group)
@@ -598,6 +607,7 @@ class _ComponentEditorDialog(QDialog):
                     parameters,
                     symmetry=self._symmetry_mode,
                     exterior=self._exterior_only,
+                    coupled=self._coupled,
                 )
         parameters[_BOUNDARY_MOTION_WEIGHTS_KEY] = self.boundary_motion_weights()
         return _ComponentDraft(
@@ -619,6 +629,10 @@ class _ComponentEditorDialog(QDialog):
             return
         self.accept()
 
+    def _change_source_motion(self, _index: int) -> None:
+        self._source_motion_profile = str(self.motion_profile_combo.currentData())
+        self._refresh_type_controls()
+
     def _uses_axis(self) -> bool:
         return (
             self.type_combo.currentData() == ComponentKind.ELECTRODYNAMIC_TRANSDUCER
@@ -627,6 +641,7 @@ class _ComponentEditorDialog(QDialog):
 
     def _refresh_type_controls(self, _index: int = -1, *, update_geometry: bool = True) -> None:
         electrodynamic = self.type_combo.currentData() == ComponentKind.ELECTRODYNAMIC_TRANSDUCER
+        self.motion_profile_combo.setVisible(not electrodynamic and (self._exterior_only or self._coupled))
         self.transducer_group.setVisible(electrodynamic)
         self.source_motion_note.setVisible(not self._uses_axis())
         self.motion_group.setVisible(self._uses_axis())
