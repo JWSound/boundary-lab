@@ -86,3 +86,37 @@ def volume_arrow_grid(bounds, density, max_candidates=64000):
         shape = np.maximum(1, np.ceil(extent / spacing).astype(int))
     axes = [bounds[d].mean() + (np.arange(shape[d]) - (shape[d] - 1) / 2) * spacing for d in range(3)]
     return np.column_stack([x.ravel() for x in np.meshgrid(*axes, indexing="ij")]), spacing
+
+
+def tetrahedral_shape_gradients(points_m: np.ndarray, tetrahedra: np.ndarray) -> np.ndarray:
+    """Return physical P1 basis gradients with shape ``(tetrahedron, 4, xyz)``."""
+
+    points = np.asarray(points_m, dtype=float)
+    cells = np.asarray(tetrahedra, dtype=np.int64)
+    if points.ndim != 2 or points.shape[1] != 3:
+        raise ValueError("FEM points must have shape (node, 3).")
+    if cells.ndim != 2 or cells.shape[1] != 4:
+        raise ValueError("FEM tetrahedra must have shape (tetrahedron, 4).")
+    if np.any(cells < 0) or np.any(cells >= points.shape[0]):
+        raise ValueError("FEM tetrahedra reference nodes outside the point array.")
+    vertices = points[cells]
+    jacobians = np.stack(
+        (
+            vertices[:, 1] - vertices[:, 0],
+            vertices[:, 2] - vertices[:, 0],
+            vertices[:, 3] - vertices[:, 0],
+        ),
+        axis=2,
+    )
+    determinants = np.linalg.det(jacobians)
+    edge_scale = np.max(np.abs(jacobians), axis=(1, 2))
+    tolerance = np.finfo(float).eps * edge_scale**3
+    if np.any(np.abs(determinants) <= tolerance):
+        raise ValueError("FEM volume mesh contains a numerically degenerate tetrahedron.")
+    reference_gradients = np.asarray(
+        [[-1.0, 1.0, 0.0, 0.0], [-1.0, 0.0, 1.0, 0.0], [-1.0, 0.0, 0.0, 1.0]],
+        dtype=float,
+    )
+    right_hand_side = np.broadcast_to(reference_gradients, (cells.shape[0], 3, 4))
+    gradients = np.linalg.solve(np.swapaxes(jacobians, 1, 2), right_hand_side)
+    return np.swapaxes(gradients, 1, 2)

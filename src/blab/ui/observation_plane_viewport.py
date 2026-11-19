@@ -22,6 +22,7 @@ from blab.observation_planes import (
     ObservationPlaneType,
     rotate_observation_plane,
 )
+from blab.observation_planes import sample_plane_points as _sample_plane_points
 from blab.solvers.coupled_field import BemFieldEvaluationRequest
 from blab.ui.exterior_field_service import ExteriorFieldTask
 from blab.ui.observation_plane_gizmos import RotationRadar, colored_mesh, square_grip
@@ -2848,16 +2849,6 @@ def _sample_plane_polydata(pv, plane: ObservationPlane):
         )
     ).reshape(-1)
     return pv.PolyData(points, faces)
-
-
-def _sample_plane_points(plane: ObservationPlane, shape: tuple[int, int]) -> np.ndarray:
-    x_count, y_count = shape
-    axis_u, axis_v, _normal = plane.local_axes
-    u_values = np.linspace(-plane.width_m * 0.5, plane.width_m * 0.5, x_count)
-    v_values = np.linspace(-plane.height_m * 0.5, plane.height_m * 0.5, y_count)
-    center = np.asarray(plane.center_m, dtype=float)
-    u_grid, v_grid = np.meshgrid(u_values, v_values)
-    return center + u_grid.reshape(-1, 1) * axis_u + v_grid.reshape(-1, 1) * axis_v
 
 
 def _tetrahedral_interpolation_weights(sample_points: np.ndarray, tetrahedron_points: np.ndarray) -> np.ndarray:

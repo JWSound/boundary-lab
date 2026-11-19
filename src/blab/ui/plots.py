@@ -17,13 +17,30 @@ from PySide6.QtCore import Signal
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QMenu
 
+from blab.plot_style import (
+    AUDIO_AXIS_LABELS,
+    AUDIO_AXIS_TICKS,
+    AUDIO_FREQ_MAX_HZ,
+    AUDIO_FREQ_MIN_HZ,
+    GRID_LINE_ALPHA,
+    MINOR_GRID_LINE_ALPHA,
+    PLOT_TICK_SIZE,
+    PLOT_TITLE_PAD,
+    apply_audio_frequency_axis,
+    apply_compact_plot_text,
+)
+from blab.plot_style import (
+    PLOT_LABEL_SIZE as PLOT_LABEL_SIZE,
+)
+from blab.plot_style import (
+    PLOT_LEGEND_SIZE as PLOT_LEGEND_SIZE,
+)
+from blab.plot_style import (
+    PLOT_TITLE_SIZE as PLOT_TITLE_SIZE,
+)
 from blab.plotting import VisualizerConfig
 from blab.spinorama import SpinoramaCurves, compute_spinorama_from_planes
 
-AUDIO_FREQ_MIN_HZ = 20
-AUDIO_FREQ_MAX_HZ = 20000
-AUDIO_AXIS_TICKS = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000]
-AUDIO_AXIS_LABELS = ["20", "50", "100", "200", "500", "1k", "2k", "5k", "10k", "20k"]
 FREQ_SLIDER_STEPS = 1000
 ISOBAR_COLORBAR_MIN_TICK_STEP_DB = 3.0
 LIVE_ISOBAR_ANGLE_SAMPLES = 180
@@ -32,13 +49,6 @@ FINAL_ISOBAR_ANGLE_SAMPLES = 1000
 FINAL_ISOBAR_FREQ_SAMPLES = 500
 LIVE_ISOBAR_SHADING = "nearest"
 FINAL_ISOBAR_SHADING = "gouraud"
-PLOT_TITLE_SIZE = 11
-PLOT_LABEL_SIZE = 9
-PLOT_TICK_SIZE = 9
-PLOT_LEGEND_SIZE = 9
-PLOT_TITLE_PAD = 7
-GRID_LINE_ALPHA = 0.6
-MINOR_GRID_LINE_ALPHA = 0.3
 ISOBAR_COLORBAR_GAP_PT = 7.0
 ISOBAR_COLORBAR_WIDTH_PT = 10.0
 ON_AXIS_DB_SPAN = 50.0
@@ -137,30 +147,12 @@ def _layout_axis_edges(
     return leading / total, 1.0 - trailing / total
 
 
-def apply_audio_frequency_axis(axes) -> None:
-    axes.set_xscale("log")
-    axes.set_xlim(AUDIO_FREQ_MIN_HZ, AUDIO_FREQ_MAX_HZ)
-    axes.set_xticks(AUDIO_AXIS_TICKS)
-    axes.set_xticklabels(AUDIO_AXIS_LABELS)
-
-
 def apply_log_image_frequency_axis(axes) -> None:
     if axes.get_xscale() != "linear":
         axes.set_xscale("linear")
     axes.set_xlim(np.log10(AUDIO_FREQ_MIN_HZ), np.log10(AUDIO_FREQ_MAX_HZ))
     axes.set_xticks(np.log10(AUDIO_AXIS_TICKS))
     axes.set_xticklabels(AUDIO_AXIS_LABELS)
-
-
-def apply_compact_plot_text(axes) -> None:
-    axes.title.set_fontsize(PLOT_TITLE_SIZE)
-    axes.xaxis.label.set_size(PLOT_LABEL_SIZE)
-    axes.yaxis.label.set_size(PLOT_LABEL_SIZE)
-    axes.tick_params(axis="both", which="major", labelsize=PLOT_TICK_SIZE)
-    legend = axes.get_legend()
-    if legend is not None:
-        for text in legend.get_texts():
-            text.set_fontsize(PLOT_LEGEND_SIZE)
 
 
 def clear_plot_axes(axes) -> None:

@@ -299,8 +299,8 @@ ids to arrays in the corresponding NPZ file. The result phasor convention is
 `exp(+i omega t)`.
 
 The current headless interface evaluates arbitrary exterior probe points declared
-before the solve. Retained BEM traces and FEM nodal fields provide the data needed
-for a future post-solve point-sampling command without repeating the system solve.
+before the solve. Retained FEM fields also support post-solve interior plane sampling through
+`blab results plane`.
 
 Completed interior FEM runs can also be evaluated directly on named tube exits:
 
@@ -359,6 +359,70 @@ option between zero (fully row-sum lumped) and one (standard consistent mass,
 the default). Any non-default value must be justified by a convergence report;
 mass blending changes numerical dispersion and is not itself evidence of
 accuracy.
+
+### Inspect and query saved results
+
+`blab results` reads schema-2 runs in place and writes to stdout. Start with
+the inventory to discover quantity, domain, channel, excitation and plane IDs.
+
+```bash
+blab results inspect runs/speaker
+blab results inspect runs/speaker --diagnostics 500
+blab results domain runs/speaker observation:horizontal-polar angle_deg
+blab results query runs/speaker acoustic:pressure:horizontal-polar --response system --index observation 18 --view spl --format csv
+blab results query runs/speaker mechanical:diaphragm-velocity --excitation excitation:woofer --frequency 500
+```
+
+Frequency filters select exact samples from the manifest axis and can be
+repeated. By default queries read every committed sample, including in partial
+runs. A missing quantity at a selected frequency produces an error. Use
+`domain` to identify the coordinate or component behind an index. For fields
+present in both coordinates and topology, use `--group coordinates` or
+`--group topology`. JSON preserves array axes and returns complex data as
+parallel real and imaginary arrays. Undefined values are null. CSV returns one
+row per value with its indices and excitation.
+
+Raw queries preserve independent excitation bases. Choose `--response system`
+or `--response channel:NAME` to combine complex responses with the saved drive,
+polarity, delay, crossover and normalization before applying SPL or excursion.
+The selected response requires all its assigned ports. Saved flat-target
+correction requires horizontal polar data. For a deliberately uncorrected
+response on a probe-only run, add `--uncorrected`. This still applies DSP.
+
+### Extract desktop metrics and interior observation planes
+
+```bash
+blab results report runs/speaker peak-excursion --response system
+blab results report runs/speaker normalized-impedance
+blab results report runs/speaker maximum-spl --format svg > maximum-spl.svg
+blab results plane runs/speaker --plane-id saved-plane-id --frequency 500
+blab results plane runs/speaker --plane-file plane.json --frequency 500 --excitation excitation:woofer --format svg > field.svg
+```
+
+The three reports support JSON data and SVG frequency plots. Excursion is
+one-way peak mm per transducer. Normalized acoustic impedance reports real and
+imaginary parts of `Z / (rho c Sd)` with the effective area and fluid properties.
+Coupled load recovery requires diaphragm velocity and voice-coil current.
+Maximum SPL uses isolated voltage-channel bases, zero-degree horizontal
+pressure, diaphragm velocity, and saved Xmax and Pmax ratings.
+
+Interior planes can be positioned after the solve when the artifact retains
+FEM nodal pressure and topology. Use a saved plane ID or a JSON object in
+project plane format, for example:
+
+```json
+{"id":"cross-section","type":"interior","center_m":[0,0,0.1],
+ "orientation_wxyz":[1,0,0,0],"width_m":0.2,"height_m":0.2,
+ "resolution_m":0.005,"display":"spl"}
+```
+
+The grid is flattened in row-major order with local X changing fastest. JSON
+reports its Y/X shape, project coordinates, valid mask, complex RMS pressure
+and particle velocity, phase, SPL, normalized SPL, RMS speed, and active and
+reactive in-plane intensity. Samples outside the FEM volume are masked. SVG
+renders the selected static display on that grid. The command uses the plane's
+saved response by default. Exterior and combined plane evaluation are currently
+available through the desktop.
 
 ### Speaker package solve and export
 
@@ -461,6 +525,5 @@ This writes:
 
 ## Notes
 
-The CLI path is useful for scripted exterior-BEM workflows and regression
-checks. It does not load `.blab.json` physical systems, run coupled FEM-BEM
-models, or expose the GUI's live plot behavior.
+The legacy static plot commands consume formatted NPZ files. Use `blab results`
+for saved physical-system runs.
