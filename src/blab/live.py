@@ -21,6 +21,7 @@ from blab.max_spl import MaxSplLimit, calculate_max_spl_curves
 from blab.phasor import solver_phase_deg, solver_to_standard_phasor
 from blab.polar_channels import PolarChannelBasis
 from blab.postprocess import PrepConfig, prepare_visualization_data_from_arrays
+from blab.solve_results.derived import peak_excursion_mm
 from blab.solve_results.model import DIAPHRAGM_VELOCITY_ID, INTERFACE_VELOCITY_ID, VOICE_COIL_CURRENT_ID
 from blab.solvers.base import FrequencyResult
 from blab.system_contract import SystemFrequencyResult
@@ -623,7 +624,7 @@ class TransducerMotionDataset:
             velocity = self.results[frequency]
             synthesized_velocity = np.sum(velocity * excitation_weights[:, np.newaxis], axis=0)
             # Solver phasors are RMS; display one-way peak displacement.
-            excursion_mm = np.sqrt(2.0) * np.abs(synthesized_velocity / (1j * 2.0 * np.pi * frequency)) * 1000.0
+            excursion_mm = peak_excursion_mm(synthesized_velocity, frequency)
             rows.append(excursion_mm.astype(np.float32, copy=False))
         return (
             np.asarray(frequencies, dtype=np.float32),

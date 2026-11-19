@@ -48,11 +48,13 @@ def test_spinorama_canvas_uses_adaptive_layout_and_external_legend() -> None:
 def test_plot_widgets_use_compact_title_padding() -> None:
     plot_source = source_text("ui", "plots.py")
 
-    assert "PLOT_TITLE_PAD = 7" in plot_source
+    from blab.plot_style import GRID_LINE_ALPHA, PLOT_TITLE_PAD
+
+    assert PLOT_TITLE_PAD == 7
     assert "class PlotLayoutProfile" in plot_source
     assert "SINGLE_AXIS_LAYOUT = PlotLayoutProfile" in plot_source
     assert "DUAL_AXIS_LAYOUT = PlotLayoutProfile" in plot_source
-    assert "GRID_LINE_ALPHA = 0.6" in plot_source
+    assert GRID_LINE_ALPHA == 0.6
     assert "_set_plot_title(self.title, pad=PLOT_TITLE_PAD)" in plot_source
     assert "set_yticks(np.arange(-180, 181, 45))" in plot_source
     assert 'grid(which="major", color="#808080", linewidth=0.8, alpha=GRID_LINE_ALPHA)' in plot_source
