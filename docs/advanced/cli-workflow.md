@@ -389,7 +389,7 @@ The selected response requires all its assigned ports. Saved flat-target
 correction requires horizontal polar data. For a deliberately uncorrected
 response on a probe-only run, add `--uncorrected`. This still applies DSP.
 
-### Extract desktop metrics and interior observation planes
+### Extract desktop plots and observation planes
 
 ```bash
 blab results report runs/speaker peak-excursion --response system
@@ -399,12 +399,42 @@ blab results plane runs/speaker --plane-id saved-plane-id --frequency 500
 blab results plane runs/speaker --plane-file plane.json --frequency 500 --excitation excitation:woofer --format svg > field.svg
 ```
 
-The three reports support JSON data and SVG frequency plots. Excursion is
+Reports support JSON data and SVG figures. Excursion is
 one-way peak mm per transducer. Normalized acoustic impedance reports real and
 imaginary parts of `Z / (rho c Sd)` with the effective area and fluid properties.
 Coupled load recovery requires diaphragm velocity and voice-coil current.
 Maximum SPL uses isolated voltage-channel bases, zero-degree horizontal
 pressure, diaphragm velocity, and saved Xmax and Pmax ratings.
+
+The full desktop plot catalog is available through `blab results report`.
+
+| Report | Data and requirements |
+| --- | --- |
+| `on-axis-frequency-response` | Summed and individual saved-channel SPL with propagation-aligned phase at zero degrees |
+| `horizontal-isobar`, `vertical-isobar` | Angle-by-frequency heatmap using the desktop reference angles, smoothing, interpolation, and color limits |
+| `spinorama` | Relative level and directivity-index curves from polar data. Add `--spherical` for retained equal-area spherical sound power |
+| `balloon` | Relative SPL on the sampled sphere, radii, unit directions, and surface triangles. Select one frequency for an SVG |
+| `group-delay` | Source-referenced group delay in ms for the sum and each channel. Select at least three distinct frequencies |
+| `electrical-impedance` | Magnitude and phase of the voltage-channel load, including parallel driver multiplicity |
+| `real-input-power` | Signed RMS terminal power per voltage channel and total, using all current contributions |
+| `interface-velocity` | RMS magnitude of area-averaged normal velocity for each coupled interface |
+| `interface-radiation` | Per-source on-axis complex pressure, SPL and phase, including the independently evaluated combined trace |
+| `normalized-impedance`, `peak-excursion`, `maximum-spl` | Normalized acoustic load, one-way peak displacement, and isolated rating-limited SPL |
+
+```bash
+blab results report runs/speaker electrical-impedance
+blab results report runs/speaker horizontal-isobar --format svg > horizontal.svg
+blab results report runs/speaker spinorama --spherical
+blab results report runs/speaker balloon --frequency 500 --format svg > balloon.svg
+```
+
+For the additional catalog reports, JSON labels the array axes and units and
+includes the frequency and trace or angle coordinates. Isobar frequency
+coordinates are the interpolated plotting grid. The requested frequencies
+identify the actual solve samples used to produce it. Group delay uses the
+selected frequency set for its derivative. The default uses every committed
+sample. Retaining the project observations supplies the polar data, and
+spherical sampling supplies the balloon and spherical Spinorama data.
 
 Interior planes can be positioned after the solve when the artifact retains
 FEM nodal pressure and topology. Use a saved plane ID or a JSON object in
@@ -421,8 +451,25 @@ reports its Y/X shape, project coordinates, valid mask, complex RMS pressure
 and particle velocity, phase, SPL, normalized SPL, RMS speed, and active and
 reactive in-plane intensity. Samples outside the FEM volume are masked. SVG
 renders the selected static display on that grid. The command uses the plane's
-saved response by default. Exterior and combined plane evaluation are currently
-available through the desktop.
+saved response by default. For `"type":"exterior"` retain `bem_boundary_traces`. For `"type":"combined"`
+retain both `bem_boundary_traces` and `fem_nodal_pressure`. Use the same
+`results plane` command for all three types. Both exterior modes require
+PyVista for closed-surface classification (available with the `fields` or
+`gui` installation extra) and a local BEAT worker. The worker evaluates
+pressure and its gradient from the saved traces without a new system solve.
+`--backend beat_cpu` is the portable default for this field evaluation.
+`--julia-executable` selects Julia. Use `--pressure-only` for a worker with
+only pressure evaluation or to skip exterior velocity and intensity.
+
+```bash
+blab results plane runs/speaker --plane-file combined-plane.json --frequency 500 --backend beat_cpu
+```
+
+The `interior_mask` and `exterior_mask` identify the method used at each
+sample. FEM takes precedence in bounded air. BEM evaluates only points
+outside the closed, symmetry-expanded shell and farther than a quarter grid
+spacing (minimum 0.1 micrometre) from the surface. Other points have null
+field values. A combined map uses one SPL normalization across both regions.
 
 ### Speaker package solve and export
 

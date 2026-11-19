@@ -11,9 +11,10 @@ import numpy as np
 from blab.observation_planes import ObservationPlane
 from blab.phasor import SOLVER_PHASOR_CONVENTION, convert_phasor
 from blab.solve_results.artifact import ResultRun
+from blab.solve_results.catalog import CATALOG_METRICS, catalog_report
 from blab.solve_results.derived import peak_excursion_mm, phase_deg, pressure_spl_db
 from blab.solve_results.model import DIAPHRAGM_VELOCITY_ID
-from blab.solve_results.plane_query import interior_plane
+from blab.solve_results.plane_query import sample_plane
 from blab.solve_results.reports import maximum_spl, normalized_impedance
 
 
@@ -108,7 +109,24 @@ def _plane_result(run, args):
     response = None if args.excitation else args.response or definition.response_id
     if args.uncorrected and not response:
         raise ValueError("--uncorrected requires a synthesized response.")
-    arrays = interior_plane(run, definition, args.frequency, args.excitation, response, args.uncorrected)
+    if (
+        args.pressure_only
+        and definition.plane_type.value != "interior"
+        and definition.display.value in {"flow_arrows", "particle_velocity"}
+        and args.format == "svg"
+    ):
+        raise ValueError("Velocity and flow figures require exterior gradients. Omit --pressure-only.")
+    arrays = sample_plane(
+        run,
+        definition,
+        args.frequency,
+        args.excitation,
+        response,
+        args.uncorrected,
+        backend=args.backend,
+        julia=args.julia_executable,
+        pressure_only=args.pressure_only,
+    )
     if args.format == "svg":
         from blab.solve_results.figures import plane_figure, svg
 
@@ -123,12 +141,36 @@ def _plane_result(run, args):
         "excitation": args.excitation,
         "uncorrected": args.uncorrected,
         "phasor_convention": SOLVER_PHASOR_CONVENTION,
+        "exterior_backend": args.backend if definition.plane_type.value != "interior" else None,
+        "exterior_pressure_only": args.pressure_only,
         "fields": {name: _values(values) for name, values in arrays.items()},
     }
 
 
 def _report_result(run, args, frequencies):
     payload = {"run": str(run.root), "status": run.manifest["status"], "samples": [], "metric": args.metric}
+    if args.spherical and args.metric != "spinorama":
+        raise ValueError("--spherical applies to the spinorama report.")
+    if args.metric == "electrical-impedance" and args.uncorrected:
+        raise ValueError("Electrical impedance is a raw voltage-basis quantity. Omit --uncorrected.")
+    if args.metric in CATALOG_METRICS:
+        if args.response:
+            raise ValueError("These desktop reports use saved channels and expose their named traces.")
+        data = catalog_report(run, args.metric, frequencies, uncorrected=args.uncorrected, spherical=args.spherical)
+        if args.format == "svg":
+            from blab.solve_results.figures import catalog_figure, svg
+
+            return svg(catalog_figure(args.metric, data))
+        for quantity in data["quantities"].values():
+            quantity["values"] = _values(quantity["values"])
+        return {
+            "run": str(run.root),
+            "status": run.manifest["status"],
+            "metric": args.metric,
+            "uncorrected": args.uncorrected,
+            "requested_frequencies_hz": frequencies,
+            **data,
+        }
     if args.metric != "peak-excursion" and (args.response or args.uncorrected):
         raise ValueError("Drive selection and correction apply to peak-excursion reports.")
     for hz in frequencies:
@@ -163,10 +205,18 @@ def main(argv=None, prog=None):
     domain = commands.add_parser("domain", help="Read a coordinate or topology array by name")
     query = commands.add_parser("query", help="Extract a quantity by its artifact ID")
     report = commands.add_parser("report", help="Calculate a desktop metric from the saved result")
-    plane = commands.add_parser("plane", help="Extract an interior FEM observation plane")
+    plane = commands.add_parser("plane", help="Extract an interior, exterior, or combined observation plane")
     definition = plane.add_mutually_exclusive_group(required=True)
     definition.add_argument("--plane-file", type=Path, help="Plane JSON in saved-project format")
     definition.add_argument("--plane-id", help="Use a plane from the project snapshot")
+    plane.add_argument(
+        "--backend",
+        choices=("beat_cpu", "beat_cuda", "beat_rocm", "beat_metal"),
+        default="beat_cpu",
+        help="Local BEAT backend for exterior field evaluation",
+    )
+    plane.add_argument("--julia-executable", default="julia")
+    plane.add_argument("--pressure-only", action="store_true", help="Skip exterior gradients and velocity")
     plane.add_argument("--frequency", required=True, type=float)
     for command in (inspect, query, domain, report, plane):
         command.add_argument("run", type=Path)
@@ -189,12 +239,17 @@ def main(argv=None, prog=None):
         )
     query.add_argument("--index", nargs=2, metavar=("AXIS", "INDEX"), action="append", default=[])
     query.add_argument("--view", choices=("raw", "magnitude", "phase", "spl", "peak-excursion"), default="raw")
-    report.add_argument("metric", choices=("normalized-impedance", "maximum-spl", "peak-excursion"))
+    report.add_argument("metric", choices=("normalized-impedance", "maximum-spl", "peak-excursion", *CATALOG_METRICS))
     inspect.add_argument(
         "--diagnostics", type=float, metavar="HZ", help="Include solver diagnostics for one committed sample"
     )
+    report.add_argument(
+        "--spherical", action="store_true", help="Use retained sphere samples for spinorama sound power"
+    )
     report.add_argument("--response", help="Peak excursion drive (default: system)")
-    report.add_argument("--uncorrected", action="store_true", help="Omit flat-target correction for peak excursion")
+    report.add_argument(
+        "--uncorrected", action="store_true", help="Omit saved flat-target correction for drive-dependent reports"
+    )
     args = parser.parse_args(argv)
     try:
         run = ResultRun(args.run)
@@ -240,6 +295,6 @@ def main(argv=None, prog=None):
             else:
                 payload = _report_result(run, args, frequencies)
         print(payload if isinstance(payload, str) else json.dumps(payload, allow_nan=False))
-    except (ValueError, OSError, KeyError, IndexError, TypeError) as exc:
+    except (ValueError, RuntimeError, OSError, KeyError, IndexError, TypeError) as exc:
         print(json.dumps({"error_type": type(exc).__name__, "message": str(exc)}), file=sys.stderr)
         raise SystemExit(1) from exc

@@ -123,3 +123,111 @@ def plane_figure(plane, arrays, frequency_hz):
     figure.colorbar(artist, ax=axes, label=label)
     apply_compact_plot_text(axes)
     return figure
+
+
+def catalog_figure(metric, data):
+    from matplotlib.colors import BoundaryNorm, LinearSegmentedColormap, Normalize
+
+    figure = Figure(figsize=(7, 4), layout="constrained")
+    frequencies = data["frequencies_hz"]
+    quantities = data["quantities"]
+    title = metric.replace("-", " ").title()
+    if metric == "balloon":
+        from matplotlib import colormaps
+        from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+
+        from blab.balloon import balloon_surface_points
+
+        if len(frequencies) != 1:
+            raise ValueError("Select one --frequency to render a balloon SVG.")
+        axes = figure.add_subplot(projection="3d")
+        low, high = data["clip_db"]
+        values = np.clip(quantities["normalized_spl"]["values"][0], low, high)
+        points = balloon_surface_points(data["directions_xyz"], values, low)
+        triangles = np.asarray(data["triangle_indices"])
+        mesh = Poly3DCollection(points[triangles], cmap=colormaps["turbo"], norm=Normalize(low, high))
+        mesh.set_array(values[triangles].mean(axis=1))
+        axes.add_collection3d(mesh)
+        radius = high - low
+        axes.set(
+            xlim=(-radius, radius),
+            ylim=(-radius, radius),
+            zlim=(-radius, radius),
+            xlabel="X",
+            ylabel="Y",
+            zlabel="Z",
+            title=f"Directivity Balloon at {frequencies[0]:g} Hz",
+        )
+        axes.set_box_aspect((1, 1, 1))
+        figure.colorbar(mesh, ax=axes, label="Relative SPL (dB)")
+        return figure
+    axes = figure.subplots()
+    axes.set(xlabel="Frequency (Hz)", title=title)
+    apply_audio_frequency_axis(axes)
+    if "angles_deg" in data:
+        from blab.plotting import VisualizerConfig
+
+        cmap = LinearSegmentedColormap.from_list("boundary_lab_isobar", VisualizerConfig.custom_colors)
+        low, high = data["clip_db"]
+        step = data["contour_step_db"]
+        norm = Normalize(low, high)
+        if step > 0:
+            inner = np.arange(np.ceil(low / step) * step, high, step)
+            bounds = np.r_[low, inner[(inner > low) & (inner < high)], high]
+            norm = BoundaryNorm(bounds, max(len(bounds), cmap.N))
+        grid = quantities["normalized_spl"]["values"]
+        if len(frequencies) == 1:
+            image = axes.scatter(
+                np.full(len(data["angles_deg"]), frequencies[0]),
+                data["angles_deg"],
+                c=grid[:, 0],
+                cmap=cmap,
+                norm=norm,
+                marker="s",
+            )
+        else:
+            image = axes.pcolormesh(
+                frequencies, data["angles_deg"], grid, shading="nearest", rasterized=True, cmap=cmap, norm=norm
+            )
+        axes.set_ylabel("Angle (degrees)")
+        figure.colorbar(image, ax=axes, label="Normalized SPL (dB)")
+    else:
+        fields = list(quantities) if metric != "interface-radiation" else ["spl_db"]
+        dual = len(fields) == 2 or metric == "spinorama"
+        secondary = axes.twinx() if dual else None
+        lines = []
+        axis_labels = {
+            "phase_deg": "Phase (degrees)",
+            "magnitude": "Impedance (ohm)",
+            "spl_db": "SPL (dB)",
+            "propagation_aligned_phase": "Phase (degrees)",
+            "level": "Relative SPL (dB)",
+            "rms_velocity": "Average normal velocity, RMS (m/s)",
+            "group_delay": "Group delay (ms)",
+            "real_power": "Real input power (W)",
+        }
+        for j, field in enumerate(fields):
+            item = quantities[field]
+            for i, (label, y) in enumerate(zip(data["trace_names"], item["values"], strict=True)):
+                right = j == 1 or (metric == "spinorama" and i >= 5)
+                target = secondary if right else axes
+                target.set_ylabel("DI (dB)" if metric == "spinorama" and right else axis_labels[field])
+                lines.extend(
+                    target.plot(
+                        frequencies,
+                        y,
+                        "--" if right else "-",
+                        label=f"{label} {field}" if len(fields) > 1 else label,
+                        linewidth=1.5,
+                        marker="." if len(frequencies) == 1 else None,
+                    )
+                )
+        if metric == "spinorama":
+            axes.set_ylim(-40, 10)
+            secondary.set_ylim(-5, 45)
+        axes.legend(handles=lines, loc="best", fontsize=8)
+        axes.grid(which="major", color="#808080", linewidth=0.8, alpha=GRID_LINE_ALPHA)
+        if secondary is not None:
+            apply_compact_plot_text(secondary)
+    apply_compact_plot_text(axes)
+    return figure

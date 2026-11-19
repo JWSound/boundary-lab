@@ -218,3 +218,192 @@ def test_saved_flat_target_is_explicit_and_basis_subset_is_checked(run, capsys):
     with pytest.raises(SystemExit):
         main([*args, "--uncorrected"])
     assert "lacks excitation ports" in capsys.readouterr().err
+
+
+def test_catalog_uses_saved_drives_and_reordered_electrical_rows(run, capsys):
+    from blab.solve_results.model import VOICE_COIL_CURRENT_ID
+
+    with np.load(run / "sample.npz") as archive:
+        arrays = dict(archive)
+    arrays["current"] = np.array([[0.1], [0.5]], dtype=complex)
+    np.savez(run / "sample.npz", **arrays)
+    path = run / "sample.json"
+    meta = json.loads(path.read_text())
+    meta["quantities"].append(
+        dict(
+            id=VOICE_COIL_CURRENT_ID,
+            axes=["excitation", "transducer"],
+            shape=[2, 1],
+            unit="A",
+            quantity="voice_coil_current",
+            target_id="drivers",
+            key="current",
+            metadata={"component_ids": ["one"]},
+        )
+    )
+    path.write_text(json.dumps(meta))
+    for metric, field, expected in [
+        ("electrical-impedance", "magnitude", 2.83 / 0.5),
+        ("real-input-power", "real_power", (-5.66) * (-2 * 0.5 + 0.1)),
+    ]:
+        main(["results", "report", str(run), metric])
+        data = json.loads(capsys.readouterr().out)
+        assert data["trace_names"][0] == "woofer"
+        assert data["quantities"][field]["values"][0][0] == pytest.approx(expected)
+    main(["results", "report", str(run), "on-axis-frequency-response"])
+    axis = json.loads(capsys.readouterr().out)
+    assert axis["trace_names"] == ["Sum", "woofer", "port"]
+    assert axis["quantities"]["spl_db"]["values"][1][0] == pytest.approx(20 * np.log10(2 / 20e-6))
+    with pytest.raises(SystemExit):
+        main(["results", "report", str(run), "group-delay"])
+    assert "three distinct" in capsys.readouterr().err
+
+
+def test_combined_selects_only_external_points_for_bem(run, monkeypatch, capsys):
+    pytest.importorskip("pyvista")
+    from blab.solve_results.model import BEM_BOUNDARY_DOMAIN_ID, BEM_BOUNDARY_NEUMANN_ID, BEM_BOUNDARY_PRESSURE_ID
+
+    def update(path, change):
+        payload = json.loads(path.read_text())
+        change(payload)
+        path.write_text(json.dumps(payload))
+
+    with np.load(run / "domains.npz") as archive:
+        arrays = dict(archive)
+    arrays["faces"] = np.array([[0, 2, 1], [0, 1, 3], [1, 2, 3], [2, 0, 3]])
+    np.savez(run / "domains.npz", **arrays)
+    update(
+        run / "domains.json",
+        lambda p: p["domains"].append(
+            dict(
+                id=BEM_BOUNDARY_DOMAIN_ID,
+                coordinates={"points_m": "points"},
+                topology={"triangles": "faces"},
+                metadata={"symmetry": "off"},
+            )
+        ),
+    )
+    update(
+        run / "system.json",
+        lambda p: p["regions"].append(dict(kind="unbounded_air", density_kg_per_m3=2, sound_speed_m_per_s=345)),
+    )
+    with np.load(run / "sample.npz") as archive:
+        arrays = dict(archive)
+    quantities = []
+    for key, axis in [(BEM_BOUNDARY_PRESSURE_ID, "bem_node"), (BEM_BOUNDARY_NEUMANN_ID, "bem_face")]:
+        arrays[key] = np.ones((2, 4), dtype=complex)
+        quantities.append(
+            dict(id=key, key=key, axes=["excitation", axis], shape=[2, 4], unit="Pa", quantity=key, metadata={})
+        )
+    np.savez(run / "sample.npz", **arrays)
+    update(run / "sample.json", lambda p: p["quantities"].extend(quantities))
+
+    def field(request, **kwargs):
+        assert kwargs["backend_id"] == "beat_cpu"
+        assert request.sound_speed_m_per_s == 345
+        assert (request.points_m.sum(axis=1) > 1.0).all()
+        return (
+            np.tile([3j, 1, 0, 0], (len(request.points_m), 1))
+            if request.pressure_gradient
+            else np.full(len(request.points_m), 3j)
+        )
+
+    monkeypatch.setattr("blab.solve_results.plane_query.evaluate_bem_field", field)
+    definition = run / "plane.json"
+    definition.write_text(
+        json.dumps(
+            dict(id="s", type="combined", center_m=[0.9, 0.1, 0.1], width_m=0.6, height_m=0.01, resolution_m=0.1)
+        )
+    )
+    args = ["results", "plane", str(run), "--plane-file", str(definition), "--frequency", "100", "--excitation", "a"]
+    main(args)
+    fields = json.loads(capsys.readouterr().out)["fields"]
+    interior = np.array(fields["interior_mask"])
+    exterior = np.array(fields["exterior_mask"])
+    assert interior.any() and exterior.any()
+    assert not (interior & exterior).any()
+    assert np.array(fields["pressure_pa"]["imag"])[exterior].tolist() == [3] * exterior.sum()
+    velocity = np.asarray(fields["particle_velocity_m_per_s"]["imag"], dtype=float)
+    assert velocity[exterior, 0] == pytest.approx(1 / (400 * np.pi))
+    main([*args, "--pressure-only"])
+    fields = json.loads(capsys.readouterr().out)["fields"]
+    assert np.isnan(np.asarray(fields["particle_velocity_m_per_s"]["imag"], dtype=float)[exterior]).all()
+
+
+def test_directivity_reports_share_desktop_basis_and_return_labelled_axes(run, capsys):
+    from blab.solve_results.model import (
+        SPHERE_DOMAIN_ID,
+        SPHERE_PRESSURE_ID,
+        VERTICAL_POLAR_DOMAIN_ID,
+        VERTICAL_POLAR_PRESSURE_ID,
+    )
+
+    # One nonzero source gives an omnidirectional response on both cuts and a tetrahedral sphere.
+    with np.load(run / "sample.npz") as archive:
+        arrays = dict(archive)
+    meta = json.loads((run / "sample.json").read_text())
+    h = meta["quantities"][0]
+
+    def pressure(key, count):
+        arrays[key] = np.vstack((np.zeros(count), np.ones(count))).astype(complex)
+
+    count = 37
+    pressure(h["key"], count)
+    h["shape"] = [2, count]
+    for qid, domain, n in [
+        (VERTICAL_POLAR_PRESSURE_ID, VERTICAL_POLAR_DOMAIN_ID, count),
+        (SPHERE_PRESSURE_ID, SPHERE_DOMAIN_ID, 4),
+    ]:
+        pressure(qid, n)
+        meta["quantities"].append(h | {"id": qid, "key": qid, "target_id": domain, "shape": [2, n]})
+    np.savez(run / "sample.npz", **arrays)
+    with np.load(run / "domains.npz") as archive:
+        coords = dict(archive)
+    dirs = np.array([[1, 1, 1], [1, -1, -1], [-1, 1, -1], [-1, -1, 1]]) / np.sqrt(3)
+    coords.update(
+        angles=np.linspace(-180, 180, count),
+        radius=np.ones(4),
+        theta=np.arccos(dirs[:, 2]),
+        phi=np.arctan2(dirs[:, 1], dirs[:, 0]),
+    )
+    np.savez(run / "domains.npz", **coords)
+    domains = json.loads((run / "domains.json").read_text())
+    domains["domains"].extend(
+        [
+            {"id": VERTICAL_POLAR_DOMAIN_ID, "coordinates": {"angle_deg": "angles"}, "topology": {}},
+            {
+                "id": SPHERE_DOMAIN_ID,
+                "coordinates": {"r_distance_m": "radius", "theta_polar_rad": "theta", "phi_azimuth_rad": "phi"},
+                "topology": {},
+            },
+        ]
+    )
+    (run / "domains.json").write_text(json.dumps(domains))
+    manifest = json.loads((run / "manifest.json").read_text())
+    frequencies = [100, 200, 300]
+    manifest.update(frequencies_hz=frequencies, completion_mask=[True] * 3, results=[])
+    for hz in frequencies:
+        filename = f"{hz}.json"
+        (run / filename).write_text(json.dumps(meta | {"freq_hz": hz}))
+        manifest["results"].append({"freq_hz": hz, "metadata_file": filename, "arrays_file": "sample.npz"})
+    (run / "manifest.json").write_text(json.dumps(manifest))
+    for metric, extra in [
+        ("group-delay", []),
+        ("spinorama", ["--spherical"]),
+        ("horizontal-isobar", ["--frequency", "100"]),
+        ("vertical-isobar", ["--frequency", "100"]),
+        ("balloon", ["--frequency", "100"]),
+    ]:
+        args = ["results", "report", str(run), metric, *extra]
+        main(args)
+        data = json.loads(capsys.readouterr().out)
+        if metric == "group-delay":
+            assert data["quantities"]["group_delay"]["unit"] == "ms"
+        elif metric == "spinorama":
+            assert data["trace_names"][-1] == "Spherical DI"
+            np.testing.assert_allclose(data["quantities"]["level"]["values"], 0, atol=1e-5)
+        else:
+            assert data["axes"] == (["frequency", "direction"] if metric == "balloon" else ["angle", "frequency"])
+            np.testing.assert_allclose(data["quantities"]["normalized_spl"]["values"], 0, atol=1e-5)
+        main([*args, "--format", "svg"])
+        assert ElementTree.fromstring(capsys.readouterr().out).tag.endswith("}svg")

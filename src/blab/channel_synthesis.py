@@ -233,7 +233,8 @@ def synthesize_channel_basis_spl(
 
 
 def pressure_to_spl(pressure: np.ndarray) -> np.ndarray:
-    return 20.0 * np.log10(np.abs(pressure) / REFERENCE_PRESSURE_PA)
+    with np.errstate(divide="ignore"):
+        return 20.0 * np.log10(np.abs(pressure) / REFERENCE_PRESSURE_PA)
 
 
 def complex_reference_pressure(

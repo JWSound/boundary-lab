@@ -14,6 +14,7 @@ from blab.phasor import SOLVER_PHASOR_CONVENTION, convert_phasor
 from blab.project.io import migrate_project_payload
 from blab.project.model import ProjectPreferencesState
 from blab.solve_results.model import HORIZONTAL_POLAR_DOMAIN_ID, HORIZONTAL_POLAR_PRESSURE_ID
+from blab.system_contract import QuantityResult, SystemFrequencyResult
 
 
 class ResultRun:
@@ -73,6 +74,27 @@ class ResultRun:
         if list(values.shape) != descriptor["shape"] or len(descriptor["axes"]) != values.ndim:
             raise ValueError(f"Invalid array dimensions for {quantity_id!r} at {hz:g} Hz.")
         return descriptor, values
+
+    def frequency_result(self, hz, quantity_ids):
+        """Load selected canonical quantities in recorded excitation order."""
+        meta = self.metadata(hz)
+        quantities = []
+        for quantity_id in quantity_ids:
+            q, values = self.quantity(hz, meta, quantity_id)
+            quantities.append(
+                QuantityResult(
+                    id=q["id"],
+                    quantity=q["quantity"],
+                    unit=q["unit"],
+                    axes=tuple(q["axes"]),
+                    metadata=q["metadata"],
+                    target_id=q["target_id"],
+                    values=convert_phasor(values, self.manifest["phasor_convention"], SOLVER_PHASOR_CONVENTION),
+                )
+            )
+        return SystemFrequencyResult(
+            meta["freq_hz"], tuple(quantities), tuple(meta["excitation_port_ids"]), meta["diagnostics"]
+        )
 
     def inspect(self):
         inventory = {}

@@ -7,7 +7,6 @@ from blab.channel_synthesis import complex_reference_pressure
 from blab.config import DEFAULT_CHANNEL_VOLTAGE_V
 from blab.live import AcousticLoadImpedanceDataset
 from blab.max_spl import calculate_max_spl_curves, max_spl_limits_from_payload, transducer_rated_resistance_ohm
-from blab.phasor import SOLVER_PHASOR_CONVENTION, convert_phasor
 from blab.solve_results.model import (
     DIAPHRAGM_VELOCITY_ID,
     HORIZONTAL_POLAR_DOMAIN_ID,
@@ -15,28 +14,6 @@ from blab.solve_results.model import (
     RADIATION_IMPEDANCE_ID,
     VOICE_COIL_CURRENT_ID,
 )
-from blab.system_contract import QuantityResult, SystemFrequencyResult
-
-
-def _frequency_result(run, hz, ids):
-    meta = run.metadata(hz)
-    quantities = []
-    for quantity_id in ids:
-        q, values = run.quantity(hz, meta, quantity_id)
-        quantities.append(
-            QuantityResult(
-                id=q["id"],
-                quantity=q["quantity"],
-                unit=q["unit"],
-                axes=tuple(q["axes"]),
-                metadata=q["metadata"],
-                target_id=q["target_id"],
-                values=convert_phasor(values, run.manifest["phasor_convention"], SOLVER_PHASOR_CONVENTION),
-            )
-        )
-    return SystemFrequencyResult(
-        meta["freq_hz"], tuple(quantities), tuple(meta["excitation_port_ids"]), meta["diagnostics"]
-    )
 
 
 def _ports(run, result):
@@ -52,14 +29,14 @@ def normalized_impedance(run, hz):
     region = system["regions"][0]
     density, speed = region["density_kg_per_m3"], region["sound_speed_m_per_s"]
     if run.manifest["solve_kind"] == "exterior_bem":
-        result = _frequency_result(run, hz, [RADIATION_IMPEDANCE_ID])
+        result = run.frequency_result(hz, [RADIATION_IMPEDANCE_ID])
         ids = [c["id"] for c in system["components"] if c["kind"] == "ideal_velocity_source"]
         # Exterior solver impedance follows radiator/component ordering.
         ids = list(result.quantities[0].metadata.get("component_ids", ids))
         areas = np.array([records[i].effective_area_m2 for i in ids])
         values = normalize_generalized_impedance(result.quantities[0].values, areas, density, speed)
     else:
-        result = _frequency_result(run, hz, [DIAPHRAGM_VELOCITY_ID, VOICE_COIL_CURRENT_ID])
+        result = run.frequency_result(hz, [DIAPHRAGM_VELOCITY_ID, VOICE_COIL_CURRENT_ID])
         ports = _ports(run, result)
         transducers = [c for c in system["components"] if c["kind"] == "electrodynamic_transducer"]
         ids = [c["id"] for c in transducers]
@@ -93,7 +70,7 @@ def normalized_impedance(run, hz):
 
 
 def maximum_spl(run, hz):
-    result = _frequency_result(run, hz, [HORIZONTAL_POLAR_PRESSURE_ID, DIAPHRAGM_VELOCITY_ID])
+    result = run.frequency_result(hz, [HORIZONTAL_POLAR_PRESSURE_ID, DIAPHRAGM_VELOCITY_ID])
     pressure, velocity = result.quantities
     ports = _ports(run, result)
     if set(result.excitation_port_ids) != set(run.channel_by_port):
