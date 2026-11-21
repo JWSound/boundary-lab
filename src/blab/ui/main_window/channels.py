@@ -161,17 +161,20 @@ class ChannelsMixin:
                 flat_target_enabled=normalize,
                 flat_target_reference_angle_deg=self.preferences.horizontal_normalization_angle,
             )
-            self.refresh_plots()
-            self.set_balloon_plot_available(self.live_dataset.has_balloon_data)
-            balloon_window = self.balloon_window
-            if balloon_window is not None and balloon_window.isVisible():
-                refresh_balloon = getattr(balloon_window, "refresh_from_latest_results", None)
-                if callable(refresh_balloon):
-                    refresh_balloon()
-            observation_planes = getattr(self, "observation_plane_controller", None)
-            if observation_planes is not None:
-                observation_planes.sync_view()
+            self._refresh_channel_responses()
             self.show_status(f"Channel config updated: {len(channels)} channels; plots resynthesized")
         else:
             self.solve_results_invalidated.emit("channel_config_changed")
             self.show_status(f"Channel config updated: {len(channels)} channels")
+
+    def _refresh_channel_responses(self) -> None:
+        self.refresh_plots()
+        self.set_balloon_plot_available(self.live_dataset is not None and self.live_dataset.has_balloon_data)
+        balloon_window = self.balloon_window
+        if balloon_window is not None and balloon_window.isVisible():
+            refresh_balloon = getattr(balloon_window, "refresh_from_latest_results", None)
+            if callable(refresh_balloon):
+                refresh_balloon()
+        observation_planes = getattr(self, "observation_plane_controller", None)
+        if observation_planes is not None:
+            observation_planes.sync_view()

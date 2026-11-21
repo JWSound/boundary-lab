@@ -49,13 +49,15 @@ class ProjectPreferencesState:
         return asdict(self)
 
     @classmethod
-    def from_payload(cls, payload: object) -> ProjectPreferencesState | None:
+    def from_payload(
+        cls, payload: object, *, defaults: ProjectPreferencesState | None = None
+    ) -> ProjectPreferencesState | None:
         if payload is None:
             return None
         if not isinstance(payload, dict):
             raise ValueError("project_preferences must be an object when provided.")
 
-        defaults = cls()
+        defaults = defaults or cls()
         freq_min_hz = _bounded_int(payload.get("freq_min_hz"), defaults.freq_min_hz, minimum=1)
         freq_max_hz = _bounded_int(payload.get("freq_max_hz"), defaults.freq_max_hz, minimum=1)
         if freq_min_hz > freq_max_hz:
@@ -75,7 +77,9 @@ class ProjectPreferencesState:
             normalized_channel_correction=_boolean(
                 payload.get("normalized_channel_correction"), defaults.normalized_channel_correction
             ),
-            polar_smoothing=_optional_int(payload.get("polar_smoothing"), defaults.polar_smoothing),
+            polar_smoothing=_optional_int(
+                payload.get("polar_smoothing", defaults.polar_smoothing), defaults.polar_smoothing
+            ),
             horizontal_normalization_angle=_finite_float(
                 payload.get("horizontal_normalization_angle"), defaults.horizontal_normalization_angle
             ),

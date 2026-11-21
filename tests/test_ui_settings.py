@@ -89,7 +89,7 @@ def test_preferences_dialog_exposes_field_settings_with_help(qapp) -> None:
     dialog = PreferencesDialog(GuiPreferences(field_cache_size_mb=256, field_translation_target_fps=25.0))
     try:
         groups = {group.title() for group in dialog.findChildren(QGroupBox)}
-        assert "Fields" in groups
+        assert "Interactive performance" in groups
         assert dialog.field_cache_size_spin.value() == 256
         assert dialog.field_translation_target_fps_spin.value() == 25.0
         assert dialog.field_cache_size_spin.toolTip()

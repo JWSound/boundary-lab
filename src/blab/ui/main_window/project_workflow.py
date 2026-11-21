@@ -91,8 +91,7 @@ class ProjectWorkflowController(QObject):
         geometry_store: GeometryStore,
         preferences: Callable[[], GuiPreferences],
         set_preferences: Callable[[GuiPreferences], None],
-        save_preferences: Callable[[], None],
-        save_frequency_settings: Callable[[], None],
+        new_project_defaults: Callable[[], ProjectPreferencesState],
         remember_recent: Callable[[Path], None],
         forget_recent: Callable[[Path], None],
         activities: ActivityController | None = None,
@@ -105,8 +104,7 @@ class ProjectWorkflowController(QObject):
         self._geometry_store = geometry_store
         self._read_preferences = preferences
         self._write_preferences = set_preferences
-        self._save_preferences = save_preferences
-        self._save_frequency_settings = save_frequency_settings
+        self._new_project_defaults = new_project_defaults
         self._remember_recent = remember_recent
         self._forget_recent = forget_recent
         self._activities = activities if activities is not None else ActivityController(self)
@@ -240,7 +238,8 @@ class ProjectWorkflowController(QObject):
     def new_project(self) -> None:
         if not self.confirm_unsaved_project_changes("new_project"):
             return
-        project = new_project_document(project_preferences=self.current_project_preferences())
+        defaults = self._new_project_defaults()
+        project = new_project_document(project_preferences=defaults)
         if self._preparations is not None:
             self._preparations.cancel("project")
         self._inputs.discard_channel_config_dialog()
@@ -248,6 +247,7 @@ class ProjectWorkflowController(QObject):
             project,
             path=None,
         )
+        self._apply_project_preferences(defaults)
         self._geometry_store.generated_by_document_id = {}
         self._inputs.rebuild_generator_document_tabs()
         self._geometry_store.clear_imported_radiators()
@@ -342,13 +342,8 @@ class ProjectWorkflowController(QObject):
 
     def _finish_project_load(self, path, payload, generated_results=None):
         try:
-            project_preferences = ProjectPreferencesState.from_payload(payload.get("project_preferences"))
-            if self._confirm_apply_project_preferences(project_preferences):
-                self._apply_project_preferences(project_preferences)
             with self._activities.start("Opening project..."):
-                self._apply_project_payload(
-                    payload, project_preferences=project_preferences, generated_results=generated_results
-                )
+                self._apply_project_payload(payload, generated_results=generated_results)
                 self._session.path = path
                 self._remember_recent(path)
                 self.mark_project_clean()
@@ -357,14 +352,6 @@ class ProjectWorkflowController(QObject):
             self._view.show_error("Open project failed", str(exc))
 
     # -- project preferences ------------------------------------------------
-
-    def _confirm_apply_project_preferences(self, project_preferences: ProjectPreferencesState | None) -> bool:
-        if project_preferences is None or project_preferences == self.current_project_preferences():
-            return False
-        return self._view.confirm(
-            "Project Preferences",
-            "This project file contains unique application preferences. Would you like to apply them?",
-        )
 
     def _apply_project_preferences(self, project_preferences: ProjectPreferencesState) -> None:
         self._write_preferences(gui_preferences_with_project_preferences(self._read_preferences(), project_preferences))
@@ -375,8 +362,6 @@ class ProjectWorkflowController(QObject):
                 count=project_preferences.freq_count,
             )
         )
-        self._save_preferences()
-        self._save_frequency_settings()
 
     # -- applying a loaded payload -----------------------------------------
 
@@ -384,7 +369,6 @@ class ProjectWorkflowController(QObject):
         self,
         payload: dict,
         *,
-        project_preferences: ProjectPreferencesState | None = None,
         generated_results: dict | None = None,
     ) -> None:
         self._inputs.discard_channel_config_dialog()
@@ -418,6 +402,10 @@ class ProjectWorkflowController(QObject):
         component_channels = payload.get("component_channel_by_id", {})
         if not isinstance(component_channels, dict):
             component_channels = {}
+        defaults = self._new_project_defaults()
+        project_preferences = ProjectPreferencesState.from_payload(
+            payload.get("project_preferences"), defaults=defaults
+        )
         loaded_document = ProjectDocument(
             generator_documents=documents,
             active_generator_document_id=active_id,
@@ -439,7 +427,7 @@ class ProjectWorkflowController(QObject):
             source_config_by_name=source_config,
             channel_config_by_name=channel_config,
             max_spl_limits_by_channel=max_spl_limits,
-            project_preferences=project_preferences or self.current_project_preferences(),
+            project_preferences=project_preferences or defaults,
             physical_system=physical_system,
             component_channel_by_id={
                 str(component_id): str(channel_name) for component_id, channel_name in component_channels.items()
@@ -447,6 +435,7 @@ class ProjectWorkflowController(QObject):
             observation_planes=observation_planes_from_payload(payload.get("observation_planes")),
         )
         self._session.replace(loaded_document, path=self._session.path)
+        self._apply_project_preferences(loaded_document.project_preferences)
         self._geometry_store.generated_by_document_id = {}
         for document in self._project.generator_documents:
             result = (

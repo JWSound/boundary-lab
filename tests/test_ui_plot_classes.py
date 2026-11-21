@@ -187,14 +187,7 @@ def test_completed_solves_use_final_isobar_resolution() -> None:
     assert "icon_label.setToolTip(tooltip)" in dialog_source
     assert "self.live_plot_quality_combo.setEnabled(preferences.live_plot_streaming)" in dialog_source
     assert "self.live_plot_streaming_check.toggled.connect(self.live_plot_quality_combo.setEnabled)" in dialog_source
-    observation_config_block = dialog_source[
-        dialog_source.index('"Observation Config"') : dialog_source.index("left_column.addStretch")
-    ]
-    application_block = dialog_source[
-        dialog_source.index('"Application"') : dialog_source.index(
-            "right_column.addStretch", dialog_source.index('"Application"')
-        )
-    ]
+    application_block, observation_config_block = dialog_source.split("class ProjectConfigurationDialog", 1)
     assert '"Solver Config"' not in dialog_source
     assert '"BEM Solver"' not in dialog_source
     assert "self.solve_backend_combo" not in observation_config_block
@@ -211,12 +204,6 @@ def test_completed_solves_use_final_isobar_resolution() -> None:
     assert "Burton Miller Formulation" not in dialog_source
     assert "self.gmres_spin" not in dialog_source
     assert "self.burton_miller_check" not in dialog_source
-    assert '"Balloon Sampling",\n                        self.spherical_sampling_check,' in dialog_source
-    assert '"Balloon Angle Precision",\n                        self.balloon_angle_precision_spin,' in dialog_source
-    assert "self.spherical_sampling_check" in observation_config_block
-    assert "self.balloon_angle_precision_spin" in observation_config_block
-    assert "Gather spherical observation data for 3d ballon viewer" in dialog_source
-    assert "Impose Channel Normalization" not in observation_config_block
     assert '"preferences/normalized_channel_correction"' in settings_source
     assert "normalized_channel_correction: bool = True" in settings_source
     assert "flat_target_normalization_enabled=preferences.normalized_channel_correction" in main_source
@@ -225,7 +212,7 @@ def test_completed_solves_use_final_isobar_resolution() -> None:
     assert '"preferences/isobar_contour_step_db"' in settings_source
     assert "live_plot_streaming: bool = True" in settings_source
     assert "isobar_contour_step_db: float = 3.0" in settings_source
-    assert '"Isobar Contour Step"' in dialog_source
+    assert '"Isobar contour interval"' in observation_config_block
     assert "live_plot_angle_samples(self.preferences.live_plot_quality)" in main_source
     assert "live_plot_freq_samples(self.preferences.live_plot_quality)" in main_source
     solve_source = main_window_source("solve_workflow")

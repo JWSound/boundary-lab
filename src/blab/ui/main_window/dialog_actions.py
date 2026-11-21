@@ -62,7 +62,7 @@ class DialogActionsMixin:
             QMessageBox.warning(
                 self,
                 "No balloon data",
-                "Enable spherical sampling in Preferences before running a solve.",
+                "Enable 3D balloon samples in Edit > Project Configuration > Observation Sampling before running a solve.",
             )
             return
 

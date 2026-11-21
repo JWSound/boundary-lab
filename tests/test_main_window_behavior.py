@@ -692,7 +692,6 @@ def test_close_is_vetoed_when_the_user_cancels(main_window, monkeypatch) -> None
 def test_close_proceeds_and_persists_state_when_confirmed(main_window, monkeypatch) -> None:
     monkeypatch.setattr(main_window, "_confirm_unsaved_project_changes", lambda _action: True)
     saved: list[str] = []
-    monkeypatch.setattr(main_window, "_save_frequency_settings", lambda: saved.append("freq"))
     monkeypatch.setattr(main_window, "_save_preferences", lambda: saved.append("prefs"))
     monkeypatch.setattr(main_window, "_save_window_state", lambda: saved.append("window"))
 
@@ -701,7 +700,7 @@ def test_close_proceeds_and_persists_state_when_confirmed(main_window, monkeypat
     main_window.closeEvent(event)
 
     assert event.isAccepted()
-    assert saved == ["freq", "prefs", "window"]
+    assert saved == ["prefs", "window"]
 
 
 # ---------------------------------------------------------------------------- contours

@@ -559,8 +559,7 @@ def _project_controller(monkeypatch, *, payload=None, project_preferences=None):
         geometry_store=None,
         preferences=lambda: None,
         set_preferences=lambda _preferences: None,
-        save_preferences=lambda: None,
-        save_frequency_settings=lambda: None,
+        new_project_defaults=ProjectPreferencesState,
         remember_recent=lambda _path: None,
         forget_recent=lambda _path: None,
     )
@@ -604,24 +603,11 @@ def test_project_dirty_state_ignores_generated_geometry_artifacts(monkeypatch) -
     assert controller.has_unsaved_project_changes()
 
 
-def test_project_preference_prompt_only_appears_for_differences(monkeypatch) -> None:
-    current = ProjectPreferencesState()
-    controller = _project_controller(monkeypatch, project_preferences=current)
-
-    assert controller._confirm_apply_project_preferences(None) is False
-    assert controller._confirm_apply_project_preferences(current) is False
-    assert controller._view.confirmed == []
-
-    different = ProjectPreferencesState(horizontal_normalization_angle=15.0)
-    assert controller._confirm_apply_project_preferences(different) is True
-    assert "unique application preferences" in controller._view.confirmed[0][1]
-
-
-def test_declined_project_preferences_remain_attached_to_loaded_project(monkeypatch, tmp_path: Path) -> None:
+def test_saved_project_configuration_applies_automatically(monkeypatch, tmp_path: Path) -> None:
     current = ProjectPreferencesState()
     stored = ProjectPreferencesState(horizontal_normalization_angle=15.0)
     controller = _project_controller(monkeypatch, project_preferences=current)
-    controller._view.answer = False
+    applied = []
     controller._remember_recent = lambda _path: None
 
     class FakeInputs:
@@ -677,10 +663,12 @@ def test_declined_project_preferences_remain_attached_to_loaded_project(monkeypa
     monkeypatch.setattr(
         controller,
         "_apply_project_preferences",
-        lambda _preferences: pytest.fail("declined preferences must not be applied to the application"),
+        applied.append,
     )
     controller._load_project_from_path(tmp_path / "stored.blab.json")
 
+    assert applied == [stored]
+    assert controller._view.confirmed == []
     assert controller._session.document.project_preferences == stored
     assert controller._session.path == tmp_path / "stored.blab.json"
 

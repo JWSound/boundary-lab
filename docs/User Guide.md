@@ -242,60 +242,58 @@ current solve contains spherical samples.
 
 ### Edit and About Menus
 
-**Edit > Preferences** opens application and solve preferences. **About**
-contains diagnostic information, donation information, and the bundled help
-guide.
+**Edit > Project Configuration…** opens settings saved with the current project.
+**Edit > Preferences…** opens settings for this installation. **About** contains
+diagnostics, donation information, and the bundled help guide.
+
+## Project Configuration
+
+### Observation Sampling
+
+**Observation distance** sets the radius from the origin. **Polar angle step**
+sets horizontal and vertical sample spacing. Spinorama processing requires
+10-degree spacing or finer. Enable **Include 3D balloon samples** to sample the
+full sphere during a solve. **Balloon angular spacing** controls how densely
+the sphere is sampled. At 2.5 degrees, the solve requests about 6,600 points.
+
+Changes to sampling can require a new solve. Boundary Lab asks before clearing
+existing results. Frequency limits and count are in the command strip beside
+**Solve**.
+
+### Plot Presentation
+
+<img src="../assets/project-configuration.png" alt="Plot Presentation tab with horizontal and vertical reference angles" width="550">
+
+- **Directivity normalization** sets the horizontal and vertical reference angles.
+  The horizontal angle also supplies the reference for **Impose Channel Normalization**.
+- **Spinorama reference** sets the reference axes for the on-axis and listening-window curves.
+- **Fractional-octave smoothing** adjusts directivity, Spinorama, and balloon presentation.
+- **Display range minimum** and **maximum** set the displayed and exported directivity range in dB.
+- **Isobar contour interval** sets the color steps. Choose 0 dB for smoothly interpolated colors.
+
+Presentation changes refresh existing results. Project files restore their saved
+settings automatically. To use the current configuration for future projects,
+select **Use as defaults for new projects** and click **OK**. This includes the
+frequency sweep, channel normalization, and stitch tolerance. Older projects
+use those defaults for any missing settings.
+
+With balloon samples available, the globe button in the **Spinorama** dock
+enables full-sphere Sound Power, PIR, and Spherical DI. Listening Window,
+Early Reflections, and ERDI then use every native horizontal and vertical
+sample inside their standard angular sectors. Turning it off restores the
+CEA-2034-style 10-degree horizontal and vertical calculation.
 
 ## Preferences
 
-<img src="../assets/preferences.png" alt="Preferences window" width="700">
+<img src="../assets/preferences.png" alt="Application preferences" width="550">
 
-### Solver Config
-
-- **BEM Solver** selects BEAT Engine CPU, Nvidia CUDA, or AMD ROCm. All solves
-  use the physical system. CPU is the default; saved Bempp and Server selections
-  migrate to CPU. Julia is required.
-
-- **Reuse CUDA Worker Memory** is an opt-in setting in Application Config for
-  faster consecutive local CUDA solves. Cached memory is reclaimed after five
-  seconds idle, every eight requests, or under memory pressure. If a new solve
-  arrives during reclamation, it waits while the UI remains responsive. This
-  requires a compatible BEAT Engine; see [CUDA memory reuse](advanced/beat-engine-CUDA.md#reusing-cuda-worker-memory-between-solves).
-
-- **Balloon Sampling** requests Fibonacci-sphere observation points during the
-  solve. Without these samples, the Balloon Plot action remains unavailable.
-- **Balloon Angle Precision** controls the approximate angular spacing and,
-  consequently, the number of solved balloon vertices. The default 2.5-degree
-  spacing produces approximately 6,600 points.
-
-### Observation Config
-
-- **Polar Angle Step** controls the solved horizontal and vertical observation
-  spacing. Spinorama processing requires 10-degree spacing or finer.
-- **Polar Observation Distance** sets the observation radius from the origin.
-- **Horizontal/Vertical Normalization Angle** chooses the reference angle used
-  for directivity normalization in each plane.
-- **Spin Horizontal/Vertical Ref Angle** chooses the reference axes for the
-  spinorama on-axis and listening-window curves without changing the early
-  reflections or sound-power data.
-- The globe button in the **Spinorama** dock enables full-sphere Sound Power,
-  PIR, and Spherical DI calculations. Listening Window, Early Reflections, and
-  ERDI then use every native horizontal/vertical sample inside their standard
-  angular sectors. The button is available only when **Balloon Sampling** data
-  exists for the solve. When disabled, the plot retains its CEA-2034-style
-  10-degree horizontal/vertical calculation.
-- **Polar Smoothing** applies fractional-octave smoothing to directivity,
-  spinorama, and balloon presentation data.
-- **SPL Min/Max** set the displayed and exported directivity clipping range.
-- **Isobar Contour Step** selects stepped isobar colors. Set it to 0 dB for a
-  smoothly interpolated color map.
-
-### Application
-
-- **Theme** selects the system, light, or dark appearance.
-- **Live Plot Streaming** enables plot refreshes while a solve is running.
-- **Live Plot Quality** selects the interpolation density used for those live
-  updates. Completed solves are rendered at final quality.
+- **Compute and connections** selects the solver backend. Remote solves show
+  the server connection settings. Local CUDA solves offer **Reuse CUDA Worker
+  Memory** for faster consecutive solves. [CUDA memory reuse](advanced/beat-engine-CUDA.md#reusing-cuda-worker-memory-between-solves)
+- **Interactive performance** controls the field cache, field updates while moving
+  observation planes, and the streaming and interpolation quality of live plots.
+  Completed solves use final plot quality.
+- **Appearance** selects the system, light, or dark theme.
 
 ## Command Strip
 

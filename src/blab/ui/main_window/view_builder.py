@@ -34,6 +34,8 @@ from blab.ui.main_window_widgets import (
     DockTitleBar,
 )
 from blab.ui.plots import (
+    AUDIO_FREQ_MAX_HZ,
+    AUDIO_FREQ_MIN_HZ,
     frequency_to_slider_value,
     slider_value_to_frequency,
 )
@@ -183,7 +185,9 @@ class ViewBuilderMixin:
             ath_setup_action.triggered.connect(self.open_ath_setup)
             edit_menu.addAction(ath_setup_action)
         edit_menu.addSeparator()
-        preferences_action = QAction("Preferences", self)
+        self.project_configuration_action = edit_menu.addAction("Project Configuration...")
+        self.project_configuration_action.triggered.connect(self.open_project_configuration)
+        preferences_action = QAction("Preferences...", self)
         preferences_action.triggered.connect(self.open_preferences)
         edit_menu.addAction(preferences_action)
 
@@ -383,13 +387,14 @@ class ViewBuilderMixin:
         )
         self.freq_count_slider.valueChanged.connect(self.freq_count_spin.setValue)
         self.freq_count_spin.valueChanged.connect(self.freq_count_slider.setValue)
-        self.freq_min_spin.valueChanged.connect(self._save_frequency_settings)
-        self.freq_max_spin.valueChanged.connect(self._save_frequency_settings)
-        self.freq_count_spin.valueChanged.connect(self._save_frequency_settings)
+        self.freq_min_spin.valueChanged.connect(self._update_project_frequency)
+        self.freq_max_spin.valueChanged.connect(self._update_project_frequency)
+        self.freq_count_spin.valueChanged.connect(self._update_project_frequency)
 
     def _sync_frequency_spin_from_slider(self, spin: QSpinBox, slider_value: int) -> None:
         with QSignalBlocker(spin):
             spin.setValue(slider_value_to_frequency(slider_value))
+        self._update_project_frequency()
 
     def _sync_frequency_slider_from_spin(self, slider: QSlider, freq_hz: int) -> None:
         with QSignalBlocker(slider):
@@ -512,6 +517,7 @@ class ViewBuilderMixin:
 
     def apply_workflow_controls(self, controls: WorkflowControls) -> None:
         preparing = self.preparations.active
+        self.project_configuration_action.setEnabled(controls.generate and not preparing)
         self.generator_plugins_action.setEnabled(controls.generate and not self.generator_plugins_busy())
         self.generate_button.setEnabled(controls.generate and not preparing)
         if controls.generate and not preparing:
@@ -588,6 +594,12 @@ class ViewBuilderMixin:
         # Blocked so restoring a project's range does not look like the user
         # editing it, which would re-save settings and invalidate the solve.
         blockers = [QSignalBlocker(control) for control in controls]
+        # Saved sweeps can extend beyond the command strip's usual ranges,
+        # including a project that solves a single frequency.
+        for spin in (self.freq_min_spin, self.freq_max_spin):
+            spin.setRange(min(AUDIO_FREQ_MIN_HZ, value.min_hz), max(AUDIO_FREQ_MAX_HZ, value.max_hz))
+        for control in (self.freq_count_spin, self.freq_count_slider):
+            control.setRange(min(3, value.count), max(200, value.count))
         self.freq_min_spin.setValue(value.min_hz)
         self.freq_max_spin.setValue(value.max_hz)
         self.freq_count_spin.setValue(value.count)
