@@ -476,6 +476,13 @@ class ViewBuilderMixin:
     def choose_open_file(self, title: str, file_filter: str) -> Path | None:
         return self.file_dialogs.open_file(self, title, file_filter)
 
+    def choose_project_save(self, name, has_results, include_results):
+        return self.file_dialogs.save_project(self, name, has_results, include_results)
+
+    def restored_project_results(self):
+        self._refresh_channel_responses()
+        self.set_max_spl_available(bool(self.max_spl_channel_names()))
+
     def choose_save_file(self, title: str, file_filter: str, suggested_name: str) -> Path | None:
         return self.file_dialogs.save_file(self, title, file_filter, suggested_name)
 

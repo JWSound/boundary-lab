@@ -140,3 +140,23 @@ def test_missing_remembered_directory_falls_back_safely(monkeypatch, tmp_path: P
     assert initial_paths == [str(fallback_directory / "example.txt")]
     assert settings.values[LAST_USED_DIRECTORY_KEY] == str(tmp_path / "removed")
     assert settings.sync_count == 0
+
+
+def test_project_save_dialog_options(qapp, monkeypatch, tmp_path):
+    from PySide6.QtWidgets import QCheckBox, QFileDialog
+
+    service = FileDialogService(MemorySettings(), fallback_directory=tmp_path)
+    for available in (False, True):
+
+        def accept(dialog):
+            assert dialog.testOption(QFileDialog.Option.DontUseNativeDialog)
+            assert dialog.nameFilters() == ["Boundary Lab project (*.blab)"]
+            box = dialog.findChild(QCheckBox)
+            assert box.isEnabled() == available
+            assert box.isChecked() == available
+            box.setChecked(False)
+            return QFileDialog.Accepted
+
+        monkeypatch.setattr(QFileDialog, "exec", accept)
+        path, include = service.save_project(None, "test.blab", available, True)
+        assert path == tmp_path / "test.blab" and include == (not available)

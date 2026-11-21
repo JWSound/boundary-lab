@@ -330,6 +330,7 @@ class MainWindow(
             view=self,
             inputs=self,
             session=self.project_session,
+            solve_session=self.solve_session,
             geometry_store=self.geometry_store,
             preferences=lambda: self.preferences,
             set_preferences=self._set_preferences,

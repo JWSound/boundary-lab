@@ -106,9 +106,9 @@ rather than snapping to one curve.
 
 - **New Project** clears the current design, mesh, physical-system, channel,
   and solved-result state after prompting for unsaved changes.
-- **Save Project** writes to the active `.blab.json` path.
-- **Save Project As** selects a new project path.
-- **Open Project** loads a `.blab.json` project.
+- **Save Project** writes to the current project using its existing format.
+- **Save Project As** creates a compressed `.blab` package. Select **Include solved results** to reopen plots and adjust channel settings after loading. Ordinary saves remember this choice.
+- **Open Project** loads packaged `.blab` projects and legacy `.blab.json` projects.
 - **Open Recent** lists recently opened projects and can clear that history.
 - **Import/Export Ath Design** reads or writes the active Ath design's
   editable design source.
