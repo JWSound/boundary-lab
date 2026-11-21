@@ -47,7 +47,11 @@ The preview displays every enabled generated and imported mesh. Rigid surfaces
 are gray, moving surfaces are blue, and FEM-BEM interface surfaces are green.
 Mirrored images are shaded darker when X or XY symmetry is active. Hover over a
 surface to see its mesh name, physical-group name and tag, and element count.
-The lower-right readout reports the active element count and model dimensions.
+The viewport footer shows model dimensions. The right side of the main status bar
+shows BEM and FEM pressure unknowns per frequency for active meshes assigned to
+physical-system regions. BEM counts exterior pressure nodes after mesh preparation.
+FEM counts nodes in the selected volumes before condensation. A zero means there
+are no active unknowns of that type. A dash means the count is unavailable.
 
 <img src="../assets/3dviewport.png" alt="3D mesh preview" width="500">
 
