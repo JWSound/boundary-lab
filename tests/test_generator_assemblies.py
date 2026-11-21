@@ -119,6 +119,8 @@ def test_assembly_creates_coupled_system_and_regenerates_without_losing_host_edi
 @pytest.mark.parametrize("memory", [False, True])
 def test_assembly_save_reopen_headless_and_preview_without_plugin(assembly_case, tmp_path, monkeypatch, memory):
     from blab.generators import registry
+    from blab.solve_results.bem import bem_boundary_result_domain
+    from blab.solve_results.fem import fem_volume_result_domain
     from blab.ui.mesh_preparation import MeshPreparationSnapshot, prepare_preview
 
     project, geometry, patch = assembly_case
@@ -156,13 +158,18 @@ def test_assembly_save_reopen_headless_and_preview_without_plugin(assembly_case,
     ]
     assert restored.provider_metadata == geometry.provider_metadata
     headless = load_headless_project(path)
-    assert len(PhysicalSystemCompiler().compile(headless.physical_system).interfaces) == 1
+    compiled = PhysicalSystemCompiler().compile(headless.physical_system)
+    assert len(compiled.interfaces) == 1
     snapshot = MeshPreparationSnapshot(
         (document,), {document.id: restored}, (), (), headless.physical_system, "off", False, 2
     )
-    preview, _, options, warning = prepare_preview(snapshot, tmp_path)
+    preview, _, options, warning, counts = prepare_preview(snapshot, tmp_path)
     assert len(preview.mesh_configs) == 2 and not warning
     assert len(options["loaded_meshes"]) == 2
+    assert counts == (
+        len(bem_boundary_result_domain(compiled).coordinates["points_m"]),
+        len(fem_volume_result_domain(compiled).coordinates["points_m"]),
+    )
 
 
 @pytest.mark.parametrize("fault", ["group", "purpose", "interface", "unowned", "missing_mesh", "stale", "symmetry"])

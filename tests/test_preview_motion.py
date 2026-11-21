@@ -70,7 +70,8 @@ class PreviewHarness:
         self._camera_position = lambda: "unchanged"
         self._restore_camera_or_reset = lambda value: None
         self._restore_observation_plane_scene = lambda _: None
-        self._set_total_element_count = lambda *args, **kwargs: None
+        self.dimensions_label = SimpleNamespace(clear=lambda: None)
+        self._set_dimensions = lambda *args, **kwargs: None
         self._add_orientation_guides = lambda _: None
         self.set_hierarchy = lambda *args, **kwargs: None
         self.set_topology_report = lambda *args, **kwargs: None

@@ -1,6 +1,7 @@
 import os
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import meshio
 import numpy as np
@@ -442,6 +443,7 @@ def test_preview_falls_back_to_unstitched_meshes_when_preview_stitching_fails(tm
     window.symmetry = "xy"
     window.stitch_imported_meshes = True
     window.preview = PreviewStub()
+    window.activity_status = SimpleNamespace(set_unknown_counts=lambda *counts: loaded.update(counts=counts))
     window.status_label = StatusStub()
     window.has_solver_meshes = lambda: True
     window.prepare_mesh_assembly = lambda _radiators: (_ for _ in ()).throw(RuntimeError(STITCH_FAILURE_MESSAGE))
@@ -454,6 +456,7 @@ def test_preview_falls_back_to_unstitched_meshes_when_preview_stitching_fails(tm
     assert loaded["kwargs"]["symmetry"] == "xy"
     assert loaded["status"] == "Mesh preview showing unstitched meshes; stitching failed"
     assert "cleared" not in loaded
+    assert loaded["counts"] == (None, None)
 
 
 def test_solver_channels_include_radiator_default_channel_when_missing() -> None:
