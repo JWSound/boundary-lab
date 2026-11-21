@@ -557,8 +557,10 @@ The manual pressure color limit accepts whole pascal values and starts at 10 Pa.
 
 ## Frequency Controls
 
-Set **Min Hz**, **Max Hz**, and **Frequencies** before solving. Boundary Lab
-uses logarithmic spacing between the normalized minimum and maximum values.
+Drag the two **Frequency range** handles or type an exact frequency in either box.
+The left box sets the minimum and the right box sets the maximum. Each endpoint
+stops 1 Hz from the other. **Frequencies** sets the number of logarithmically
+spaced samples in the sweep.
 
 ## Balloon Plot
 
