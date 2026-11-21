@@ -46,7 +46,7 @@ class GuiPreferences:
             "beat_cpu" if backend in {"local", "server"} or not packaged_backend_available(backend) else backend
         )
 
-    theme: str = "system"
+    theme: str = "light"
     enabled_geometry_providers: tuple[str, ...] = ()
     solve_backend: str = "beat_cpu"
     solve_server_url: str = "http://127.0.0.1:8765"
@@ -57,9 +57,9 @@ class GuiPreferences:
     gmres_tolerance: float = 1e-3
     polar_angle_step_deg: float = 10.0
     polar_observation_distance_m: float = 2.0
-    normalized_channel_correction: bool = True
+    normalized_channel_correction: bool = False
     use_burton_miller: bool = True
-    polar_smoothing: int | None = 48
+    polar_smoothing: int | None = None
     horizontal_normalization_angle: float = 10.0
     vertical_normalization_angle: float = 10.0
     spin_horizontal_reference_angle: float = 0.0

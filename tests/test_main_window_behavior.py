@@ -519,7 +519,11 @@ def test_channel_dialog_toggles_normalization_on_the_existing_solve(main_window,
         horizontal_pressure=pressure,
         vertical_pressure=pressure.copy(),
     )
-    dataset = LiveSolveDataset(angles, channel_configs=main_window.channel_configs())
+    dataset = LiveSolveDataset(
+        angles,
+        channel_configs=main_window.channel_configs(),
+        flat_target_normalization_enabled=main_window.preferences.normalized_channel_correction,
+    )
     dataset.add(result)
     main_window.live_dataset = dataset
     monkeypatch.setattr(main_window, "_confirm_clear_solved_data", lambda: pytest.fail("Unexpected solve invalidation"))

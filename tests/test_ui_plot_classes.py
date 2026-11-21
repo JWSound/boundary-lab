@@ -205,7 +205,7 @@ def test_completed_solves_use_final_isobar_resolution() -> None:
     assert "self.gmres_spin" not in dialog_source
     assert "self.burton_miller_check" not in dialog_source
     assert '"preferences/normalized_channel_correction"' in settings_source
-    assert "normalized_channel_correction: bool = True" in settings_source
+    assert "normalized_channel_correction: bool = False" in settings_source
     assert "flat_target_normalization_enabled=preferences.normalized_channel_correction" in main_source
     assert '"preferences/live_plot_quality"' in settings_source
     assert '"preferences/live_plot_streaming"' in settings_source

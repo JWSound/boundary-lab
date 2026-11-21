@@ -29,14 +29,18 @@ def test_project_configuration_scope_and_explicit_defaults(main_window, monkeypa
     monkeypatch.setattr(ProjectConfigurationDialog, "exec", edit)
     window.project_configuration_action.trigger()
     assert window.project_workflow.has_unsaved_project_changes()
+    assert window.stitch_imported_meshes
+    window.stitch_imported_meshes = False
     path = tmp_path / "distance.blab.json"
     assert window.project_workflow._save_project_to_path(path)
     window._save_preferences()
     assert not window.settings.contains("preferences/polar_observation_distance_m")
     window.new_project()
     assert window.project.project_preferences == initial
+    assert window.stitch_imported_meshes
     window.project_workflow._preparations = None
     window.project_workflow.open_recent_project(path)
+    assert not window.stitch_imported_meshes
     assert window.preferences.polar_observation_distance_m == distance
     assert window.preferences.theme == "dark" and window.preferences.field_cache_size_mb == 768
     assert not window.project_workflow.has_unsaved_project_changes()

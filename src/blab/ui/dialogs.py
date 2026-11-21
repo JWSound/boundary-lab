@@ -831,7 +831,7 @@ class ChannelConfigDialog(QDialog):
         parent: QWidget | None = None,
         *,
         embedded: bool = False,
-        normalized_channel_correction: bool = True,
+        normalized_channel_correction: bool = False,
         prescribed_velocity_channel_names: frozenset[str] = frozenset(),
     ):
         super().__init__(parent)

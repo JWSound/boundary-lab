@@ -32,8 +32,8 @@ class ProjectPreferencesState:
     freq_count: int = 41
     polar_angle_step_deg: float = 10.0
     polar_observation_distance_m: float = 2.0
-    normalized_channel_correction: bool = True
-    polar_smoothing: int | None = 48
+    normalized_channel_correction: bool = False
+    polar_smoothing: int | None = None
     horizontal_normalization_angle: float = 10.0
     vertical_normalization_angle: float = 10.0
     spin_horizontal_reference_angle: float = 0.0
@@ -128,7 +128,7 @@ class ProjectDocument:
     generator_documents: tuple[GeneratorDocument, ...]
     active_generator_document_id: str | None
     imported_meshes: tuple[ImportedMeshState, ...] = ()
-    stitch_imported_meshes: bool = False
+    stitch_imported_meshes: bool = True
     symmetry: str = "off"
     source_config_by_name: dict[str, dict] = field(default_factory=dict)
     channel_config_by_name: dict[str, dict] = field(default_factory=dict)

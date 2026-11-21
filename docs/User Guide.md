@@ -267,7 +267,7 @@ existing results. Frequency limits and count are in the command strip beside
 - **Directivity normalization** sets the horizontal and vertical reference angles.
   The horizontal angle also supplies the reference for **Impose Channel Normalization**.
 - **Spinorama reference** sets the reference axes for the on-axis and listening-window curves.
-- **Fractional-octave smoothing** adjusts directivity, Spinorama, and balloon presentation.
+- **Fractional-octave smoothing** starts off. Enabling it smooths directivity, Spinorama, and balloon plots.
 - **Display range minimum** and **maximum** set the displayed and exported directivity range in dB.
 - **Isobar contour interval** sets the color steps. Choose 0 dB for smoothly interpolated colors.
 
@@ -293,7 +293,7 @@ CEA-2034-style 10-degree horizontal and vertical calculation.
 - **Interactive performance** controls the field cache, field updates while moving
   observation planes, and the streaming and interpolation quality of live plots.
   Completed solves use final plot quality.
-- **Appearance** selects the system, light, or dark theme.
+- **Appearance** defaults to Light. System and Dark are also available.
 
 ## Command Strip
 
@@ -360,7 +360,7 @@ They are useful for multiway interference and crossover studies.
 - **Voltage** sets the nominal voltage shared by electrodynamic transducers on
   the channel. It is unavailable when the channel contains a
   prescribed-velocity source.
-- **Impose Channel Normalization** flattens each channel's magnitude at the horizontal
+- **Impose Channel Normalization** starts off. Enabling it flattens each channel's magnitude at the horizontal
   reference angle before gain, delay, and filtering. Click **Apply** to update the
   response using the existing channel basis.
 - **Trim dB**, **Polarity**, and **Delay ms** apply complex channel weights.
@@ -386,9 +386,9 @@ and assign its BEM surface mesh or meshes. Add a **Bounded Interior** for each
 FEM chamber, choose its tetrahedral mesh and physical volume group, and
 optionally select a homogeneous FEM bulk-loss factor. A project containing
 bounded regions but no unbounded region is a valid interior-only FEM project.
-If the exterior uses adjoining parts of one continuous surface, enable
-**Stitch exterior region meshes**. The adjacent **Stitch tolerance** sets the
-maximum joining distance in millimeters. Leave stitching off for disconnected closed bodies.
+New projects enable **Stitch exterior region meshes** for adjoining parts of one
+continuous surface. The adjacent **Stitch tolerance** sets the maximum joining
+distance in millimeters. Turn stitching off for disconnected closed bodies.
 
 An exterior-only system supports prescribed-velocity components. Interior and
 coupled systems also support linear electrodynamic components. The Interfaces
