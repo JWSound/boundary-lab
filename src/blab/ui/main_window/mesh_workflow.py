@@ -18,10 +18,11 @@ from blab.generators.base import GeneratedGeometry, GeneratorDocument
 from blab.generators.postprocess import ensure_reduced_geometry
 from blab.generators.resources import active_assembly_system, generated_mesh_entries
 from blab.mesh_cache import mesh_cache
-from blab.mesh_data import surface_names
+from blab.mesh_data import read_resource_mesh, surface_names
 from blab.mesh_inventory import inspect_system_meshes
 from blab.mesh_topology import analyze_exterior_mesh_topology
 from blab.paths import working_runs_root
+from blab.pressure_unknowns import pressure_unknown_counts
 from blab.preview_hierarchy import build_preview_hierarchy
 from blab.preview_motion import preview_motion_assignments
 from blab.project.model import (
@@ -364,14 +365,18 @@ class MeshWorkflowMixin:
         return self.prepare_mesh_assembly(self.all_radiators()).surface_tags
 
     def _refresh_mesh_preview(self) -> None:
-        if not hasattr(self, "preparations"):
-            self._refresh_mesh_preview_sync()
-            return
-        self.preparations.cancel("preview")
-        self.preparations.cancel("system")
-        self.preparations.cancel("solve")
+        self.activity_status.set_unknown_counts(None, None)
+        if hasattr(self, "preparations"):
+            self.preparations.cancel("preview")
+            self.preparations.cancel("system")
+            self.preparations.cancel("solve")
         if not self.has_solver_meshes():
             self.clear_mesh_preview()
+            if self._project_document().physical_system is not None:
+                self.activity_status.set_unknown_counts(0, 0)
+            return
+        if not hasattr(self, "preparations"):
+            self._refresh_mesh_preview_sync()
             return
         snapshot = self._mesh_preparation_snapshot()
         document = self.project
@@ -384,7 +389,7 @@ class MeshWorkflowMixin:
             if self._mesh_preparation_snapshot() != snapshot:
                 self._refresh_mesh_preview()
                 return
-            assembly, generated, options, warning = result
+            assembly, generated, options, warning, counts = result
             was_clean = not self.project_workflow.has_unsaved_project_changes()
             self.project.imported_meshes = assembly.imported_meshes
             self.generated_geometry_by_document_id = generated
@@ -394,6 +399,7 @@ class MeshWorkflowMixin:
                     document_id,
                     artifact=geometry.to_reference(),
                 )
+            self.activity_status.set_unknown_counts(*counts)
             self.show_mesh_preview(assembly.mesh_configs, **options)
             if was_clean:
                 self.project_workflow.mark_project_clean()
@@ -428,9 +434,6 @@ class MeshWorkflowMixin:
         )
 
     def _refresh_mesh_preview_sync(self) -> None:
-        if not self.has_solver_meshes():
-            self.clear_mesh_preview()
-            return
         try:
             assembly = self.prepare_mesh_assembly(self.all_radiators())
             mesh_configs = assembly.mesh_configs
@@ -453,8 +456,17 @@ class MeshWorkflowMixin:
                 source_surface_tags_by_mesh=assembly.source_surface_tags_by_mesh,
                 solver_surface_by_source=assembly.solver_surface_by_source,
             )
+            loaded_meshes = {mesh.name: read_resource_mesh(mesh) for mesh in mesh_configs}
+            self.activity_status.set_unknown_counts(
+                *pressure_unknown_counts(
+                    assembly.physical_system,
+                    loaded_meshes,
+                    {m.name for m in assembly.source_mesh_configs},
+                )
+            )
             self.show_mesh_preview(
                 mesh_configs,
+                loaded_meshes=loaded_meshes,
                 motion_assignments=preview_motion_assignments(
                     assembly.physical_system or self._project_document().physical_system,
                     assembly.surface_tags_by_mesh,

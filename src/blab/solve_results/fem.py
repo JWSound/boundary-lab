@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import meshio
 import numpy as np
 
+from blab.fem_topology import select_tetrahedra as _selected_tetrahedra
 from blab.mesh_data import read_resource_mesh
 from blab.physical_model import AcousticRegionKind, CompiledPhysicalSystem
 from blab.solve_results.model import FEM_VOLUME_DOMAIN_ID, ResultDomain
@@ -113,29 +113,6 @@ def fem_volume_result_domain(system: CompiledPhysicalSystem, *, symmetry: str = 
             "element_order": element_order,
         },
     )
-
-
-def _selected_tetrahedra(mesh: meshio.Mesh, selected_tags: set[int]) -> np.ndarray:
-    physical_blocks = mesh.cell_data.get("gmsh:physical")
-    if physical_blocks is None or len(physical_blocks) != len(mesh.cells):
-        raise ValueError("FEM mesh tetrahedra do not contain gmsh:physical volume tags.")
-    selected: list[np.ndarray] = []
-    for block, raw_tags in zip(mesh.cells, physical_blocks, strict=True):
-        if block.type not in {"tetra", "tetra4", "tetra10"}:
-            continue
-        cells = np.asarray(block.data, dtype=np.int64)
-        tags = np.asarray(raw_tags, dtype=np.int64)
-        if tags.shape != (cells.shape[0],):
-            raise ValueError("FEM mesh physical-volume tags do not align with its tetrahedra.")
-        mask = np.isin(tags, tuple(selected_tags))
-        if np.any(mask):
-            selected.append(cells[mask])
-    if not selected:
-        return np.empty((0, 4), dtype=np.int64)
-    widths = {cells.shape[1] for cells in selected}
-    if len(widths) != 1:
-        raise ValueError("FEM mesh mixes first- and second-order tetrahedra.")
-    return np.vstack(selected)
 
 
 __all__ = ["fem_volume_result_domain"]

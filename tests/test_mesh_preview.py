@@ -18,9 +18,9 @@ from blab.ui.mesh_preview import (
     PREVIEW_HOME_VIEW_UP,
     PREVIEW_HOME_ZOOM,
     MeshPreview,
+    _dimensions_label,
     _dimensions_lwh_mm,
     _line_segments_with_symmetry_images,
-    _mesh_stats_label,
     _mirrored_triangle_images_for_preview,
     _preview_axis_label_points,
     _preview_axis_length,
@@ -51,8 +51,8 @@ def test_preview_status_labels_do_not_force_panel_width() -> None:
     assert "QSizePolicy" in source
     assert "self.hover_label.setMinimumWidth(0)" in source
     assert "self.hover_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)" in source
-    assert "self.total_elements_label.setMinimumWidth(0)" in source
-    assert "self.total_elements_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)" in source
+    assert "self.dimensions_label.setMinimumWidth(0)" in source
+    assert "self.dimensions_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)" in source
 
 
 def test_preview_background_tracks_the_application_theme() -> None:
@@ -221,11 +221,10 @@ def test_preview_orientation_guides_match_balloon_axis_labels() -> None:
     assert "always_visible=True" in source
 
 
-def test_mesh_stats_label_includes_mirrored_state_and_dimensions() -> None:
-    assert _mesh_stats_label(1234, mirrored=True, dimensions_mm=(300, 200, 100)) == (
-        "Total elements: 1,234 (Mirrored) | 300mm x 200mm x 100mm (LWH)"
-    )
-    assert _mesh_stats_label(0, mirrored=True, dimensions_mm=(0, 0, 0)) == ""
+def test_dimensions_label_includes_mirrored_state_and_dimensions() -> None:
+    points = np.array([[0, 0, 0], [0.2, 0.1, 0.3]])
+    assert _dimensions_label(points, mirrored=True) == "300mm x 200mm x 100mm (LWH) (Mirrored)"
+    assert _dimensions_label(np.empty((0, 3))) == ""
 
 
 def test_dimensions_lwh_mm_maps_z_x_y_extents() -> None:

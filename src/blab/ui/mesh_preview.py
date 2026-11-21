@@ -236,13 +236,13 @@ class MeshPreview(QWidget):
         self.hover_label.setMinimumHeight(22)
         self.hover_label.setMinimumWidth(0)
         self.hover_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
-        self.total_elements_label = QLabel("")
-        self.total_elements_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.total_elements_label.setMinimumHeight(22)
-        self.total_elements_label.setMinimumWidth(0)
-        self.total_elements_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        self.dimensions_label = QLabel("")
+        self.dimensions_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.dimensions_label.setMinimumHeight(22)
+        self.dimensions_label.setMinimumWidth(0)
+        self.dimensions_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         status_row.addWidget(self.hover_label, 1)
-        status_row.addWidget(self.total_elements_label)
+        status_row.addWidget(self.dimensions_label)
         viewport_layout.addLayout(status_row)
 
         layout.addWidget(viewport)
@@ -320,7 +320,7 @@ class MeshPreview(QWidget):
         self.viewer.clear()
         self._actor_surface_labels = {}
         self.hover_label.setText("")
-        self._set_total_element_count(0)
+        self.dimensions_label.clear()
         self._restore_observation_plane_scene(np.empty((0, 3)))
 
     def set_observation_planes(self, planes, *, selected_id: str | None = None) -> None:
@@ -403,10 +403,7 @@ class MeshPreview(QWidget):
         self.hover_label.setText("")
         display_points = np.asarray(mesh.points, dtype=float)
         self._restore_observation_plane_scene(display_points)
-        self._set_total_element_count(
-            int(triangles.shape[0]),
-            dimensions_mm=_dimensions_lwh_mm(display_points),
-        )
+        self._set_dimensions(display_points)
 
         if physical_tags is None:
             actor = self.viewer.add_mesh(
@@ -481,12 +478,11 @@ class MeshPreview(QWidget):
         self._topology_issue_actors = []
         self.hover_label.setText("")
         self._motion_assignments = motion_assignments or {}
-        total_elements = 0
         preview_points = []
         mirrored = str(symmetry or "off").strip().lower() != "off"
 
         for mesh_cfg in meshes:
-            mesh_elements, mesh_points = self._add_msh_mesh(
+            mesh_points = self._add_msh_mesh(
                 mesh_cfg,
                 driven_surfaces=driven_surfaces or set(),
                 interface_surfaces=interface_surfaces or set(),
@@ -495,16 +491,11 @@ class MeshPreview(QWidget):
                 symmetry=symmetry,
                 mesh=(loaded_meshes or {}).get(mesh_cfg.name),
             )
-            total_elements += mesh_elements
             preview_points.append(mesh_points)
 
         display_points = np.vstack(preview_points) if preview_points else np.empty((0, 3))
         self._restore_observation_plane_scene(display_points)
-        self._set_total_element_count(
-            total_elements,
-            mirrored=mirrored,
-            dimensions_mm=_dimensions_lwh_mm(display_points),
-        )
+        self._set_dimensions(display_points, mirrored=mirrored)
         if preview_points:
             self._add_orientation_guides(display_points)
         if hierarchy is None:
@@ -679,7 +670,7 @@ class MeshPreview(QWidget):
         mesh_region: str | None,
         symmetry: str,
         mesh: meshio.Mesh | None = None,
-    ) -> tuple[int, np.ndarray]:
+    ) -> np.ndarray:
         mesh = read_resource_mesh(mesh_cfg) if mesh is None else mesh
         points = np.asarray(mesh.points, dtype=float)
         scale_factor = 0.001 if mesh_cfg.scale_factor is None else float(mesh_cfg.scale_factor)
@@ -687,7 +678,6 @@ class MeshPreview(QWidget):
         triangles = _extract_triangles_for_preview(mesh)
         physical_tags = _extract_triangle_physical_tags_for_preview(mesh)
         mirrored_images = _mirrored_triangle_images_for_preview(points, triangles, symmetry)
-        base_count = int(triangles.shape[0])
 
         if physical_tags is None:
             actor = self.viewer.add_mesh(
@@ -731,7 +721,7 @@ class MeshPreview(QWidget):
                     mesh_name=mesh_cfg.name,
                     surface_tag=None,
                 )
-            return base_count, _preview_points_with_images(points, mirrored_images)
+            return _preview_points_with_images(points, mirrored_images)
 
         names_by_tag = {tag: name for name, tag in surface_tags.items()}
         for tag in sorted(np.unique(physical_tags)):
@@ -808,7 +798,7 @@ class MeshPreview(QWidget):
                     mesh_name=mesh_cfg.name,
                     surface_tag=int(tag),
                 )
-        return base_count, _preview_points_with_images(points, mirrored_images)
+        return _preview_points_with_images(points, mirrored_images)
 
     def _queue_motion_arrows(self, points, triangles, axis, mesh_name, tag, region) -> None:
         anchor = motion_arrow_anchor(points, triangles)
@@ -950,14 +940,8 @@ class MeshPreview(QWidget):
         if render:
             self.viewer.render()
 
-    def _set_total_element_count(
-        self,
-        count: int,
-        *,
-        mirrored: bool = False,
-        dimensions_mm: tuple[int, int, int] | None = None,
-    ) -> None:
-        self.total_elements_label.setText(_mesh_stats_label(count, mirrored=mirrored, dimensions_mm=dimensions_mm))
+    def _set_dimensions(self, points: np.ndarray, *, mirrored: bool = False) -> None:
+        self.dimensions_label.setText(_dimensions_label(points, mirrored=mirrored))
 
     def _camera_position(self):
         if self.viewer is None:
@@ -1169,23 +1153,12 @@ def _surface_hover_label(mesh_name: str | None, surface_name: str, tag: int | No
     return " | ".join(parts)
 
 
-def _mesh_stats_label(
-    count: int,
-    *,
-    mirrored: bool = False,
-    dimensions_mm: tuple[int, int, int] | None = None,
-) -> str:
-    if not count:
+def _dimensions_label(points: np.ndarray, *, mirrored: bool = False) -> str:
+    if not points.size:
         return ""
-
-    element_text = f"Total elements: {count:,}"
-    if mirrored:
-        element_text = f"{element_text} (Mirrored)"
-    if dimensions_mm is None:
-        return element_text
-
-    length_mm, width_mm, height_mm = dimensions_mm
-    return f"{element_text} | {length_mm}mm x {width_mm}mm x {height_mm}mm (LWH)"
+    length, width, height = _dimensions_lwh_mm(points)
+    suffix = " (Mirrored)" if mirrored else ""
+    return f"{length}mm x {width}mm x {height}mm (LWH){suffix}"
 
 
 def _dimensions_lwh_mm(points: np.ndarray) -> tuple[int, int, int]:
