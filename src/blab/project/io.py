@@ -353,7 +353,7 @@ def build_project_payload(
     active_generator_document_id: str | None,
     imported_meshes: list[dict[str, Any]],
     source_config_by_name: dict[str, Any],
-    stitch_imported_meshes: bool = False,
+    stitch_imported_meshes: bool = True,
     symmetry: str = "off",
     channel_config_by_name: dict[str, Any] | None = None,
     max_spl_limits_by_channel: dict[str, Any] | None = None,

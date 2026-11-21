@@ -321,6 +321,11 @@ def test_generator_menu_and_layout_compatibility(main_window, monkeypatch):
     monkeypatch.setattr(ProviderPackagesDialog, "exec", lambda _dialog: calls.append(True))
     menu_actions = main_window.menuBar().actions()
     edit = next(action for action in menu_actions if action.text() == "Edit").menu()
+    assert [action.text() for action in edit.actions() if not action.isSeparator()][:3] == [
+        "Project Configuration...",
+        "Preferences...",
+        "Generator Plugins...",
+    ]
     action = next(action for action in edit.actions() if action.text() == "Generator Plugins...")
     action.trigger()
     assert calls == [True]

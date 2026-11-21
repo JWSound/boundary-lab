@@ -56,8 +56,11 @@ class LiveSolveDataset:
         channels: tuple[ChannelConfig, ...],
         *,
         flat_target_reference_angle_deg: float | None = None,
+        flat_target_enabled: bool | None = None,
     ) -> None:
         self.channel_configs = tuple(channels)
+        if flat_target_enabled is not None:
+            self.flat_target_normalization_enabled = flat_target_enabled
         if flat_target_reference_angle_deg is not None:
             self.flat_target_reference_angle_deg = float(flat_target_reference_angle_deg)
 

@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QDoubleSpinBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -105,6 +106,7 @@ class SystemConfigResult:
     component_channel_by_id: dict[str, str]
     mesh_file_overrides_by_name: dict[str, str] = field(default_factory=dict)
     stitch_exterior_meshes: bool = False
+    stitch_tolerance_mm: float = 2.0
 
 
 @dataclass(frozen=True)
@@ -234,7 +236,6 @@ class SystemConfigDialog(QDialog):
         self._channel_names = channel_names or ("main",)
         self._component_channel_by_id = dict(component_channel_by_id or {})
         self._stitch_exterior_meshes = bool(stitch_exterior_meshes)
-        self._stitch_tolerance_mm = stitch_tolerance_mm
         self._collected_component_channels: dict[str, str] = {}
         self._mesh_file_overrides_by_name: dict[str, str] = {}
         self._interface_status_by_id: dict[str, str] = {}
@@ -297,7 +298,7 @@ class SystemConfigDialog(QDialog):
         self.tabs.addTab(self.components_tab, "Components")
         self.tabs.currentChanged.connect(self._on_tab_changed)
 
-        self._build_regions_tab()
+        self._build_regions_tab(stitch_tolerance_mm)
         self._build_boundaries_tab()
         self._build_interfaces_tab()
         self._build_components_tab()
@@ -321,7 +322,7 @@ class SystemConfigDialog(QDialog):
         layout.addWidget(buttons)
         self.resize(980, 560)
 
-    def _build_regions_tab(self) -> None:
+    def _build_regions_tab(self, stitch_tolerance_mm: float) -> None:
         self.regions_table = QTableWidget(0, 5)
         self.regions_table.setHorizontalHeaderLabels(["Name", "Type", "Mesh", "Volume Group", "FEM Bulk Loss Factor"])
         self.regions_table.verticalHeader().setVisible(False)
@@ -345,6 +346,20 @@ class SystemConfigDialog(QDialog):
         self.stitch_exterior_meshes_check.toggled.connect(self._invalidate_identified_interfaces)
         row.addSpacing(16)
         row.addWidget(self.stitch_exterior_meshes_check)
+        tolerance_label = QLabel("Stitch tolerance")
+        self.stitch_tolerance_spin = QDoubleSpinBox()
+        self.stitch_tolerance_spin.setDecimals(3)
+        self.stitch_tolerance_spin.setRange(0.001, 1000.0)
+        self.stitch_tolerance_spin.setSingleStep(0.5)
+        self.stitch_tolerance_spin.setKeyboardTracking(False)
+        self.stitch_tolerance_spin.setSuffix(" mm")
+        self.stitch_tolerance_spin.setValue(stitch_tolerance_mm)
+        tolerance_label.setBuddy(self.stitch_tolerance_spin)
+        for widget in (tolerance_label, self.stitch_tolerance_spin):
+            row.addWidget(widget)
+            widget.setVisible(self.stitch_exterior_meshes_check.isChecked())
+            self.stitch_exterior_meshes_check.toggled.connect(widget.setVisible)
+        self.stitch_tolerance_spin.valueChanged.connect(self._invalidate_identified_interfaces)
         row.addStretch(1)
         layout = QVBoxLayout(self.regions_tab)
         layout.addWidget(self.regions_table)
@@ -882,7 +897,7 @@ class SystemConfigDialog(QDialog):
                         boundaries=boundaries,
                         interfaces=tuple(self._interfaces),
                     ),
-                    stitch_tolerance_mm=self._stitch_tolerance_mm,
+                    stitch_tolerance_mm=self.stitch_tolerance_spin.value(),
                     symmetry_mode=self._symmetry_mode,
                     output_root=self._interface_output_root,
                     identify_interfaces=True,
@@ -1885,6 +1900,7 @@ class SystemConfigDialog(QDialog):
             component_channel_by_id=dict(self._collected_component_channels),
             mesh_file_overrides_by_name=dict(self._mesh_file_overrides_by_name),
             stitch_exterior_meshes=bool(self.stitch_exterior_meshes_check.isChecked()),
+            stitch_tolerance_mm=self.stitch_tolerance_spin.value(),
         )
 
     def apply(self) -> bool:

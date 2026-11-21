@@ -68,7 +68,7 @@ is multiplied by `sqrt(2)` before comparison with peak Xmax. One channel-level
 rating pair is shared by every component on that channel; heterogeneous driver
 ratings require separate channels in this first implementation.
 
-When **Normalized Channel Correction** is enabled, Boundary Lab evaluates each
+When **Impose Channel Normalization** is enabled, Boundary Lab evaluates each
 channel's isolated response at the configured horizontal reference angle and
 applies a real magnitude correction before the channel controls. This makes
 the isolated channel magnitude target flat before crossover shaping. It is not

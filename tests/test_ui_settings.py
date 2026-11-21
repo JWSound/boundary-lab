@@ -34,6 +34,27 @@ class MemorySettings:
         self.values.pop(key, None)
 
 
+def test_fresh_profile_defaults_and_saved_overrides() -> None:
+    from blab.project.model import ProjectPreferencesState, new_project_document
+
+    preferences = load_gui_preferences(MemorySettings())
+    assert preferences.theme == "light"
+    assert not preferences.normalized_channel_correction
+    assert preferences.polar_smoothing is None
+    assert new_project_document().stitch_imported_meshes
+    assert (
+        project_preferences_from_gui(preferences, freq_min_hz=200, freq_max_hz=20000, freq_count=41)
+        == ProjectPreferencesState()
+    )
+
+    saved = MemorySettings()
+    save_gui_preferences(saved, GuiPreferences(theme="system", normalized_channel_correction=True, polar_smoothing=48))
+    restored = load_gui_preferences(saved)
+    assert restored.theme == "system"
+    assert restored.normalized_channel_correction
+    assert restored.polar_smoothing == 48
+
+
 def test_live_plot_quality_sample_mapping() -> None:
     assert normalize_live_plot_quality("LOW") == "low"
     assert normalize_live_plot_quality("bogus") == "medium"
@@ -89,7 +110,7 @@ def test_preferences_dialog_exposes_field_settings_with_help(qapp) -> None:
     dialog = PreferencesDialog(GuiPreferences(field_cache_size_mb=256, field_translation_target_fps=25.0))
     try:
         groups = {group.title() for group in dialog.findChildren(QGroupBox)}
-        assert "Fields" in groups
+        assert "Interactive performance" in groups
         assert dialog.field_cache_size_spin.value() == 256
         assert dialog.field_translation_target_fps_spin.value() == 25.0
         assert dialog.field_cache_size_spin.toolTip()
@@ -156,9 +177,9 @@ def test_preference_change_classification() -> None:
         baseline,
         GuiPreferences(polar_observation_distance_m=3.5),
     )
-    assert preferences_require_solve_invalidation(
+    assert not preferences_require_solve_invalidation(
         baseline,
-        GuiPreferences(normalized_channel_correction=False),
+        GuiPreferences(normalized_channel_correction=True),
     )
     assert not preferences_require_visualization_refresh(
         baseline,

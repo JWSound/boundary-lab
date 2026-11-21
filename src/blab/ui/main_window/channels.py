@@ -120,6 +120,7 @@ class ChannelsMixin:
         dialog = ChannelConfigDialog(
             self._channel_configs_for_current_radiators(),
             self,
+            normalized_channel_correction=self.preferences.normalized_channel_correction,
             prescribed_velocity_channel_names=self.prescribed_velocity_channel_names(),
         )
         self.channel_config_dialog = dialog
@@ -129,8 +130,8 @@ class ChannelsMixin:
         dialog.raise_()
         dialog.activateWindow()
 
-    @Slot(object)
-    def _apply_channel_config(self, channels: tuple[ChannelConfig, ...]) -> None:
+    @Slot(object, bool)
+    def _apply_channel_config(self, channels: tuple[ChannelConfig, ...], normalize: bool) -> None:
         channels = tuple(channels)
         channel_config_changed = channels != self.channel_configs()
         valid_names = {channel.name for channel in channels}
@@ -141,30 +142,39 @@ class ChannelsMixin:
             and self.live_dataset is not None
             and self.live_dataset.supports_channel_resynthesis
         )
-        if not channel_config_changed and not radiator_assignments_changed:
+        normalization_changed = normalize != self.preferences.normalized_channel_correction
+        if not (channel_config_changed or normalization_changed or radiator_assignments_changed):
             self.show_status("Channel config unchanged")
             return
         if not can_resynthesize and not self._confirm_clear_solved_data():
             return
 
-        self._save_channel_config(channels)
-        self._geometry_store().reassign_channels(valid_names, fallback)
+        if normalization_changed:
+            self._update_project_preferences(normalized_channel_correction=normalize)
+        if channel_config_changed:
+            self._save_channel_config(channels)
+        if radiator_assignments_changed:
+            self._geometry_store().reassign_channels(valid_names, fallback)
         if can_resynthesize:
             self.live_dataset.set_channel_synthesis(
                 channels,
+                flat_target_enabled=normalize,
                 flat_target_reference_angle_deg=self.preferences.horizontal_normalization_angle,
             )
-            self.refresh_plots()
-            self.set_balloon_plot_available(self.live_dataset.has_balloon_data)
-            balloon_window = self.balloon_window
-            if balloon_window is not None and balloon_window.isVisible():
-                refresh_balloon = getattr(balloon_window, "refresh_from_latest_results", None)
-                if callable(refresh_balloon):
-                    refresh_balloon()
-            observation_planes = getattr(self, "observation_plane_controller", None)
-            if observation_planes is not None:
-                observation_planes.sync_view()
+            self._refresh_channel_responses()
             self.show_status(f"Channel config updated: {len(channels)} channels; plots resynthesized")
         else:
             self.solve_results_invalidated.emit("channel_config_changed")
             self.show_status(f"Channel config updated: {len(channels)} channels")
+
+    def _refresh_channel_responses(self) -> None:
+        self.refresh_plots()
+        self.set_balloon_plot_available(self.live_dataset is not None and self.live_dataset.has_balloon_data)
+        balloon_window = self.balloon_window
+        if balloon_window is not None and balloon_window.isVisible():
+            refresh_balloon = getattr(balloon_window, "refresh_from_latest_results", None)
+            if callable(refresh_balloon):
+                refresh_balloon()
+        observation_planes = getattr(self, "observation_plane_controller", None)
+        if observation_planes is not None:
+            observation_planes.sync_view()

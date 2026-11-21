@@ -99,6 +99,7 @@ from blab.ui.result_projection import (
 from blab.ui.settings import (
     application_settings,
     load_syntax_highlighting_enabled,
+    project_preferences_from_gui,
     settings_int,
 )
 
@@ -335,8 +336,7 @@ class MainWindow(
             geometry_store=self.geometry_store,
             preferences=lambda: self.preferences,
             set_preferences=self._set_preferences,
-            save_preferences=lambda: self._save_preferences(),
-            save_frequency_settings=lambda: self._save_frequency_settings(),
+            new_project_defaults=lambda: self.new_project_defaults,
             remember_recent=lambda path: self._remember_recent_project(path),
             forget_recent=lambda path: self._remove_recent_project(path),
             activities=self.activities,
@@ -413,11 +413,9 @@ class MainWindow(
         self.channel_config_button = QPushButton("Channels")
         self.system_config_button.setEnabled(self.has_solver_meshes())
 
-        freq_min = min(max(settings_int(self.settings, "solve/freq_min_hz", 200), AUDIO_FREQ_MIN_HZ), AUDIO_FREQ_MAX_HZ)
-        freq_max = min(
-            max(settings_int(self.settings, "solve/freq_max_hz", 20000), AUDIO_FREQ_MIN_HZ), AUDIO_FREQ_MAX_HZ
-        )
-        freq_count = min(max(settings_int(self.settings, "solve/freq_count", 41), 3), 200)
+        freq_min = settings_int(self.settings, "solve/freq_min_hz", 200)
+        freq_max = settings_int(self.settings, "solve/freq_max_hz", 20000)
+        freq_count = settings_int(self.settings, "solve/freq_count", 41)
 
         self.freq_min_slider = self._make_slider(0, FREQ_SLIDER_STEPS, frequency_to_slider_value(freq_min))
         self.freq_max_slider = self._make_slider(0, FREQ_SLIDER_STEPS, frequency_to_slider_value(freq_max))
@@ -428,6 +426,9 @@ class MainWindow(
         self.freq_max_spin = self._make_spin(AUDIO_FREQ_MIN_HZ, AUDIO_FREQ_MAX_HZ, freq_max)
         self.freq_count_spin = self._make_spin(3, 200, freq_count)
 
+        self.new_project_defaults = project_preferences_from_gui(
+            self.preferences, freq_min_hz=max(1, freq_min), freq_max_hz=max(1, freq_max), freq_count=max(1, freq_count)
+        )
         self.status_label = QLabel("Ready")
         startup("Creating plot panels...")
         self.horizontal_plot = IsobarCanvas("Horizontal Isobar")
@@ -675,7 +676,6 @@ class MainWindow(
         if not self._confirm_unsaved_project_changes("close"):
             event.ignore()
             return
-        self._save_frequency_settings()
         self._save_preferences()
         self._save_window_state()
         self.dispose_provider_editors()
