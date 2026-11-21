@@ -11,6 +11,38 @@ from blab.phasor import standard_to_solver_phasor
 REFERENCE_PRESSURE_PA = 20e-6
 
 
+def channel_configs_from_payload(raw: object) -> tuple[ChannelConfig, ...]:
+    raw = raw if isinstance(raw, dict) else {}
+    if not raw:
+        return (ChannelConfig(name="main"),)
+    channels = []
+    for name, payload in sorted(raw.items()):
+        payload = payload if isinstance(payload, dict) else {}
+        channels.append(
+            ChannelConfig(
+                name=str(name),
+                voltage_v=float(payload.get("voltage_v", DEFAULT_CHANNEL_VOLTAGE_V)),
+                level_db=float(payload.get("level_db", 0.0)),
+                polarity=int(payload.get("polarity", 1)),
+                delay_ms=float(payload.get("delay_ms", 0.0)),
+                hpf=saved_crossover(payload.get("hpf"), crossover_type="highpass"),
+                lpf=saved_crossover(payload.get("lpf"), crossover_type="lowpass"),
+            )
+        )
+    return tuple(channels) or (ChannelConfig(name="main"),)
+
+
+def saved_crossover(raw: object, *, crossover_type: str) -> CrossoverConfig:
+    if not isinstance(raw, dict) or raw.get("frequency_hz") is None:
+        return CrossoverConfig()
+    return CrossoverConfig(
+        type=crossover_type,
+        filter=str(raw.get("filter", "butterworth")).lower(),
+        order=int(raw.get("order", 1)),
+        frequency_hz=float(raw["frequency_hz"]),
+    )
+
+
 def crossover_response(crossover: CrossoverConfig, freq_hz: float) -> complex:
     """Return a crossover coefficient in the solver's ``exp(+i omega t)`` convention."""
 
@@ -87,6 +119,59 @@ def flat_target_corrections(
     return corrections
 
 
+def excitation_weights(
+    *,
+    solve_index: int,
+    frequency_hz: float,
+    response_id: str,
+    excitation_ids: tuple[str, ...],
+    channel_names_by_excitation: tuple[str, ...],
+    channel_configs: tuple[ChannelConfig, ...],
+    voltage_channel_names: frozenset[str],
+    horizontal_pressure_by_frequency: np.ndarray | None,
+    horizontal_angles_deg: np.ndarray | None,
+    flat_target_enabled: bool,
+    flat_target_reference_angle_deg: float,
+) -> np.ndarray:
+    configs = {channel.name: channel for channel in channel_configs}
+    channel_names = tuple(dict.fromkeys(channel_names_by_excitation))
+    correction_by_channel = {name: 1.0 for name in channel_names}
+    if flat_target_enabled and horizontal_pressure_by_frequency is not None and horizontal_angles_deg is not None:
+        horizontal_basis = np.asarray(horizontal_pressure_by_frequency[solve_index])
+        grouped = np.vstack(
+            [
+                np.sum(
+                    horizontal_basis[
+                        [index for index, candidate in enumerate(channel_names_by_excitation) if candidate == name]
+                    ],
+                    axis=0,
+                )
+                for name in channel_names
+            ]
+        )
+        corrections = flat_target_corrections(
+            grouped,
+            horizontal_angles_deg,
+            flat_target_reference_angle_deg,
+            enabled=True,
+        )
+        correction_by_channel.update(
+            {name: float(correction) for name, correction in zip(channel_names, corrections, strict=True)}
+        )
+
+    selected_channel = response_id.removeprefix("channel:") if response_id.startswith("channel:") else None
+    if selected_channel not in channel_names:
+        selected_channel = None
+    weights = np.zeros(len(excitation_ids), dtype=np.complex64)
+    for index, channel_name in enumerate(channel_names_by_excitation):
+        if selected_channel is not None and channel_name != selected_channel:
+            continue
+        config = configs.get(channel_name, ChannelConfig(name=channel_name))
+        voltage_gain = channel_voltage_gain(config) if channel_name in voltage_channel_names else 1.0
+        weights[index] = correction_by_channel[channel_name] * channel_drive(config, frequency_hz) * voltage_gain
+    return weights
+
+
 def synthesize_channel_basis_spl(
     *,
     freq_hz: float,
@@ -148,7 +233,8 @@ def synthesize_channel_basis_spl(
 
 
 def pressure_to_spl(pressure: np.ndarray) -> np.ndarray:
-    return 20.0 * np.log10(np.abs(pressure) / REFERENCE_PRESSURE_PA)
+    with np.errstate(divide="ignore"):
+        return 20.0 * np.log10(np.abs(pressure) / REFERENCE_PRESSURE_PA)
 
 
 def complex_reference_pressure(

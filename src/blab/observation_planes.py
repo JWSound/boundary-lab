@@ -393,3 +393,13 @@ def _positive_finite(value: float, *, label: str, minimum: float) -> float:
     if not math.isfinite(number) or number < minimum:
         raise ValueError(f"Observation plane {label} must be finite and at least {minimum:g}.")
     return number
+
+
+def sample_plane_points(plane: ObservationPlane, shape: tuple[int, int]) -> np.ndarray:
+    x_count, y_count = shape
+    axis_u, axis_v, _normal = plane.local_axes
+    u_values = np.linspace(-plane.width_m * 0.5, plane.width_m * 0.5, x_count)
+    v_values = np.linspace(-plane.height_m * 0.5, plane.height_m * 0.5, y_count)
+    center = np.asarray(plane.center_m, dtype=float)
+    u_grid, v_grid = np.meshgrid(u_values, v_values)
+    return center + u_grid.reshape(-1, 1) * axis_u + v_grid.reshape(-1, 1) * axis_v
