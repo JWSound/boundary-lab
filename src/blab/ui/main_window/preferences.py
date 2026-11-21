@@ -251,14 +251,12 @@ class PreferencesMixin:
         dialog = ProviderPackagesDialog(
             self.preferences.enabled_geometry_providers,
             self,
-            default_provider=self.preferences.default_geometry_provider,
             is_busy=self.generator_plugins_busy,
         )
         try:
             if dialog.exec() != QDialog.Accepted:
                 return
             self.preferences.enabled_geometry_providers = tuple(sorted(dialog.enabled))
-            self.preferences.default_geometry_provider = dialog.default_provider
             provider_catalog().enabled = set(dialog.enabled)
             self._save_preferences()
             self.rebuild_generator_document_tabs()

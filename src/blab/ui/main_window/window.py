@@ -5,14 +5,16 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import QEvent, QTimer, Signal, Slot
+from PySide6.QtCore import QEvent, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QDockWidget,
     QLabel,
     QMainWindow,
+    QMenu,
     QPushButton,
     QTabWidget,
+    QToolButton,
     QWidget,
 )
 
@@ -335,7 +337,6 @@ class MainWindow(
             save_frequency_settings=lambda: self._save_frequency_settings(),
             remember_recent=lambda path: self._remember_recent_project(path),
             forget_recent=lambda path: self._remove_recent_project(path),
-            default_document_factory=self.new_default_generator_document,
             activities=self.activities,
             preparations=self.preparations,
         )
@@ -356,6 +357,15 @@ class MainWindow(
         self._live_plot_refresh_timer.timeout.connect(self.flush_live_refresh)
         startup("Building design editor...")
         self.editor_tabs = QTabWidget()
+        self.add_design_button = QToolButton(self.editor_tabs)
+        self.add_design_button.setText("+")
+        self.add_design_button.setAccessibleName("Add design")
+        self.add_design_button.setToolTip("Add design")
+        self.add_design_button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.add_design_button.clicked.connect(self.choose_generator_plugin)
+        self.add_design_menu = QMenu(self.add_design_button)
+        self.add_design_menu.triggered.connect(lambda action: self.add_generator_document(action.data()))
+        self.editor_tabs.setCornerWidget(self.add_design_button)
         self.editor_tabs.setDocumentMode(True)
         self.editor_tabs.setTabsClosable(True)
         self.editor_tabs.currentChanged.connect(self._on_active_generator_tab_changed)
@@ -647,11 +657,6 @@ class MainWindow(
         self.connect_dpi_signals()
 
     def eventFilter(self, watched, event) -> bool:  # noqa: N802 - Qt override
-        if watched is self.editor_tabs.tabBar() and event.type() == QEvent.Type.MouseButtonRelease:
-            index = self.editor_tabs.tabBar().tabAt(event.position().toPoint())
-            if index == len(self.generator_documents):
-                self.add_generator_document()
-                return True
         if watched is self.editor_tabs.tabBar() and event.type() == QEvent.Type.MouseButtonDblClick:
             index = self.editor_tabs.tabBar().tabAt(event.position().toPoint())
             if 0 <= index < len(self.generator_documents):

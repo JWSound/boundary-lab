@@ -226,13 +226,12 @@ def _tab_close_buttons(main_window) -> list:
     return [tab_bar.tabButton(index, QTabBar.ButtonPosition.RightSide) for index in range(tab_bar.count())]
 
 
-def test_design_tabs_carry_the_themed_close_button_and_the_add_tab_carries_none(main_window) -> None:
+def test_design_tabs_carry_the_themed_close_button(main_window) -> None:
     """Qt's own close button is a fixed red-orange bitmap."""
     buttons = _tab_close_buttons(main_window)
 
-    assert len(buttons) == len(main_window.generator_documents) + 1
-    assert all(isinstance(button, TabCloseButton) for button in buttons[:-1])
-    assert buttons[-1] is None
+    assert len(buttons) == len(main_window.generator_documents)
+    assert all(isinstance(button, TabCloseButton) for button in buttons)
 
 
 def test_close_button_glyph_is_dimmer_than_tab_text_in_both_themes(qapp) -> None:
@@ -258,8 +257,8 @@ def test_close_button_glyph_is_dimmer_than_tab_text_in_both_themes(qapp) -> None
 
 def test_a_close_button_removes_its_own_design_after_the_tabs_renumber(main_window) -> None:
     """The index is resolved on click, after any renumbering."""
-    main_window.add_generator_document()
-    main_window.add_generator_document()
+    main_window.add_generator_document("ath")
+    main_window.add_generator_document("ath")
     names = [document.name for document in main_window.generator_documents]
     assert len(names) == 3
 

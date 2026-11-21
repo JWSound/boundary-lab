@@ -13,13 +13,13 @@ from types import SimpleNamespace
 import pytest
 from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtGui import QCloseEvent  # noqa: E402
-from PySide6.QtWidgets import QDockWidget, QFrame, QMessageBox, QTabBar, QToolButton  # noqa: E402
+from PySide6.QtWidgets import QDockWidget, QFrame, QMessageBox, QToolButton  # noqa: E402
 
 import blab.ui.main_window.state_sync as state_sync_module  # noqa: E402
 import blab.ui.main_window.view_builder as view_builder_module  # noqa: E402
 from blab.config import ChannelConfig  # noqa: E402
 from blab.physical_model import ComponentKind, ExcitationPortKind  # noqa: E402
-from blab.ui.main_window import ADD_DESIGN_TAB_LABEL, LIVE_PLOT_REFRESH_INTERVAL_MS  # noqa: E402
+from blab.ui.main_window import LIVE_PLOT_REFRESH_INTERVAL_MS  # noqa: E402
 from blab.ui.main_window_widgets import DockTitleBar  # noqa: E402
 from repo_paths import BLAB_SRC, MAIN_WINDOW_PKG  # noqa: E402
 
@@ -712,13 +712,11 @@ def test_capture_and_clear_are_routed_to_the_requested_plot_only(main_window, mo
 # ------------------------------------------------------------------- generator tabs
 
 
-def test_add_design_tab_is_a_button_not_a_closable_document(main_window) -> None:
+def test_add_design_button_is_separate_from_document_tabs(main_window) -> None:
     tabs = main_window.editor_tabs
-    add_index = next(i for i in range(tabs.count()) if tabs.tabText(i) == ADD_DESIGN_TAB_LABEL)
-
-    bar = tabs.tabBar()
-    assert bar.tabButton(add_index, QTabBar.ButtonPosition.RightSide) is None
-    assert bar.tabButton(add_index, QTabBar.ButtonPosition.LeftSide) is None
+    assert tabs.cornerWidget() is main_window.add_design_button
+    assert tabs.count() == len(main_window.generator_documents)
+    assert main_window.add_design_button.accessibleName() == "Add design"
 
 
 # --------------------------------------------------------------------- preview tree

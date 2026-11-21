@@ -8,7 +8,7 @@ from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
 
-from PySide6.QtCore import Slot
+from PySide6.QtCore import QPoint, Slot
 from PySide6.QtWidgets import (
     QDockWidget,
     QInputDialog,
@@ -31,9 +31,6 @@ from blab.project.model import (
     unique_generator_name,
 )
 from blab.ui.ath_editor import AthScriptEditor
-from blab.ui.main_window.constants import (
-    ADD_DESIGN_TAB_LABEL,
-)
 from blab.ui.main_window_widgets import TabCloseButton
 from blab.ui.provider_editor import AthProviderEditor, DocumentHost
 from blab.ui.settings import save_syntax_highlighting_enabled
@@ -172,12 +169,12 @@ class GeneratorDocumentsMixin:
                     + json.dumps(document.source, indent=2, sort_keys=True)
                 )
             self._install_tab_close_button(self.editor_tabs.addTab(editor, document.name), document.name)
-        add_tab = AthScriptEditor(highlight_syntax=False)
-        add_tab.setReadOnly(True)
-        add_tab.configDropped.connect(lambda path: self.import_config_path(Path(path)))
-        add_index = self.editor_tabs.addTab(add_tab, ADD_DESIGN_TAB_LABEL)
-        self.editor_tabs.tabBar().setTabButton(add_index, QTabBar.ButtonPosition.RightSide, None)
-        self.editor_tabs.tabBar().setTabToolTip(add_index, "Add design")
+        if not self.generator_documents:
+            empty_editor = AthScriptEditor(highlight_syntax=False)
+            empty_editor.setReadOnly(True)
+            empty_editor.configDropped.connect(lambda path: self.import_config_path(Path(path)))
+            index = self.editor_tabs.addTab(empty_editor, "Designs")
+            self.editor_tabs.tabBar().setTabButton(index, QTabBar.ButtonPosition.RightSide, None)
         active_index = self.active_generator_document_index()
         if active_index >= 0:
             self.editor_tabs.setCurrentIndex(active_index)
@@ -235,9 +232,6 @@ class GeneratorDocumentsMixin:
         )
 
     def _on_active_generator_tab_changed(self, index: int) -> None:
-        if index == len(self.generator_documents):
-            self.add_generator_document()
-            return
         if 0 <= index < len(self.generator_documents):
             self.active_generator_document_id = self.generator_documents[index].id
             self._refresh_generate_availability()
@@ -260,12 +254,27 @@ class GeneratorDocumentsMixin:
             and not self.preparations.active
         )
 
-    def new_default_generator_document(self, name):
-        provider_id = self.preferences.default_geometry_provider
+    @Slot()
+    def choose_generator_plugin(self) -> None:
+        catalog = provider_catalog()
+        choices = [("Ath", ATH_PROVIDER_ID)]
+        choices.extend(
+            (package.manifest.name, package.manifest.id)
+            for package in catalog.packages
+            if package.manifest and not package.error and package.manifest.id in catalog.enabled
+        )
+        if len(choices) == 1:
+            self.add_generator_document(ATH_PROVIDER_ID)
+            return
+        self.add_design_menu.clear()
+        for label, provider_id in choices:
+            self.add_design_menu.addAction(label).setData(provider_id)
+        button = self.add_design_button
+        self.add_design_menu.popup(button.mapToGlobal(QPoint(0, button.height())))
+
+    def _new_generator_document(self, name, provider_id):
         if provider_id == ATH_PROVIDER_ID:
             return new_generator_document(name, "")
-        if name == "waveguide":
-            name = "design"
         # Defaults are declarative: creating a design never instantiates a backend.
         manifest = provider_catalog().package(provider_id).manifest
         return replace(
@@ -278,11 +287,10 @@ class GeneratorDocumentsMixin:
             mesh_scale_factor=manifest.mesh_scale_factor,
         )
 
-    @Slot()
-    def add_generator_document(self) -> None:
+    def add_generator_document(self, provider_id: str) -> None:
         name = unique_generator_name("design", self.generator_documents)
         try:
-            document = self.new_default_generator_document(name)
+            document = self._new_generator_document(name, provider_id)
         except ValueError as exc:
             self.show_error("Generator Plugin unavailable", str(exc))
             self.editor_tabs.setCurrentIndex(self.active_generator_document_index())

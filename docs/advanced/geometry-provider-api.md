@@ -294,7 +294,8 @@ host. A provider is required to generate again.
 Copy a package folder into `<Boundary Lab>/geometry_providers/`, the application's
 only plugin location. **Edit > Generator Plugins...** offers
 an **Open install folder** shortcut and **Rescan**. Enable the
-plugin, choose the **Default Generator Plugin** for new designs, then click **OK**. Existing designs keep their own provider ID. Newly discovered
+plugin and click **OK**. Select it from the Generator pane's **+** menu to
+create a design. Existing designs keep their own provider ID. Newly discovered
 packages are disabled until enabled; opening a project never enables a package.
 
 The developer-only [Example Box test fixture](../../tests/fixtures/geometry_providers/example_box/)
