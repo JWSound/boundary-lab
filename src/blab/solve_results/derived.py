@@ -31,6 +31,11 @@ def phase_deg(values: np.ndarray) -> np.ndarray:
     return solver_phase_deg(values)
 
 
+def peak_excursion_mm(velocity: np.ndarray, frequency_hz: float) -> np.ndarray:
+    """One-way peak displacement in mm from RMS diaphragm velocity."""
+    return np.sqrt(2.0) * np.abs(velocity / (1j * 2.0 * np.pi * frequency_hz)) * 1000.0
+
+
 def velocity_to_excursion(
     velocity: SolvedQuantity,
     frequencies_hz: np.ndarray,

@@ -18,6 +18,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+fields = ["pyvista>=0.47"]
 dev = [
   "pytest",
   "ruff>=0.15,<0.16",
