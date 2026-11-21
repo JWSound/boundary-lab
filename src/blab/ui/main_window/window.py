@@ -44,6 +44,7 @@ from blab.ui.excursion_plot import (
     RealInputPowerCanvas,
 )
 from blab.ui.file_dialogs import FileDialogService
+from blab.ui.frequency_range_control import FrequencyRangeControl
 from blab.ui.group_delay_plot import GroupDelayCanvas
 from blab.ui.main_window.backend_health import BackendHealthController
 from blab.ui.main_window.channels import ChannelsMixin
@@ -82,14 +83,10 @@ from blab.ui.operation_controllers import (
     SolveController,
 )
 from blab.ui.plots import (
-    AUDIO_FREQ_MAX_HZ,
-    AUDIO_FREQ_MIN_HZ,
-    FREQ_SLIDER_STEPS,
     ImpedanceCanvas,
     IsobarCanvas,
     OnAxisResponseCanvas,
     SpinoramaCanvas,
-    frequency_to_slider_value,
 )
 from blab.ui.preparation_worker import PreparationController
 from blab.ui.provider_host import DesktopProviderHost
@@ -417,13 +414,10 @@ class MainWindow(
         freq_max = settings_int(self.settings, "solve/freq_max_hz", 20000)
         freq_count = settings_int(self.settings, "solve/freq_count", 41)
 
-        self.freq_min_slider = self._make_slider(0, FREQ_SLIDER_STEPS, frequency_to_slider_value(freq_min))
-        self.freq_max_slider = self._make_slider(0, FREQ_SLIDER_STEPS, frequency_to_slider_value(freq_max))
+        self.frequency_control = FrequencyRangeControl(freq_min, freq_max)
         self.freq_count_slider = self._make_slider(3, 200, freq_count)
         self.freq_count_slider.setSingleStep(2)
 
-        self.freq_min_spin = self._make_spin(AUDIO_FREQ_MIN_HZ, AUDIO_FREQ_MAX_HZ, freq_min)
-        self.freq_max_spin = self._make_spin(AUDIO_FREQ_MIN_HZ, AUDIO_FREQ_MAX_HZ, freq_max)
         self.freq_count_spin = self._make_spin(3, 200, freq_count)
 
         self.new_project_defaults = project_preferences_from_gui(

@@ -41,7 +41,6 @@ from blab.plot_style import (
 from blab.plotting import VisualizerConfig
 from blab.spinorama import SpinoramaCurves, compute_spinorama_from_planes
 
-FREQ_SLIDER_STEPS = 1000
 ISOBAR_COLORBAR_MIN_TICK_STEP_DB = 3.0
 LIVE_ISOBAR_ANGLE_SAMPLES = 180
 LIVE_ISOBAR_FREQ_SAMPLES = 90
@@ -159,20 +158,6 @@ def clear_plot_axes(axes) -> None:
     if axes.get_xscale() != "linear":
         axes.set_xscale("linear")
     axes.clear()
-
-
-def frequency_to_slider_value(freq_hz: int | float) -> int:
-    clamped = min(max(float(freq_hz), AUDIO_FREQ_MIN_HZ), AUDIO_FREQ_MAX_HZ)
-    fraction = (np.log10(clamped) - np.log10(AUDIO_FREQ_MIN_HZ)) / (
-        np.log10(AUDIO_FREQ_MAX_HZ) - np.log10(AUDIO_FREQ_MIN_HZ)
-    )
-    return int(round(fraction * FREQ_SLIDER_STEPS))
-
-
-def slider_value_to_frequency(value: int) -> int:
-    fraction = float(value) / FREQ_SLIDER_STEPS
-    log_freq = np.log10(AUDIO_FREQ_MIN_HZ) + fraction * (np.log10(AUDIO_FREQ_MAX_HZ) - np.log10(AUDIO_FREQ_MIN_HZ))
-    return int(round(10.0**log_freq))
 
 
 def _format_isobar_crosshair_frequency(freq_hz: float) -> str:
