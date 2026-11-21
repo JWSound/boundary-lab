@@ -215,6 +215,7 @@ class ObservationPlaneViewport(QObject):
         viewer.destroyed.connect(self.close)
 
         viewer.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        viewer.setMouseTracking(True)
         viewer.installEventFilter(self)
         tool_shortcuts = {
             "w": self._activate_move_mode,
@@ -361,6 +362,8 @@ class ObservationPlaneViewport(QObject):
             self._selected_id = selected_id if selected_id in available_ids else None
         elif self._selected_id not in available_ids:
             self._selected_id = None
+        if self._selected_id != previous_selected_id:
+            self._radar.hovered_axis = None
         if self._selected_id is None:
             self._mode = None
         result_update = _result_selection_update(
@@ -579,6 +582,11 @@ class ObservationPlaneViewport(QObject):
         if event_type == QEvent.Type.MouseMove and self._drag is not None:
             self._on_drag(event)
             return True
+        if self._mode == "rotate" and self._drag is None:
+            if event_type == QEvent.Type.MouseMove:
+                self._hover_rotation(event.position() if not event.buttons() else None)
+            elif event_type == QEvent.Type.Leave:
+                self._hover_rotation(None)
         if event_type == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
             if self._drag is None:
                 return False
@@ -598,8 +606,16 @@ class ObservationPlaneViewport(QObject):
                 else:
                     self._render()
                 self.planeChanged.emit(plane)
+                if self._mode == "rotate":
+                    self._hover_rotation(event.position())
             return True
         return False
+
+    def _hover_rotation(self, position) -> None:
+        axis = None if position is None else self._radar.pick(self._control_point(position))
+        if axis != self._radar.hovered_axis:
+            self._radar.hovered_axis = axis
+            self.viewer.render()
 
     def _on_key_press(self, event) -> bool:
         key = event.key()

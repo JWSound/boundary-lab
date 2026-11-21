@@ -543,12 +543,13 @@ With a plane selected in the viewport, use **W** for Move, **E** for Rotate,
 and **R** for Scale. Drag the axis arrows to translate the plane or the square
 corner grips to resize it. Controls keep a consistent screen size when zooming.
 
-In Rotate mode, drag a red, green, or blue ring to rotate about the plane's
-local X, Y, or Z axis. A radar appears with 45-degree ticks on its inner band,
-10-degree ticks on its middle band, and 5-degree ticks on its outer band.
-Moving within 10 screen pixels of a tick snaps to that relative angle; away
-from the ticks, rotation is continuous. Alt is no longer needed for free
-rotation. The current angle and the top-right hotkey help remain visible.
+In Rotate mode, each colored spoke ends in a two-arrow knob. Hover over the
+red, green, or blue knob to see the dial for the plane's local X, Y, or Z axis.
+Drag the knob or either arrow to rotate. The spoke's starting direction marks
+0° for that drag. The knob follows the applied angle around the ring.
+The inner band has 45° ticks with heavier marks at each quarter-turn.
+The middle and outer bands have 10° and 5° ticks. Drag near a tick to snap
+to its angle, or between the bands for continuous rotation.
 Nearly edge-on axes use a face-on radar to keep the ticks accessible.
 Release to finish a change, or press **Escape** during a drag to restore the
 plane's starting geometry.
