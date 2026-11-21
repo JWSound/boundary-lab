@@ -6,10 +6,8 @@ from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QCheckBox,
-    QComboBox,
     QDialog,
     QDialogButtonBox,
-    QFormLayout,
     QHBoxLayout,
     QLabel,
     QMessageBox,
@@ -23,7 +21,7 @@ from blab.generators.catalog import provider_catalog
 
 
 class ProviderPackagesDialog(QDialog):
-    def __init__(self, enabled, parent=None, *, default_provider="ath", is_busy=lambda: False):
+    def __init__(self, enabled, parent=None, *, is_busy=lambda: False):
         super().__init__(parent)
         self.setWindowTitle("Generator Plugins")
         self._is_busy = is_busy
@@ -44,15 +42,6 @@ class ProviderPackagesDialog(QDialog):
         self.table = QTableWidget(0, 5)
         self.table.setHorizontalHeaderLabels(["Enabled", "Generator Plugin", "Version", "Status", "Folder"])
         layout.addWidget(self.table)
-        self.default_provider_combo = QComboBox()
-        self.default_provider_combo.addItem(default_provider, default_provider)
-        form = QFormLayout()
-        form.addRow("Default Generator Plugin", self.default_provider_combo)
-        layout.addLayout(form)
-        layout.addWidget(QLabel("Used for new designs; existing designs retain their plugin."))
-        self.default_warning = QLabel()
-        self.default_warning.setWordWrap(True)
-        layout.addWidget(self.default_warning)
         actions = QHBoxLayout()
         rescan = QPushButton("Rescan")
         rescan.clicked.connect(self.rescan)
@@ -65,7 +54,6 @@ class ProviderPackagesDialog(QDialog):
         layout.addLayout(actions)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         self.buttons = buttons
-        self.default_provider_combo.currentIndexChanged.connect(self._validate_default)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
@@ -134,7 +122,6 @@ class ProviderPackagesDialog(QDialog):
                 item.setToolTip(text)
                 self.table.setItem(row, column, item)
         self.table.resizeColumnsToContents()
-        self._refresh_default_choices()
 
     def _toggle(self, provider_id, checked):
         if checked:
@@ -144,53 +131,11 @@ class ProviderPackagesDialog(QDialog):
         for row, package in enumerate(self.catalog.packages, 1):
             if package.manifest and package.manifest.id == provider_id:
                 self.table.item(row, 3).setText(self.catalog.status(package, enabled=self.enabled))
-        self._refresh_default_choices()
-
-    @property
-    def default_provider(self):
-        return self.default_provider_combo.currentData()
-
-    def _refresh_default_choices(self):
-        selected = self.default_provider
-        self.default_provider_combo.blockSignals(True)
-        populate_provider_choices(self.default_provider_combo, self.enabled, selected)
-        self.default_provider_combo.blockSignals(False)
-        self._validate_default()
-
-    def _validate_default(self):
-        valid = self.default_provider == "ath" or any(
-            package.manifest
-            and package.manifest.id == self.default_provider
-            and not package.error
-            and package.manifest.id in self.enabled
-            for package in self.catalog.packages
-        )
-        self.default_warning.setVisible(not valid)
-        self.default_warning.setText(
-            "" if valid else "Choose an enabled, available default Generator Plugin before saving."
-        )
-        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(valid)
-        return valid
 
     def accept(self):
-        if not self._validate_default():
-            return
         if self._is_busy():
             QMessageBox.information(
                 self, "Generator Plugins", "Wait for preparation, generation or solving to finish before saving."
             )
             return
         super().accept()
-
-
-def populate_provider_choices(combo, enabled, selected):
-    combo.clear()
-    combo.addItem("Ath", "ath")
-    for package in provider_catalog().packages:
-        if package.manifest and not package.error and package.manifest.id in enabled:
-            combo.addItem(package.manifest.name, package.manifest.id)
-    index = combo.findData(selected)
-    if index < 0:
-        combo.addItem(f"{selected} (unavailable)", selected)
-        index = combo.count() - 1
-    combo.setCurrentIndex(index)

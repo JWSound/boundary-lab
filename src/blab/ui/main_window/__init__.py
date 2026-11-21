@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from blab.ui.ath_editor import AthScriptEditor
 from blab.ui.main_window.constants import (
-    ADD_DESIGN_TAB_LABEL,
     APP_ROOT,
     ATH_BUNDLE_DIR,
     BEM_PREVIEW_DARK_ICON,
@@ -46,7 +45,6 @@ __all__ = [
     "STITCHED_MESH_NAME",
     "_mesh_entries_with_file_overrides",
     "_physical_system_preview_metadata",
-    "ADD_DESIGN_TAB_LABEL",
     "APP_ROOT",
     "ATH_BUNDLE_DIR",
     "BEM_PREVIEW_DARK_ICON",

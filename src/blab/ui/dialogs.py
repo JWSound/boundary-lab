@@ -456,7 +456,6 @@ class PreferencesDialog(QDialog):
             spl_max = spl_min + 1.0
 
         return GuiPreferences(
-            default_geometry_provider=self._plugin_preferences.default_geometry_provider,
             enabled_geometry_providers=self._plugin_preferences.enabled_geometry_providers,
             theme=self.theme_options[self.theme_combo.currentText()],
             solve_backend=self.solve_backend_options[self.solve_backend_combo.currentText()],

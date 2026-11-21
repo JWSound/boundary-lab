@@ -47,7 +47,6 @@ class GuiPreferences:
         )
 
     theme: str = "system"
-    default_geometry_provider: str = "ath"
     enabled_geometry_providers: tuple[str, ...] = ()
     solve_backend: str = "beat_cpu"
     solve_server_url: str = "http://127.0.0.1:8765"
@@ -180,7 +179,6 @@ def load_gui_preferences(settings: QSettings) -> GuiPreferences:
         settings.setValue("providers/enabled", enabled)
         settings.setValue("providers/vented_enclosure_introduced", True)
     return GuiPreferences(
-        default_geometry_provider=settings_str(settings, "providers/default", "ath"),
         enabled_geometry_providers=tuple(item for item in enabled if isinstance(item, str) and item),
         theme=normalize_theme(settings_str(settings, "preferences/theme", defaults.theme)),
         solve_backend=normalize_backend_id(settings_str(settings, "preferences/solve_backend", defaults.solve_backend)),
@@ -273,7 +271,6 @@ def load_gui_preferences(settings: QSettings) -> GuiPreferences:
 
 
 def save_gui_preferences(settings: QSettings, preferences: GuiPreferences) -> None:
-    settings.setValue("providers/default", preferences.default_geometry_provider)
     settings.setValue("providers/enabled", list(preferences.enabled_geometry_providers))
     settings.setValue("providers/vented_enclosure_introduced", True)
     settings.setValue("preferences/theme", preferences.theme)

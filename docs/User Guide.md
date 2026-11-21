@@ -22,13 +22,15 @@ exchange Ath designs with other tools. Importing while a different plugin's
 design is selected creates a separate Ath design; export is available for Ath
 designs only.
 
-Open **Edit > Generator Plugins...** to manage plugins and choose the **Default
-Generator Plugin** for new designs. Ath appears as **Built-in** and is always
-enabled. Use **Open install folder**, copy a plugin folder there, then **Rescan**
-and enable it. Only enable plugins you trust: they execute Python inside Boundary
-Lab. Click **OK** to save or **Cancel** to discard selection changes. Existing
-designs retain their plugin and saved source. If you disable the default, choose
-an enabled, available replacement before saving.
+Click **+** in the Generator pane to add a design. Choose a generator by name
+from the menu. When Ath is the only available generator, **+** adds an Ath
+design immediately. New projects start with an Ath design.
+
+Open **Edit > Generator Plugins...** to manage plugins. Ath is built in and
+always enabled. Use **Open install folder**, copy a plugin folder there, then
+**Rescan** and enable it. Only enable plugins you trust because they execute
+Python inside Boundary Lab. Click **OK** to save or **Cancel** to discard
+selection changes. Existing designs retain their plugin and saved source.
 
 Plugin management is unavailable during preparation, generation, or solving.
 Changes to loaded plugin code require a restart, shown in the plugin's status.

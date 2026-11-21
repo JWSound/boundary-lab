@@ -97,7 +97,6 @@ class ProjectWorkflowController(QObject):
         forget_recent: Callable[[Path], None],
         activities: ActivityController | None = None,
         preparations=None,
-        default_document_factory=None,
     ) -> None:
         super().__init__(parent)
         self._view = view
@@ -112,7 +111,6 @@ class ProjectWorkflowController(QObject):
         self._forget_recent = forget_recent
         self._activities = activities if activities is not None else ActivityController(self)
         self._preparations = preparations
-        self._default_document_factory = default_document_factory
 
     @property
     def _project(self) -> ProjectDocument:
@@ -243,15 +241,6 @@ class ProjectWorkflowController(QObject):
         if not self.confirm_unsaved_project_changes("new_project"):
             return
         project = new_project_document(project_preferences=self.current_project_preferences())
-        if self._default_document_factory is not None:
-            name = project.generator_documents[0].name
-            try:
-                document = self._default_document_factory(name)
-            except ValueError:
-                # Keep the requested provider visible even if its package was removed.
-                document = new_generator_document(name, provider_id=self._read_preferences().default_geometry_provider)
-            project.generator_documents = (document,)
-            project.active_generator_document_id = document.id
         if self._preparations is not None:
             self._preparations.cancel("project")
         self._inputs.discard_channel_config_dialog()
