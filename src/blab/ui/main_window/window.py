@@ -15,7 +15,6 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QStackedWidget,
-    QTabBar,
     QToolButton,
     QWidget,
 )
@@ -69,6 +68,7 @@ from blab.ui.main_window.solve_workflow import SolveWorkflowController
 from blab.ui.main_window.state_sync import StateSyncMixin
 from blab.ui.main_window.view_builder import ViewBuilderMixin
 from blab.ui.main_window_widgets import (
+    DesignTabBar,
     PlotDataExportSpec,
     PlotEntry,
 )
@@ -359,7 +359,7 @@ class MainWindow(
         self._live_plot_refresh_timer.timeout.connect(self.flush_live_refresh)
         startup("Building design editor...")
         self.editor_pages = QStackedWidget()
-        self.editor_tabs = QTabBar()
+        self.editor_tabs = DesignTabBar()
         self.editor_tabs.setExpanding(False)
         self.editor_tabs.setUsesScrollButtons(True)
         self.editor_tabs.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)

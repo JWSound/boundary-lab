@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QStyle,
     QStyleOptionToolButton,
     QStylePainter,
+    QTabBar,
     QToolButton,
     QWidget,
 )
@@ -65,6 +66,14 @@ def dimmed_button_text_color(palette: QPalette, weight: float = TAB_CLOSE_GLYPH_
         round(face.green() + (text.green() - face.green()) * weight),
         round(face.blue() + (text.blue() - face.blue()) * weight),
     )
+
+
+class DesignTabBar(QTabBar):
+    def minimumSizeHint(self) -> QSize:  # noqa: N802 - Qt override
+        # Qt reserves room for scroll arrows even when all tabs fit in less space.
+        minimum = super().minimumSizeHint()
+        minimum.setWidth(min(minimum.width(), self.sizeHint().width()))
+        return minimum
 
 
 class TabCloseButton(QToolButton):

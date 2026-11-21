@@ -726,7 +726,7 @@ def test_add_design_button_follows_tabs_and_stays_reachable_on_overflow(main_win
         qapp.processEvents()
         end = tabs.x() + tabs.tabRect(tabs.count() - 1).right()
         assert 0 < button.x() - end <= 5
-        assert tabs.count() == len(main_window.generator_documents)
+        assert tabs.count() == max(1, len(main_window.generator_documents))
         return button.x()
 
     first = check_adjacent()
@@ -734,6 +734,10 @@ def test_add_design_button_follows_tabs_and_stays_reachable_on_overflow(main_win
     assert check_adjacent() > first
     main_window._remove_generator_document_at(1)
     assert check_adjacent() == first
+    tabs.setTabText(0, "A")
+    assert check_adjacent() < first
+    main_window._remove_generator_document_at(0)
+    check_adjacent()  # The empty pane has a short placeholder tab.
     main_window.editor_panel.setFixedWidth(230)
     for _ in range(4):
         main_window.add_generator_document("ath")
