@@ -95,8 +95,11 @@ def test_rotation_knobs_hover_drag_and_cancel(qapp, camera_position):
     def mouse(kind, point):
         position = QPointF(point[0], viewer.height() - 1 - point[1])
         event = SimpleNamespace(
-            type=lambda: kind, position=lambda: position, button=lambda: Qt.LeftButton,
-            buttons=lambda: Qt.NoButton, modifiers=lambda: Qt.NoModifier,
+            type=lambda: kind,
+            position=lambda: position,
+            button=lambda: Qt.LeftButton,
+            buttons=lambda: Qt.NoButton,
+            modifiers=lambda: Qt.NoModifier,
         )
         return editor.eventFilter(viewer, event)
 
@@ -127,7 +130,9 @@ def test_rotation_knobs_hover_drag_and_cancel(qapp, camera_position):
         target = segments[metadata.index((90, 45))].mean(axis=0)
         mouse(QEvent.MouseMove, target)
         assert mouse(QEvent.MouseButtonRelease, target)
-        np.testing.assert_allclose(editor._selected_plane().local_axes, rotate_observation_plane(plane, 2, 90).local_axes)
+        np.testing.assert_allclose(
+            editor._selected_plane().local_axes, rotate_observation_plane(plane, 2, 90).local_axes
+        )
         assert editor._drag is None and radar.drag is None
         assert set(radar._grips) == {0, 1, 2}
     finally:

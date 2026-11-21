@@ -165,10 +165,20 @@ class RotationRadar:
         normal = np.array([-tangent[1], tangent[0]])
         self._grips[axis] = (center, tangent)
         # The square and both tangential arrowheads share one logical-pixel frame.
-        vertices = np.array([
-            [-6, -6], [6, -6], [6, 6], [-6, 6],
-            [-9, -6], [-22, 0], [-9, 6], [9, -6], [22, 0], [9, 6],
-        ])
+        vertices = np.array(
+            [
+                [-6, -6],
+                [6, -6],
+                [6, 6],
+                [-6, 6],
+                [-9, -6],
+                [-22, 0],
+                [-9, 6],
+                [9, -6],
+                [22, 0],
+                [9, 6],
+            ]
+        )
         points = center + ROTATION_GRIP_SCALE * (vertices @ np.stack((tangent, normal)))
         name = "dial-grip" if on_dial else f"grip-{axis}"
         self._mesh(name, points, [4, 0, 1, 2, 3, 3, 4, 5, 6, 3, 7, 8, 9], color, fill=True)
