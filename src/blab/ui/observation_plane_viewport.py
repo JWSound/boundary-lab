@@ -22,6 +22,7 @@ from blab.observation_planes import (
     ObservationPlaneType,
     rotate_observation_plane,
 )
+from blab.observation_planes import sample_plane_points as _sample_plane_points
 from blab.solvers.coupled_field import BemFieldEvaluationRequest
 from blab.ui.exterior_field_service import ExteriorFieldTask
 from blab.ui.observation_plane_gizmos import RotationRadar, colored_mesh, square_grip
@@ -215,6 +216,7 @@ class ObservationPlaneViewport(QObject):
         viewer.destroyed.connect(self.close)
 
         viewer.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        viewer.setMouseTracking(True)
         viewer.installEventFilter(self)
         tool_shortcuts = {
             "w": self._activate_move_mode,
@@ -361,6 +363,8 @@ class ObservationPlaneViewport(QObject):
             self._selected_id = selected_id if selected_id in available_ids else None
         elif self._selected_id not in available_ids:
             self._selected_id = None
+        if self._selected_id != previous_selected_id:
+            self._radar.hovered_axis = None
         if self._selected_id is None:
             self._mode = None
         result_update = _result_selection_update(
@@ -579,6 +583,11 @@ class ObservationPlaneViewport(QObject):
         if event_type == QEvent.Type.MouseMove and self._drag is not None:
             self._on_drag(event)
             return True
+        if self._mode == "rotate" and self._drag is None:
+            if event_type == QEvent.Type.MouseMove:
+                self._hover_rotation(event.position() if not event.buttons() else None)
+            elif event_type == QEvent.Type.Leave:
+                self._hover_rotation(None)
         if event_type == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
             if self._drag is None:
                 return False
@@ -598,8 +607,16 @@ class ObservationPlaneViewport(QObject):
                 else:
                     self._render()
                 self.planeChanged.emit(plane)
+                if self._mode == "rotate":
+                    self._hover_rotation(event.position())
             return True
         return False
+
+    def _hover_rotation(self, position) -> None:
+        axis = None if position is None else self._radar.pick(self._control_point(position))
+        if axis != self._radar.hovered_axis:
+            self._radar.hovered_axis = axis
+            self.viewer.render()
 
     def _on_key_press(self, event) -> bool:
         key = event.key()
@@ -2848,16 +2865,6 @@ def _sample_plane_polydata(pv, plane: ObservationPlane):
         )
     ).reshape(-1)
     return pv.PolyData(points, faces)
-
-
-def _sample_plane_points(plane: ObservationPlane, shape: tuple[int, int]) -> np.ndarray:
-    x_count, y_count = shape
-    axis_u, axis_v, _normal = plane.local_axes
-    u_values = np.linspace(-plane.width_m * 0.5, plane.width_m * 0.5, x_count)
-    v_values = np.linspace(-plane.height_m * 0.5, plane.height_m * 0.5, y_count)
-    center = np.asarray(plane.center_m, dtype=float)
-    u_grid, v_grid = np.meshgrid(u_values, v_values)
-    return center + u_grid.reshape(-1, 1) * axis_u + v_grid.reshape(-1, 1) * axis_v
 
 
 def _tetrahedral_interpolation_weights(sample_points: np.ndarray, tetrahedron_points: np.ndarray) -> np.ndarray:

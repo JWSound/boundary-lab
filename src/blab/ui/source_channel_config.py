@@ -9,7 +9,9 @@ from pathlib import Path
 from PySide6.QtCore import QSettings
 
 from blab.ath import read_surface_physical_names
-from blab.config import DEFAULT_CHANNEL_VOLTAGE_V, ChannelConfig, CrossoverConfig, RadiatorConfig
+from blab.channel_synthesis import channel_configs_from_payload
+from blab.channel_synthesis import saved_crossover as saved_crossover
+from blab.config import ChannelConfig, CrossoverConfig, RadiatorConfig
 from blab.generators.base import GeneratedGeometry
 
 SOURCE_CONFIG_SETTINGS_KEY = "source/config_by_name"
@@ -91,27 +93,6 @@ def channel_configs(settings: QSettings) -> tuple[ChannelConfig, ...]:
     return channel_configs_from_payload(load_channel_config_by_name(settings))
 
 
-def channel_configs_from_payload(raw: object) -> tuple[ChannelConfig, ...]:
-    raw = raw if isinstance(raw, dict) else {}
-    if not raw:
-        return (ChannelConfig(name="main"),)
-    channels = []
-    for name, payload in sorted(raw.items()):
-        payload = payload if isinstance(payload, dict) else {}
-        channels.append(
-            ChannelConfig(
-                name=str(name),
-                voltage_v=float(payload.get("voltage_v", DEFAULT_CHANNEL_VOLTAGE_V)),
-                level_db=float(payload.get("level_db", 0.0)),
-                polarity=int(payload.get("polarity", 1)),
-                delay_ms=float(payload.get("delay_ms", 0.0)),
-                hpf=saved_crossover(payload.get("hpf"), crossover_type="highpass"),
-                lpf=saved_crossover(payload.get("lpf"), crossover_type="lowpass"),
-            )
-        )
-    return tuple(channels) or (ChannelConfig(name="main"),)
-
-
 def channels_for_solver_radiators(
     configured_channels: tuple[ChannelConfig, ...],
     radiators: tuple[RadiatorConfig, ...],
@@ -135,17 +116,6 @@ def crossover_settings(crossover: CrossoverConfig | None) -> dict:
         "order": int(crossover.order),
         "frequency_hz": None if crossover.frequency_hz is None else float(crossover.frequency_hz),
     }
-
-
-def saved_crossover(raw: object, *, crossover_type: str) -> CrossoverConfig:
-    if not isinstance(raw, dict) or raw.get("frequency_hz") is None:
-        return CrossoverConfig()
-    return CrossoverConfig(
-        type=crossover_type,
-        filter=str(raw.get("filter", "butterworth")).lower(),
-        order=int(raw.get("order", 1)),
-        frequency_hz=float(raw["frequency_hz"]),
-    )
 
 
 def apply_saved_source_config_to_result(
