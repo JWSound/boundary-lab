@@ -1240,6 +1240,33 @@ def test_interface_settings_changes_mark_existing_pair_stale() -> None:
     assert "check again" in dialog.interface_details.toPlainText()
 
 
+def test_regions_stitch_tolerance_visibility_and_apply(main_window, monkeypatch) -> None:
+    dialog = SystemConfigDialog(inspect_system_meshes(_fixture_mesh_entries()), None, ("main",), stitch_tolerance_mm=3)
+    tolerance = dialog.stitch_tolerance_spin
+    assert tolerance.isHidden()
+    dialog.stitch_exterior_meshes_check.setChecked(True)
+    assert not tolerance.isHidden() and tolerance.value() == 3
+    tolerance.setValue(0.125)
+    dialog.stitch_exterior_meshes_check.setChecked(False)
+    assert tolerance.isHidden()
+    dialog.stitch_exterior_meshes_check.setChecked(True)
+    configuration = dialog.configuration()
+    assert configuration.stitch_tolerance_mm == 0.125
+    main_window.project.physical_system = configuration.system
+    main_window.project.component_channel_by_id = configuration.component_channel_by_id
+    main_window.stitch_imported_meshes = True
+    main_window.project.source_config_by_name = {"woofer": {"driven": True}}
+    monkeypatch.setattr(main_window, "_refresh_mesh_preview", lambda: None)
+    invalidated = QSignalSpy(main_window.solve_results_invalidated)
+    main_window._apply_system_config(configuration)
+    assert invalidated.count() == 1
+    assert main_window.preferences.stitch_tolerance_mm == 0.125
+    assert main_window.project_workflow.project_payload()["project_preferences"]["stitch_tolerance_mm"] == 0.125
+    assert main_window.project.source_config_by_name == {"woofer": {"driven": True}}
+    main_window._apply_system_config(configuration)
+    assert invalidated.count() == 1
+
+
 def test_removing_exterior_assignment_keeps_unpaired_interior_visible() -> None:
     dialog = _configured_fixture_dialog()
     for row in range(dialog.boundaries_table.rowCount()):

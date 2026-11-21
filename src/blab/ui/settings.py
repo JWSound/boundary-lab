@@ -81,7 +81,6 @@ SOLVE_AFFECTING_PREFERENCE_FIELDS = (
     "gmres_tolerance",
     "polar_angle_step_deg",
     "polar_observation_distance_m",
-    "normalized_channel_correction",
     "use_burton_miller",
     "stitch_tolerance_mm",
     "spherical_sampling_enabled",

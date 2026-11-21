@@ -472,10 +472,16 @@ def test_channel_apply_resynthesizes_without_refreshing_mesh_or_closed_balloon(m
     monkeypatch.setattr(main_window, "set_balloon_plot_available", balloon_availability.append)
 
     channels = (ChannelConfig(name="main", level_db=-3.0),)
-    main_window._apply_channel_config(channels)
+    main_window._apply_channel_config(channels, main_window.preferences.normalized_channel_correction)
 
     assert dataset.synthesis_calls == [
-        (channels, {"flat_target_reference_angle_deg": main_window.preferences.horizontal_normalization_angle})
+        (
+            channels,
+            {
+                "flat_target_reference_angle_deg": main_window.preferences.horizontal_normalization_angle,
+                "flat_target_enabled": main_window.preferences.normalized_channel_correction,
+            },
+        )
     ]
     assert plot_refreshes == [True]
     assert preview_refreshes == []
@@ -491,9 +497,47 @@ def test_channel_apply_refreshes_an_open_balloon_window(main_window, monkeypatch
     monkeypatch.setattr(main_window, "refresh_plots", lambda: None)
     monkeypatch.setattr(main_window, "set_balloon_plot_available", lambda _available: None)
 
-    main_window._apply_channel_config((ChannelConfig(name="main", delay_ms=0.5),))
+    main_window._apply_channel_config((ChannelConfig(name="main", delay_ms=0.5),), True)
 
     assert balloon_window.refresh_count == 1
+
+
+def test_channel_dialog_toggles_normalization_on_the_existing_solve(main_window, monkeypatch) -> None:
+    import numpy as np
+
+    from blab.live import LiveSolveDataset
+    from blab.solvers.base import FrequencyResult
+
+    angles = np.array([-10.0, 0.0, 10.0])
+    pressure = np.full((1, 3), 2j, dtype=np.complex64)
+    result = FrequencyResult(
+        freq_hz=1000,
+        horizontal_spl_norm_db=np.zeros(3),
+        vertical_spl_norm_db=np.zeros(3),
+        impedance=np.zeros((1, 2)),
+        channel_names=np.array(["main"]),
+        horizontal_pressure=pressure,
+        vertical_pressure=pressure.copy(),
+    )
+    dataset = LiveSolveDataset(angles, channel_configs=main_window.channel_configs())
+    dataset.add(result)
+    main_window.live_dataset = dataset
+    monkeypatch.setattr(main_window, "_confirm_clear_solved_data", lambda: pytest.fail("Unexpected solve invalidation"))
+    main_window.open_channel_config()
+    dialog = main_window.channel_config_dialog
+    assert dialog.normalization_check.text() == "Impose Channel Normalization"
+    responses = []
+    for enabled in (False, True, False):
+        dialog.normalization_check.setChecked(enabled)
+        assert dialog.apply()
+        assert (
+            main_window.project_workflow.project_payload()["project_preferences"]["normalized_channel_correction"]
+            is enabled
+        )
+        assert main_window.live_dataset.results[1000] is result
+        responses.append(dataset.as_raw_polar_arrays()[2].copy())
+    np.testing.assert_allclose(responses[0] - responses[1], 20 * np.log10(2), atol=1e-5)
+    np.testing.assert_array_equal(responses[0], responses[2])
 
 
 # ------------------------------------------------------------------------ DPI refresh

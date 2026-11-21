@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QTimer, Slot
@@ -68,6 +69,12 @@ class PreferencesMixin:
 
     def _load_preferences(self) -> GuiPreferences:
         return load_gui_preferences(self.settings)
+
+    def _update_project_preferences(self, **changes) -> None:
+        current = self.project.project_preferences or self._current_project_preferences()
+        self.project.project_preferences = replace(current, **changes)
+        self.preferences = replace(self.preferences, **changes)
+        self._save_preferences()
 
     def _save_preferences(self) -> None:
         save_gui_preferences(self.settings, self.preferences)

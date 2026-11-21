@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QUrl, Signal
@@ -153,7 +153,7 @@ def _build_crossover_frequency_spin(frequency_hz: float | None) -> QDoubleSpinBo
 class PreferencesDialog(QDialog):
     def __init__(self, preferences: GuiPreferences, parent: QWidget | None = None):
         super().__init__(parent)
-        self._plugin_preferences = preferences
+        self._preferences = preferences
         self.setWindowTitle("Preferences")
 
         self.theme_combo = QComboBox()
@@ -219,9 +219,6 @@ class PreferencesDialog(QDialog):
         self.polar_distance_spin.setSuffix(" m")
         self.polar_distance_spin.setValue(preferences.polar_observation_distance_m)
 
-        self.normalized_channel_correction_check = QCheckBox("Enabled")
-        self.normalized_channel_correction_check.setChecked(preferences.normalized_channel_correction)
-
         self.smoothing_combo = QComboBox()
         self.smoothing_options = {
             "off": None,
@@ -282,13 +279,6 @@ class PreferencesDialog(QDialog):
         self.isobar_contour_step_spin.setSingleStep(0.5)
         self.isobar_contour_step_spin.setSuffix(" dB")
         self.isobar_contour_step_spin.setValue(preferences.isobar_contour_step_db)
-
-        self.stitch_tolerance_spin = QDoubleSpinBox()
-        self.stitch_tolerance_spin.setRange(0.001, 1000.0)
-        self.stitch_tolerance_spin.setDecimals(3)
-        self.stitch_tolerance_spin.setSingleStep(0.5)
-        self.stitch_tolerance_spin.setSuffix(" mm")
-        self.stitch_tolerance_spin.setValue(preferences.stitch_tolerance_mm)
 
         self.spherical_sampling_check = QCheckBox("Enabled")
         self.spherical_sampling_check.setChecked(preferences.spherical_sampling_enabled)
@@ -352,11 +342,6 @@ class PreferencesDialog(QDialog):
                         "Angular resolution for horizontal/vertical polars - spin plot requires a minimum of 10 degrees",
                     ),
                     ("Polar Observation Distance", self.polar_distance_spin, ""),
-                    (
-                        "Normalized Channel Correction",
-                        self.normalized_channel_correction_check,
-                        "Applies a per-channel reference-axis magnitude correction before channel gain, delay, and crossover filters.",
-                    ),
                     ("Horizontal Normalization Angle", self.horizontal_norm_angle_spin, ""),
                     ("Vertical Normalization Angle", self.vertical_norm_angle_spin, ""),
                     ("Spin Horizontal Ref Angle", self.spin_horizontal_ref_angle_spin, ""),
@@ -374,12 +359,6 @@ class PreferencesDialog(QDialog):
         )
         left_column.addStretch(1)
 
-        right_column.addWidget(
-            self._section(
-                "Mesh Config",
-                (("Stitch Tolerance", self.stitch_tolerance_spin, ""),),
-            )
-        )
         right_column.addWidget(
             self._section(
                 "Fields",
@@ -455,8 +434,8 @@ class PreferencesDialog(QDialog):
         if spl_max <= spl_min:
             spl_max = spl_min + 1.0
 
-        return GuiPreferences(
-            enabled_geometry_providers=self._plugin_preferences.enabled_geometry_providers,
+        return replace(
+            self._preferences,
             theme=self.theme_options[self.theme_combo.currentText()],
             solve_backend=self.solve_backend_options[self.solve_backend_combo.currentText()],
             solve_server_url=self.server_preferences.url.text().strip(),
@@ -466,7 +445,6 @@ class PreferencesDialog(QDialog):
             live_plot_quality=self.live_plot_quality_options[self.live_plot_quality_combo.currentText()],
             polar_angle_step_deg=float(self.polar_step_spin.value()),
             polar_observation_distance_m=float(self.polar_distance_spin.value()),
-            normalized_channel_correction=bool(self.normalized_channel_correction_check.isChecked()),
             polar_smoothing=self.smoothing_options[self.smoothing_combo.currentText()],
             horizontal_normalization_angle=float(self.horizontal_norm_angle_spin.value()),
             vertical_normalization_angle=float(self.vertical_norm_angle_spin.value()),
@@ -475,7 +453,6 @@ class PreferencesDialog(QDialog):
             spl_max_db=spl_max,
             spl_min_db=spl_min,
             isobar_contour_step_db=float(self.isobar_contour_step_spin.value()),
-            stitch_tolerance_mm=float(self.stitch_tolerance_spin.value()),
             spherical_sampling_enabled=bool(self.spherical_sampling_check.isChecked()),
             balloon_angle_precision_deg=float(self.balloon_angle_precision_spin.value()),
             field_cache_size_mb=int(self.field_cache_size_spin.value()),
@@ -808,7 +785,7 @@ class MeshConfigDialog(QDialog):
 
 
 class ChannelConfigDialog(QDialog):
-    channelsApplied = Signal(object)
+    channelsApplied = Signal(object, bool)
     closeRequested = Signal()
 
     def __init__(
@@ -817,6 +794,7 @@ class ChannelConfigDialog(QDialog):
         parent: QWidget | None = None,
         *,
         embedded: bool = False,
+        normalized_channel_correction: bool = True,
         prescribed_velocity_channel_names: frozenset[str] = frozenset(),
     ):
         super().__init__(parent)
@@ -867,6 +845,12 @@ class ChannelConfigDialog(QDialog):
         button_row = QHBoxLayout()
         button_row.addWidget(add_button)
         button_row.addWidget(remove_button)
+        self.normalization_check = QCheckBox("Impose Channel Normalization")
+        self.normalization_check.setToolTip(
+            "Force a flat reference-axis magnitude for all channels before applying gain, delay, and crossover filters."
+        )
+        self.normalization_check.setChecked(normalized_channel_correction)
+        button_row.addWidget(self.normalization_check)
         button_row.addStretch(1)
 
         button_flags = QDialogButtonBox.Apply if self._embedded else QDialogButtonBox.Apply | QDialogButtonBox.Close
@@ -887,7 +871,7 @@ class ChannelConfigDialog(QDialog):
         except ValueError as exc:
             QMessageBox.warning(self, "Channel config", str(exc))
             return False
-        self.channelsApplied.emit(channels)
+        self.channelsApplied.emit(channels, self.normalization_check.isChecked())
         return True
 
     def _append_row(self, channel: ChannelConfig) -> None:

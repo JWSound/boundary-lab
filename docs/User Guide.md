@@ -149,8 +149,8 @@ restrictive component. Mixed prescribed-velocity/electrodynamic channels are
 omitted.
 
 Maximum SPL is a physical capacity projection from the raw equal-voltage solve
-basis. Channel Voltage, Trim, crossover, polarity, delay, and Normalized
-Channel Correction do not alter it. Pmax is converted to an RMS voltage limit
+basis. Channel Voltage, Trim, crossover, polarity, delay, and channel
+normalization do not alter it. Pmax is converted to an RMS voltage limit
 using each component's Re (or Re' when semi-inductance is enabled), while Xmax
 is treated as peak and compared with the peak displacement derived from the
 RMS solve basis. The linear model does not include thermal compression,
@@ -273,9 +273,6 @@ guide.
 - **Polar Angle Step** controls the solved horizontal and vertical observation
   spacing. Spinorama processing requires 10-degree spacing or finer.
 - **Polar Observation Distance** sets the observation radius from the origin.
-- **Normalized Channel Correction** applies a per-channel reference-axis
-  magnitude correction before channel gain, delay, polarity, and crossover
-  filtering.
 - **Horizontal/Vertical Normalization Angle** chooses the reference angle used
   for directivity normalization in each plane.
 - **Spin Horizontal/Vertical Ref Angle** chooses the reference axes for the
@@ -292,12 +289,6 @@ guide.
 - **SPL Min/Max** set the displayed and exported directivity clipping range.
 - **Isobar Contour Step** selects stepped isobar colors. Set it to 0 dB for a
   smoothly interpolated color map.
-
-### Mesh Config
-
-**Stitch Tolerance** is the maximum distance used when joining adjacent mesh
-parts for an exterior region whose stitching option is enabled in **System >
-Regions**.
 
 ### Application
 
@@ -371,6 +362,9 @@ They are useful for multiway interference and crossover studies.
 - **Voltage** sets the nominal voltage shared by electrodynamic transducers on
   the channel. It is unavailable when the channel contains a
   prescribed-velocity source.
+- **Impose Channel Normalization** flattens each channel's magnitude at the horizontal
+  reference angle before gain, delay, and filtering. Click **Apply** to update the
+  response using the existing channel basis.
 - **Trim dB**, **Polarity**, and **Delay ms** apply complex channel weights.
 - **HPF/LPF Type** and **Frequency** define idealized analog crossover transfer
   functions.
@@ -395,7 +389,8 @@ FEM chamber, choose its tetrahedral mesh and physical volume group, and
 optionally select a homogeneous FEM bulk-loss factor. A project containing
 bounded regions but no unbounded region is a valid interior-only FEM project.
 If the exterior uses adjoining parts of one continuous surface, enable
-**Stitch exterior region meshes**; leave it off for disconnected closed bodies.
+**Stitch exterior region meshes**. The adjacent **Stitch tolerance** sets the
+maximum joining distance in millimeters. Leave stitching off for disconnected closed bodies.
 
 An exterior-only system supports prescribed-velocity components. Interior and
 coupled systems also support linear electrodynamic components. The Interfaces
