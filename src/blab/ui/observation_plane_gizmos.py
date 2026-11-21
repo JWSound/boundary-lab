@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 import pyvista as pv
@@ -13,6 +13,7 @@ from blab.observation_planes import ObservationPlane
 # Distinct radial bands leave room for unsnapped rotation between the marks.
 ROTATION_SNAP_TOLERANCE_PX = 10.0
 ROTATION_RADIUS_PX = 168.0
+ROTATION_GRIP_SCALE = 1.25
 
 SNAP_BANDS = ((45, 0.38, 0.61), (10, 0.73, 0.86), (5, 1.02, 1.12))
 
@@ -57,6 +58,7 @@ class RadarDrag:
     polar: np.ndarray
     tangent: np.ndarray
     face_on: bool
+    grab_offset: np.ndarray = field(default_factory=lambda: np.zeros(2))
     free_angle: float = 0.0
     angle: float = 0.0
     tick: int | None = None
@@ -77,7 +79,8 @@ class RotationRadar:
         self._dark = True
         self._actors = {}
         self._labels = {}
-        self._ring_points = []
+        self._grips = {}
+        self.hovered_axis: int | None = None
 
     def _center(self, plane):
         renderer = self.viewer.renderer
@@ -93,29 +96,30 @@ class RotationRadar:
         up = np.cross(right, forward)
         return np.array([[np.dot(right, polar), np.dot(right, tangent)], [np.dot(up, polar), np.dot(up, tangent)]])
 
-    def begin(self, plane, axis, point):
+    def _frame(self, plane, axis):
         axes = plane.local_axes
         polar = axes[(axis + 1) % 3]
         tangent = np.cross(axes[axis], polar)
         basis = self._basis(polar, tangent)
         face_on = abs(np.linalg.det(basis)) < 0.22
-        coordinates = point - self._center(plane)
-        if not face_on:
-            coordinates = np.linalg.solve(basis, coordinates)
-        theta = np.arctan2(coordinates[1], coordinates[0])
         if face_on:
-            # Store a screen-space starting angle in the polar vector.
-            polar = np.array([np.cos(theta), np.sin(theta), 0.0])
-            tangent = np.array([-np.sin(theta), np.cos(theta), 0.0])
-        else:
-            polar, tangent = (
-                np.cos(theta) * polar + np.sin(theta) * tangent,
-                -np.sin(theta) * polar + np.cos(theta) * tangent,
-            )
-        self.drag = RadarDrag(plane, axis, polar, tangent, face_on)
+            # Use another cardinal spoke if the usual one points into the screen.
+            # The circular preview shares its zero endpoint with the idle ellipse.
+            polar = basis[:, 0] if np.linalg.norm(basis[:, 0]) >= 0.7 else -basis[:, 1]
+            tangent = np.array([-polar[1], polar[0]])
+            if np.linalg.det(basis) < 0:
+                tangent = -tangent
+        return RadarDrag(plane, axis, polar, tangent, face_on)
 
-    def geometry(self):
-        drag = self.drag
+    def begin(self, plane, axis, point):
+        self.hovered_axis = None
+        self.drag = self._frame(plane, axis)
+        center, basis, _, _ = self.geometry()
+        self.drag.grab_offset = center + self.radius * basis[:, 0] - point
+
+    def geometry(self, drag=None):
+        if drag is None:
+            drag = self.drag
         basis = (
             np.column_stack((drag.polar[:2], drag.tangent[:2]))
             if drag.face_on
@@ -127,7 +131,8 @@ class RotationRadar:
 
     def angle_at(self, point):
         center, basis, segments, metadata = self.geometry()
-        local = np.linalg.solve(basis, point - center)
+        grip_point = point + self.drag.grab_offset
+        local = np.linalg.solve(basis, grip_point - center)
         if np.linalg.norm(local) < 4.0:
             self.drag.tick = None
             self.drag.step = None
@@ -136,7 +141,9 @@ class RotationRadar:
         raw = np.rad2deg(np.arctan2(local[1], local[0]))
         drag = self.drag
         drag.free_angle = unwrap_angle(drag.free_angle, raw)
-        drag.tick = hit_tick(point, segments, self.snap_tolerance)
+        # Keep the press at zero even if an arrowhead overlaps a neighboring tick.
+        at_start = np.linalg.norm(grip_point - (center + self.radius * basis[:, 0])) < 1
+        drag.tick = None if at_start else hit_tick(point, segments, self.snap_tolerance)
         drag.step = None
         drag.angle = drag.free_angle
         if drag.tick is not None:
@@ -145,18 +152,36 @@ class RotationRadar:
         return drag.angle
 
     def pick(self, point):
-        best = None
-        distance = 7.0
-        for axis, points in enumerate(self._ring_points):
-            segments = np.stack((points[:-1], points[1:]), axis=1)
-            index = hit_tick(point, segments, distance)
-            if index is not None:
-                a, b = segments[index]
-                delta = b - a
-                t = np.clip(np.dot(point - a, delta) / max(np.dot(delta, delta), 1e-12), 0, 1)
-                distance = np.linalg.norm(point - (a + t * delta))
-                best = axis
-        return best
+        hits = []
+        for axis, (center, tangent) in self._grips.items():
+            delta = (point - center) / ROTATION_GRIP_SCALE
+            nearest = np.clip(delta @ tangent, -20, 20) * tangent
+            if np.linalg.norm(delta - nearest) <= 8:
+                hits.append((np.linalg.norm(delta), axis))
+        return min(hits)[1] if hits else None
+
+    def _grip(self, axis, center, tangent, color, *, on_dial=False):
+        tangent = tangent / np.linalg.norm(tangent)
+        normal = np.array([-tangent[1], tangent[0]])
+        self._grips[axis] = (center, tangent)
+        # The square and both tangential arrowheads share one logical-pixel frame.
+        vertices = np.array(
+            [
+                [-6, -6],
+                [6, -6],
+                [6, 6],
+                [-6, 6],
+                [-9, -6],
+                [-22, 0],
+                [-9, 6],
+                [9, -6],
+                [22, 0],
+                [9, 6],
+            ]
+        )
+        points = center + ROTATION_GRIP_SCALE * (vertices @ np.stack((tangent, normal)))
+        name = "dial-grip" if on_dial else f"grip-{axis}"
+        self._mesh(name, points, [4, 0, 1, 2, 3, 3, 4, 5, 6, 3, 7, 8, 9], color, fill=True)
 
     def _mesh(self, name, points, cells, color, *, width=1.0, fill=False, opacity=1.0):
         if name not in self._actors:
@@ -208,6 +233,7 @@ class RotationRadar:
             plane,
             active,
             dragging,
+            self.hovered_axis,
             radius,
             colors,
             dark,
@@ -221,38 +247,51 @@ class RotationRadar:
         self._draw_signature = signature
         for actor in (*self._actors.values(), *self._labels.values()):
             actor.VisibilityOff()
-        self._ring_points = []
+        self._grips.clear()
         self.radius = radius
         self._dark = dark
         self.colors = colors
         if not dragging:
             self.drag = None
         if not active or plane is None:
+            self.hovered_axis = None
             return
         center = self._center(plane)
         angles = np.linspace(0, 2 * np.pi, 181)
         circle = np.column_stack((np.cos(angles), np.sin(angles)))
-        if self.drag is None:
+        drag = self.drag
+        if drag is None and self.hovered_axis is not None:
+            drag = self._frame(plane, self.hovered_axis)
+        if drag is None:
             axes = plane.local_axes
+            grips = []
             for axis, color in enumerate(colors):
                 polar = axes[(axis + 1) % 3]
                 tangent = np.cross(axes[axis], polar)
                 basis = self._basis(polar, tangent)
                 points = center + radius * (circle @ basis.T)
-                self._ring_points.append(points)
                 self._path(f"outline-{axis}", points, "#101719", 5)
                 self._path(f"ring-{axis}", points, color, 2)
+                frame = self._frame(plane, axis)
+                spoke = frame.polar if frame.face_on else basis[:, 0]
+                direction = frame.tangent if frame.face_on else basis[:, 1]
+                endpoint = center + radius * spoke
+                self._lines(f"spoke-{axis}", [[center, endpoint]], color, 1.5)
+                grips.append((axis, endpoint, direction, color))
+            # Add handles last so intersecting rings cannot cover the click targets.
+            for grip in grips:
+                self._grip(*grip)
             return
-        center, basis, segments, metadata = self.geometry()
-        drag = self.drag
+        center, basis, segments, metadata = self.geometry(drag)
         color = colors[drag.axis]
         sweep = np.deg2rad(np.linspace(0, np.clip(drag.angle, -360, 360), max(2, int(min(abs(drag.angle), 360)) + 1)))
         sector = np.vstack((center, center + radius * np.column_stack((np.cos(sweep), np.sin(sweep))) @ basis.T))
         self._mesh("sector", sector, np.r_[len(sector), np.arange(len(sector))], color, fill=True, opacity=0.16)
         self._path("dial-shadow", center + radius * (circle @ basis.T), "#101719", 4)
-        self._path("dial", center + radius * (circle @ basis.T), ("#c9cdd1" if dark else "#404850"), 1.5)
+        self._path("dial", center + radius * (circle @ basis.T), color, 2)
         self._lines("tick-shadow", segments, "#101719" if dark else "#ffffff", 3)
         self._lines("ticks", segments, ("#dedbd2" if dark else "#404850"), 1)
+        self._lines("quarter-turns", segments[:8:2], ("#ffffff" if dark else "#20272d"), 3)
         if drag.tick is not None:
             self._lines("active-tick", segments[drag.tick : drag.tick + 1], color, 4)
         theta = np.deg2rad(drag.angle)
@@ -261,10 +300,11 @@ class RotationRadar:
         self._lines("zero", [[center, zero]], "#899399", 1)
         self._lines("needle-shadow", [[center, endpoint]], "#101719", 4)
         self._lines("needle", [[center, endpoint]], color, 2)
+        self._grip(drag.axis, endpoint, basis @ np.array([-np.sin(theta), np.cos(theta)]), color, on_dial=True)
         self._text(
             "angle",
-            rotation_readout(drag.angle),
-            center + np.array([0, radius * 1.2 + 12]),
+            f"{'XYZ'[drag.axis]}  {rotation_readout(drag.angle)}",
+            endpoint + np.array([0, 16]),
             ("#e8e8e8" if dark else "#20272d"),
             13,
         )

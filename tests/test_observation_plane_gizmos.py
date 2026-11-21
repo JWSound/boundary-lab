@@ -59,11 +59,85 @@ def test_edge_on_radar_uses_invertible_screen_basis():
     radar = RotationRadar(SimpleNamespace(), None)
     radar._center = lambda _plane: np.zeros(2)
     radar._basis = lambda _polar, _tangent: np.array([[1, 0], [0, 0]])
-    radar.begin(ObservationPlane(id="p", name="Plane"), 0, np.array([80, 80]))
+    radar.begin(ObservationPlane(id="p", name="Plane"), 0, np.array([radar.radius, 0]))
     assert radar.drag.face_on
     _, basis, segments, metadata = radar.geometry()
     assert np.linalg.det(basis) == pytest.approx(1)
     assert radar.angle_at(segments[metadata.index((45, 45))].mean(axis=0)) == 45
+
+
+@pytest.mark.parametrize("camera_position", [(2, -3, 4), (0, 0, 4)])
+def test_rotation_knobs_hover_drag_and_cancel(qapp, camera_position):
+    import vtk
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtWidgets import QWidget
+
+    class Viewer(QWidget):
+        def render(self):
+            editor._sync_controls()
+
+    viewer = Viewer()
+    viewer.resize(800, 600)
+    viewer.render_window = vtk.vtkRenderWindow()
+    viewer.renderer = vtk.vtkRenderer()
+    viewer.render_window.AddRenderer(viewer.renderer)
+    viewer.render_window.SetSize(800, 600)
+    viewer.camera = viewer.renderer.GetActiveCamera()
+    viewer.camera.SetPosition(*camera_position)
+    editor = ObservationPlaneViewport(viewer, vtk, viewer)
+    plane = ObservationPlane(id="p", name="Plane")
+    editor._planes = (plane,)
+    editor._selected_id = plane.id
+    editor._render = viewer.render
+    editor._set_mode("rotate")
+    radar = editor._radar
+
+    def mouse(kind, point):
+        position = QPointF(point[0], viewer.height() - 1 - point[1])
+        event = SimpleNamespace(
+            type=lambda: kind,
+            position=lambda: position,
+            button=lambda: Qt.LeftButton,
+            buttons=lambda: Qt.NoButton,
+            modifiers=lambda: Qt.NoModifier,
+        )
+        return editor.eventFilter(viewer, event)
+
+    try:
+        for axis in range(3):
+            assert set(radar._grips) == {0, 1, 2}
+            knob, tangent = radar._grips[axis]
+            assert radar.pick(2 * radar._center(plane) - knob) != axis
+            press = knob + 14 * tangent
+            mouse(QEvent.MouseMove, press)
+            assert set(radar._grips) == {axis}
+            assert radar.drag is None and editor._drag is None
+            np.testing.assert_allclose(radar._grips[axis][0], knob)
+            editor.eventFilter(viewer, QEvent(QEvent.Leave))
+            assert set(radar._grips) == {0, 1, 2}
+            assert mouse(QEvent.MouseButtonPress, press)
+            assert mouse(QEvent.MouseMove, press)
+            assert radar.drag.angle == pytest.approx(0)
+            center, basis, segments, metadata = radar.geometry()
+            target = segments[metadata.index((90, 45))].mean(axis=0)
+            assert mouse(QEvent.MouseMove, target)
+            assert radar.drag.angle == pytest.approx(90)
+            np.testing.assert_allclose(radar._grips[axis][0], center + radar.radius * basis[:, 1])
+            assert editor._on_key_press(SimpleNamespace(key=lambda: Qt.Key_Escape))
+            assert editor._selected_plane() == plane
+        assert mouse(QEvent.MouseButtonPress, radar._grips[2][0])
+        _, _, segments, metadata = radar.geometry()
+        target = segments[metadata.index((90, 45))].mean(axis=0)
+        mouse(QEvent.MouseMove, target)
+        assert mouse(QEvent.MouseButtonRelease, target)
+        np.testing.assert_allclose(
+            editor._selected_plane().local_axes, rotate_observation_plane(plane, 2, 90).local_axes
+        )
+        assert editor._drag is None and radar.drag is None
+        assert set(radar._grips) == {0, 1, 2}
+    finally:
+        editor.close()
+        viewer.close()
 
 
 @pytest.mark.parametrize("alt", [False, True])
