@@ -13,7 +13,9 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMenu,
     QPushButton,
-    QTabWidget,
+    QSizePolicy,
+    QStackedWidget,
+    QTabBar,
     QToolButton,
     QWidget,
 )
@@ -356,8 +358,12 @@ class MainWindow(
         self._live_plot_refresh_timer.setInterval(LIVE_PLOT_REFRESH_INTERVAL_MS)
         self._live_plot_refresh_timer.timeout.connect(self.flush_live_refresh)
         startup("Building design editor...")
-        self.editor_tabs = QTabWidget()
-        self.add_design_button = QToolButton(self.editor_tabs)
+        self.editor_pages = QStackedWidget()
+        self.editor_tabs = QTabBar()
+        self.editor_tabs.setExpanding(False)
+        self.editor_tabs.setUsesScrollButtons(True)
+        self.editor_tabs.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        self.add_design_button = QToolButton()
         self.add_design_button.setText("+")
         self.add_design_button.setAccessibleName("Add design")
         self.add_design_button.setToolTip("Add design")
@@ -365,12 +371,12 @@ class MainWindow(
         self.add_design_button.clicked.connect(self.choose_generator_plugin)
         self.add_design_menu = QMenu(self.add_design_button)
         self.add_design_menu.triggered.connect(lambda action: self.add_generator_document(action.data()))
-        self.editor_tabs.setCornerWidget(self.add_design_button)
         self.editor_tabs.setDocumentMode(True)
         self.editor_tabs.setTabsClosable(True)
+        self.editor_tabs.currentChanged.connect(self.editor_pages.setCurrentIndex)
         self.editor_tabs.currentChanged.connect(self._on_active_generator_tab_changed)
         self.editor_tabs.tabCloseRequested.connect(self._remove_generator_document_at)
-        self.editor_tabs.tabBar().installEventFilter(self)
+        self.editor_tabs.installEventFilter(self)
 
         startup("Creating mesh preview...")
         from blab.ui.mesh_preview import MeshPreview
@@ -657,8 +663,8 @@ class MainWindow(
         self.connect_dpi_signals()
 
     def eventFilter(self, watched, event) -> bool:  # noqa: N802 - Qt override
-        if watched is self.editor_tabs.tabBar() and event.type() == QEvent.Type.MouseButtonDblClick:
-            index = self.editor_tabs.tabBar().tabAt(event.position().toPoint())
+        if watched is self.editor_tabs and event.type() == QEvent.Type.MouseButtonDblClick:
+            index = self.editor_tabs.tabAt(event.position().toPoint())
             if 0 <= index < len(self.generator_documents):
                 self.editor_tabs.setCurrentIndex(index)
                 self.rename_active_generator_document()

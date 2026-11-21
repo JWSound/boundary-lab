@@ -197,7 +197,7 @@ def test_theme_change_recolours_an_open_editor(qapp) -> None:
 
 def test_toggle_action_is_on_the_design_dock_and_reaches_every_ath_tab(main_window) -> None:
     action = main_window.syntax_highlighting_action
-    editors = [main_window.editor_tabs.widget(index) for index in range(len(main_window.generator_documents))]
+    editors = [main_window.editor_pages.widget(index) for index in range(len(main_window.generator_documents))]
 
     assert editors, "a fresh project should open with one design tab"
     assert action.isCheckable()
@@ -216,13 +216,13 @@ def test_the_toggle_survives_a_rebuild_of_the_design_tabs(main_window) -> None:
 
     main_window.rebuild_generator_document_tabs()
 
-    editor = main_window.editor_tabs.widget(0)
+    editor = main_window.editor_pages.widget(0)
     assert not editor.syntax_highlighting_enabled
     assert editor.toPlainText() == ath_source_text(main_window.generator_documents[0])
 
 
 def _tab_close_buttons(main_window) -> list:
-    tab_bar = main_window.editor_tabs.tabBar()
+    tab_bar = main_window.editor_tabs
     return [tab_bar.tabButton(index, QTabBar.ButtonPosition.RightSide) for index in range(tab_bar.count())]
 
 

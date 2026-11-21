@@ -712,11 +712,42 @@ def test_capture_and_clear_are_routed_to_the_requested_plot_only(main_window, mo
 # ------------------------------------------------------------------- generator tabs
 
 
-def test_add_design_button_is_separate_from_document_tabs(main_window) -> None:
+def test_add_design_button_follows_tabs_and_stays_reachable_on_overflow(main_window, qapp) -> None:
+    from PySide6.QtTest import QTest
+
     tabs = main_window.editor_tabs
-    assert tabs.cornerWidget() is main_window.add_design_button
-    assert tabs.count() == len(main_window.generator_documents)
-    assert main_window.add_design_button.accessibleName() == "Add design"
+    button = main_window.add_design_button
+    main_window.show()
+    main_window.editor_dock.show()
+    main_window.editor_dock.raise_()
+    main_window.editor_panel.setFixedWidth(500)
+
+    def check_adjacent():
+        qapp.processEvents()
+        end = tabs.x() + tabs.tabRect(tabs.count() - 1).right()
+        assert 0 < button.x() - end <= 5
+        assert tabs.count() == len(main_window.generator_documents)
+        return button.x()
+
+    first = check_adjacent()
+    main_window.add_generator_document("ath")
+    assert check_adjacent() > first
+    main_window._remove_generator_document_at(1)
+    assert check_adjacent() == first
+    main_window.editor_panel.setFixedWidth(230)
+    for _ in range(4):
+        main_window.add_generator_document("ath")
+    qapp.processEvents()
+    assert tabs.width() < tabs.sizeHint().width()
+    assert any(arrow.isVisible() for arrow in tabs.findChildren(QToolButton) if arrow.arrowType() == Qt.RightArrow)
+    assert tabs.geometry().right() < button.x()
+    assert button.isVisible() and main_window.editor_panel.rect().contains(button.geometry())
+    tabs.setCurrentIndex(0)
+    assert main_window.editor_pages.currentIndex() == 0
+    editor = main_window.editor_pages.currentWidget()
+    editor.setFocus()
+    QTest.keyClick(editor, Qt.Key_Tab, Qt.ControlModifier)
+    assert tabs.currentIndex() == main_window.editor_pages.currentIndex() == 1
 
 
 # --------------------------------------------------------------------- preview tree

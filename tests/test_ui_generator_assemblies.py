@@ -96,7 +96,7 @@ def test_gui_reopens_assembly_without_installed_plugin(main_window, assembly_cas
     assert len(main_window._mesh_config_dialog_entries()) == 2
     assert not main_window.imported_meshes
     assert len(main_window.generated_geometry_by_document_id["design"].meshes) == 2
-    assert "test.assembly" in main_window.editor_tabs.currentWidget().toPlainText()
+    assert "test.assembly" in main_window.editor_pages.currentWidget().toPlainText()
     assert len(PhysicalSystemCompiler().compile(main_window.project.physical_system).interfaces) == 1
 
 

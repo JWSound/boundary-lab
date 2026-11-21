@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import QSignalBlocker, Qt
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QDockWidget,
@@ -222,7 +222,18 @@ class ViewBuilderMixin:
         self.editor_panel = QWidget()
         editor_layout = QVBoxLayout(self.editor_panel)
         editor_layout.setContentsMargins(0, 0, 0, 0)
-        editor_layout.addWidget(self.editor_tabs)
+        tab_row = QHBoxLayout()
+        tab_row.setSpacing(2)
+        tab_row.addWidget(self.editor_tabs)
+        tab_row.addWidget(self.add_design_button)
+        tab_row.addStretch()
+        editor_layout.setSpacing(0)
+        editor_layout.addLayout(tab_row)
+        editor_layout.addWidget(self.editor_pages)
+        for key, offset in (("Ctrl+Tab", 1), ("Ctrl+Shift+Tab", -1)):
+            shortcut = QShortcut(QKeySequence(key), self.editor_panel)
+            shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            shortcut.activated.connect(lambda step=offset: self._cycle_design_tab(step))
 
         self.editor_container = QWidget()
         editor_container_layout = QHBoxLayout(self.editor_container)

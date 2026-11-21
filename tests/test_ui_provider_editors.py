@@ -110,7 +110,7 @@ def test_rebuild_disposes_custom_editor_and_missing_provider_preserves_source(ma
     qapp.processEvents()
     qapp.processEvents()
     assert main_window.active_generator_document() == document
-    assert "disabled" in main_window.editor_tabs.currentWidget().toPlainText()
+    assert "disabled" in main_window.editor_pages.currentWidget().toPlainText()
     assert not main_window.generate_button.isEnabled()
     assert host.services.context().exception().code == "closed"
     assert not main_window.provider_host.service._subscriptions
@@ -121,7 +121,7 @@ def test_source_schema_mismatch_does_not_create_editor(main_window, box_catalog)
     document = replace(main_window.active_generator_document(), provider_schema_version=2)
     main_window.generator_documents = (document,)
     main_window.rebuild_generator_document_tabs()
-    assert "Incompatible" in main_window.editor_tabs.currentWidget().toPlainText()
+    assert "Incompatible" in main_window.editor_pages.currentWidget().toPlainText()
     assert not main_window.generate_button.isEnabled()
     assert main_window.active_generator_document().source == document.source
 
@@ -205,7 +205,7 @@ def test_failed_editor_factory_preserves_document_and_releases_subscription(
 
     monkeypatch.setattr(box_catalog, "factory", lambda *_args: factory)
     main_window.add_generator_document("example.box")
-    assert "Broken editor" in main_window.editor_tabs.currentWidget().toPlainText()
+    assert "Broken editor" in main_window.editor_pages.currentWidget().toPlainText()
     assert main_window.active_generator_document().source == box_catalog.source_defaults("example.box")
     qapp.processEvents()
     qapp.processEvents()
@@ -291,7 +291,7 @@ def test_plugin_manager_commit_preserves_design_artifacts_and_results(main_windo
     assert not invalidations
     assert box_catalog.enabled == (set() if accepted else {"example.box"})
     if accepted:
-        assert "Edit > Generator Plugins" in main_window.editor_tabs.currentWidget().toPlainText()
+        assert "Edit > Generator Plugins" in main_window.editor_pages.currentWidget().toPlainText()
         restored = load_gui_preferences(main_window.settings)
         assert restored.enabled_geometry_providers == ()
         box_catalog.enabled.add("example.box")

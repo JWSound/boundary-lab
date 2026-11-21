@@ -103,7 +103,8 @@ class GeneratorDocumentsMixin:
         self.dispose_provider_editors()
         self.editor_tabs.blockSignals(True)
         while self.editor_tabs.count():
-            widget = self.editor_tabs.widget(0)
+            widget = self.editor_pages.widget(0)
+            self.editor_pages.removeWidget(widget)
             self.editor_tabs.removeTab(0)
             widget.deleteLater()
         for document in self.generator_documents:
@@ -116,7 +117,7 @@ class GeneratorDocumentsMixin:
                     raise ValueError("Incompatible Generator Plugin source schema; source has been preserved.")
                 if document.provider_id == ATH_PROVIDER_ID:
                     adapter = AthProviderEditor(
-                        self.editor_tabs, host, highlight_syntax=self.syntax_highlighting_enabled
+                        self.editor_pages, host, highlight_syntax=self.syntax_highlighting_enabled
                     )
                     adapter.widget.configDropped.connect(
                         lambda path, document_id=document.id: self.import_config_path(
@@ -128,7 +129,7 @@ class GeneratorDocumentsMixin:
                     if factory is None:
                         raise ValueError("This Generator Plugin does not supply a custom editor.")
                     # Own even partially constructed child widgets if a factory raises.
-                    container = QWidget(self.editor_tabs)
+                    container = QWidget(self.editor_pages)
                     container.hide()
                     layout = QVBoxLayout(container)
                     layout.setContentsMargins(0, 0, 0, 0)
@@ -136,7 +137,7 @@ class GeneratorDocumentsMixin:
                 if (
                     not isinstance(adapter.widget, QWidget)
                     or isinstance(adapter.widget, QDockWidget)
-                    or adapter.widget is self.editor_tabs
+                    or adapter.widget is self.editor_pages
                     or adapter.widget is container
                 ):
                     raise TypeError("Generator Plugin must supply its own widget.")
@@ -168,16 +169,19 @@ class GeneratorDocumentsMixin:
                     "Saved design source has been preserved.\n\n"
                     + json.dumps(document.source, indent=2, sort_keys=True)
                 )
-            self._install_tab_close_button(self.editor_tabs.addTab(editor, document.name), document.name)
+            self.editor_pages.addWidget(editor)
+            self._install_tab_close_button(self.editor_tabs.addTab(document.name), document.name)
         if not self.generator_documents:
             empty_editor = AthScriptEditor(highlight_syntax=False)
             empty_editor.setReadOnly(True)
             empty_editor.configDropped.connect(lambda path: self.import_config_path(Path(path)))
-            index = self.editor_tabs.addTab(empty_editor, "Designs")
-            self.editor_tabs.tabBar().setTabButton(index, QTabBar.ButtonPosition.RightSide, None)
+            self.editor_pages.addWidget(empty_editor)
+            index = self.editor_tabs.addTab("Designs")
+            self.editor_tabs.setTabButton(index, QTabBar.ButtonPosition.RightSide, None)
         active_index = self.active_generator_document_index()
         if active_index >= 0:
             self.editor_tabs.setCurrentIndex(active_index)
+            self.editor_pages.setCurrentIndex(active_index)
         self.editor_tabs.blockSignals(False)
         self.update_provider_editor_states()
         self._refresh_generate_availability()
@@ -186,10 +190,10 @@ class GeneratorDocumentsMixin:
         button = TabCloseButton(f"Close {name}")
         # Resolved on click: removing a tab renumbers the rest.
         button.clicked.connect(lambda: self._remove_generator_document_at(self._tab_index_of_close_button(button)))
-        self.editor_tabs.tabBar().setTabButton(index, QTabBar.ButtonPosition.RightSide, button)
+        self.editor_tabs.setTabButton(index, QTabBar.ButtonPosition.RightSide, button)
 
     def _tab_index_of_close_button(self, button: TabCloseButton) -> int:
-        tab_bar = self.editor_tabs.tabBar()
+        tab_bar = self.editor_tabs
         for index in range(tab_bar.count()):
             if tab_bar.tabButton(index, QTabBar.ButtonPosition.RightSide) is button:
                 return index
@@ -200,7 +204,7 @@ class GeneratorDocumentsMixin:
         self.syntax_highlighting_enabled = bool(enabled)
         save_syntax_highlighting_enabled(self.settings, self.syntax_highlighting_enabled)
         for index, document in enumerate(self.generator_documents):
-            editor = self.editor_tabs.widget(index)
+            editor = self.editor_pages.widget(index)
             if document.provider_id == ATH_PROVIDER_ID and isinstance(editor, AthScriptEditor):
                 editor.set_syntax_highlighting_enabled(self.syntax_highlighting_enabled)
 
@@ -230,6 +234,11 @@ class GeneratorDocumentsMixin:
             with_ath_source_text(document, editor.toPlainText()) if document.id == document_id else document
             for document in self.generator_documents
         )
+
+    def _cycle_design_tab(self, step: int) -> None:
+        tabs = self.editor_tabs
+        if tabs.count() > 1:
+            tabs.setCurrentIndex((tabs.currentIndex() + step) % tabs.count())
 
     def _on_active_generator_tab_changed(self, index: int) -> None:
         if 0 <= index < len(self.generator_documents):
