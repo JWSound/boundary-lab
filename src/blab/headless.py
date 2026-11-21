@@ -415,7 +415,15 @@ class HeadlessResultWriter:
         self.output_dir.mkdir(parents=True)
         self.frequency_dir = self.output_dir / "frequencies"
         self.frequency_dir.mkdir()
-        shutil.copyfile(project.path, self.output_dir / "project.snapshot.blab.json")
+        snapshot = self.output_dir / "project.snapshot.blab.json"
+        if project.path.suffix.lower() == ".blab":
+            from blab.project.io import write_project_file
+            from blab.project.package import read_package
+
+            payload, _, _ = read_package(project.path, asset_parent=self.output_dir)
+            write_project_file(snapshot, payload)
+        else:
+            shutil.copyfile(project.path, snapshot)
         _write_json(self.output_dir / "request.json", public_request)
         _write_json(
             self.output_dir / "compiled-system.json",

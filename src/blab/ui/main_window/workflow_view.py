@@ -309,6 +309,12 @@ class WorkflowView(Protocol):
         view concern that a different frontend answers its own way.
         """
 
+    def choose_project_save(self, name: str, has_results: bool, include_results: bool) -> tuple[Path, bool] | None:
+        """Choose the package destination and whether to embed results."""
+
+    def restored_project_results(self) -> None:
+        """Refresh result-dependent plots and actions after opening a package."""
+
     def choose_save_file(self, title: str, file_filter: str, suggested_name: str) -> Path | None:
         """Ask the user where to write a file. None if they cancelled."""
 

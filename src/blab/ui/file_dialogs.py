@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QSettings
-from PySide6.QtWidgets import QFileDialog, QWidget
+from PySide6.QtWidgets import QCheckBox, QFileDialog, QWidget
 
 from blab.paths import USER_ROOT
 from blab.ui.settings import application_settings
@@ -54,6 +54,25 @@ class FileDialogService:
             file_filter,
         )
         return self._accepted_file(path_text)
+
+    def save_project(self, parent, suggested_name, has_results, include_results):
+        dialog = QFileDialog(parent)
+        dialog.setOption(QFileDialog.Option.DontUseNativeDialog)
+        dialog.setWindowTitle("Save Project As")
+        dialog.setAcceptMode(QFileDialog.AcceptMode.AcceptSave)
+        dialog.setNameFilter("Boundary Lab project (*.blab)")
+        dialog.setDefaultSuffix("blab")
+        dialog.setDirectory(str(self.last_used_directory()))
+        dialog.selectFile(suggested_name)
+        checkbox = QCheckBox("Include solved results" if has_results else "Include solved results (no current solve)")
+        checkbox.setEnabled(has_results)
+        checkbox.setChecked(has_results and include_results)
+        layout = dialog.layout()
+        layout.addWidget(checkbox, layout.rowCount(), 1)
+        if not dialog.exec():
+            return None
+        filename = dialog.selectedFiles()[0]
+        return self._accepted_file(filename), checkbox.isChecked() if has_results else include_results
 
     def select_directory(
         self,

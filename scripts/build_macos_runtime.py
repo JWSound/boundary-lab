@@ -160,6 +160,20 @@ def main():
     run("iconutil", "-c", "icns", iconset, "-o", resources / "BoundaryLab.icns")
     metadata = dict(
         CFBundleIdentifier="org.boundarylab.desktop",
+        CFBundleDocumentTypes=[
+            dict(
+                CFBundleTypeName="Boundary Lab project",
+                CFBundleTypeRole="Editor",
+                LSItemContentTypes=["org.boundarylab.project"],
+            )
+        ],
+        UTExportedTypeDeclarations=[
+            dict(
+                UTTypeIdentifier="org.boundarylab.project",
+                UTTypeConformsTo=["public.zip-archive"],
+                UTTypeTagSpecification={"public.filename-extension": ["blab"]},
+            )
+        ],
         CFBundleName="Boundary Lab",
         CFBundleDisplayName="Boundary Lab",
         CFBundleExecutable="Boundary Lab",
