@@ -292,7 +292,14 @@ class DialogActionsMixin:
             QMessageBox.warning(self, "System", "Enable at least one mesh before configuring the system.")
             return
         dialog.systemApplied.connect(self._apply_system_config)
-        dialog.exec()
+        if self.preview.isVisible():
+            dialog.boundarySelectionChanged.connect(self.preview.highlight_boundary)
+            try:
+                dialog.exec()
+            finally:
+                self.preview.highlight_boundary(None)
+        else:
+            dialog.exec()
 
     def _prepare_system_config_dialog(self, activity, inventory) -> SystemConfigDialog | None:
         meshes, symmetry_analysis_meshes = inventory
