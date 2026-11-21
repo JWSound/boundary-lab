@@ -33,12 +33,6 @@ from blab.ui.main_window.workflow_view import (
 from blab.ui.main_window_widgets import (
     DockTitleBar,
 )
-from blab.ui.plots import (
-    AUDIO_FREQ_MAX_HZ,
-    AUDIO_FREQ_MIN_HZ,
-    frequency_to_slider_value,
-    slider_value_to_frequency,
-)
 
 
 def _framed_dock_content(widget: QWidget) -> QFrame:
@@ -347,14 +341,11 @@ class ViewBuilderMixin:
         controls_layout.addWidget(self.system_config_button)
         controls_layout.addWidget(self.channel_config_button)
         controls_layout.addSpacing(20)
-        controls_layout.addWidget(QLabel("Min Hz"))
-        controls_layout.addWidget(self.freq_min_slider)
-        controls_layout.addWidget(self.freq_min_spin)
-        controls_layout.addWidget(QLabel("Max Hz"))
-        controls_layout.addWidget(self.freq_max_slider)
-        controls_layout.addWidget(self.freq_max_spin)
+        controls_layout.addWidget(QLabel("Frequency range"))
+        controls_layout.addWidget(self.frequency_control, 3)
         controls_layout.addWidget(QLabel("Frequencies"))
-        controls_layout.addWidget(self.freq_count_slider)
+        self.freq_count_slider.setMinimumWidth(120)
+        controls_layout.addWidget(self.freq_count_slider, 1)
         controls_layout.addWidget(self.freq_count_spin)
 
         central = QWidget()
@@ -374,32 +365,10 @@ class ViewBuilderMixin:
         self.system_config_button.clicked.connect(self.open_system_config)
         self.channel_config_button.clicked.connect(self.open_channel_config)
 
-        self.freq_min_slider.valueChanged.connect(
-            lambda value: self._sync_frequency_spin_from_slider(self.freq_min_spin, value)
-        )
-        self.freq_min_spin.valueChanged.connect(
-            lambda value: self._sync_frequency_slider_from_spin(self.freq_min_slider, value)
-        )
-        self.freq_max_slider.valueChanged.connect(
-            lambda value: self._sync_frequency_spin_from_slider(self.freq_max_spin, value)
-        )
-        self.freq_max_spin.valueChanged.connect(
-            lambda value: self._sync_frequency_slider_from_spin(self.freq_max_slider, value)
-        )
+        self.frequency_control.edited.connect(self._update_project_frequency)
         self.freq_count_slider.valueChanged.connect(self.freq_count_spin.setValue)
         self.freq_count_spin.valueChanged.connect(self.freq_count_slider.setValue)
-        self.freq_min_spin.valueChanged.connect(self._update_project_frequency)
-        self.freq_max_spin.valueChanged.connect(self._update_project_frequency)
         self.freq_count_spin.valueChanged.connect(self._update_project_frequency)
-
-    def _sync_frequency_spin_from_slider(self, spin: QSpinBox, slider_value: int) -> None:
-        with QSignalBlocker(spin):
-            spin.setValue(slider_value_to_frequency(slider_value))
-        self._update_project_frequency()
-
-    def _sync_frequency_slider_from_spin(self, slider: QSlider, freq_hz: int) -> None:
-        with QSignalBlocker(slider):
-            slider.setValue(frequency_to_slider_value(freq_hz))
 
     def _make_slider(self, minimum: int, maximum: int, value: int) -> QSlider:
         slider = QSlider(Qt.Horizontal)
@@ -578,33 +547,16 @@ class ViewBuilderMixin:
 
     def frequency_range(self) -> FrequencyRange:
         return FrequencyRange(
-            min_hz=int(self.freq_min_spin.value()),
-            max_hz=int(self.freq_max_spin.value()),
+            min_hz=int(self.frequency_control.minimum_spin.value()),
+            max_hz=int(self.frequency_control.maximum_spin.value()),
             count=int(self.freq_count_spin.value()),
         )
 
     def set_frequency_range(self, value: FrequencyRange) -> None:
-        controls = (
-            self.freq_min_spin,
-            self.freq_max_spin,
-            self.freq_count_spin,
-            self.freq_min_slider,
-            self.freq_max_slider,
-            self.freq_count_slider,
-        )
-        # Blocked so restoring a project's range does not look like the user
-        # editing it, which would re-save settings and invalidate the solve.
-        blockers = [QSignalBlocker(control) for control in controls]
-        # Saved sweeps can extend beyond the command strip's usual ranges,
-        # including a project that solves a single frequency.
-        for spin in (self.freq_min_spin, self.freq_max_spin):
-            spin.setRange(min(AUDIO_FREQ_MIN_HZ, value.min_hz), max(AUDIO_FREQ_MAX_HZ, value.max_hz))
+        self.frequency_control.set_range(value.min_hz, value.max_hz)
+        blockers = [QSignalBlocker(control) for control in (self.freq_count_spin, self.freq_count_slider)]
         for control in (self.freq_count_spin, self.freq_count_slider):
             control.setRange(min(3, value.count), max(200, value.count))
-        self.freq_min_spin.setValue(value.min_hz)
-        self.freq_max_spin.setValue(value.max_hz)
         self.freq_count_spin.setValue(value.count)
-        self.freq_min_slider.setValue(frequency_to_slider_value(value.min_hz))
-        self.freq_max_slider.setValue(frequency_to_slider_value(value.max_hz))
         self.freq_count_slider.setValue(value.count)
         del blockers
