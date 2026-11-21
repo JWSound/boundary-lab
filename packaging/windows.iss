@@ -2,7 +2,7 @@
   #error Pass /DPayload=<absolute staged runtime directory>
 #endif
 #ifndef AppVersion
-  #define AppVersion "0.5.0.dev0"
+  #define AppVersion "0.5.1.dev0"
 #endif
 #ifndef Flavor
   #define Flavor "cpu"

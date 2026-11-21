@@ -39,7 +39,7 @@ Installer certificate is needed for a DMG.
   --app 'build/macos-candidate/Boundary Lab.app' \
   --output dist/macos-signed --identity YOUR_CERTIFICATE_SHA1
 .venv/bin/python scripts/test_macos_installer.py \
-  --dmg dist/macos-signed/Boundary-Lab-0.5.0-mac-arm64.dmg \
+  --dmg dist/macos-signed/Boundary-Lab-0.5.1-mac-arm64.dmg \
   --output 'build/Mac Installed Qualification'
 ```
 
