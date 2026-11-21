@@ -80,6 +80,28 @@ class _PreviewActorRecord:
     mesh_region: str | None
     diagnostic: bool = False
     motion_arrow: bool = False
+    outline: object | None = None
+
+
+def _boundary_outline(surface_actor, camera):
+    # Border edges mark a patch; the silhouette also outlines closed surfaces.
+    edges = vtk.vtkPolyDataSilhouette()
+    edges.SetInputConnection(surface_actor.GetMapper().GetInputConnection(0, 0))
+    edges.SetCamera(camera)
+    edges.BorderEdgesOn()
+    edges.SetEnableFeatureAngle(False)
+    mapper = vtk.vtkPolyDataMapper()
+    mapper.SetInputConnection(edges.GetOutputPort())
+    mapper.ScalarVisibilityOff()
+    actor = vtk.vtkActor()
+    actor.SetMapper(mapper)
+    actor.PickableOff()
+    actor.UseBoundsOff()
+    actor.GetProperty().LightingOff()
+    actor.GetProperty().SetRenderLinesAsTubes(True)
+    actor.GetProperty().SetLineWidth(3)
+    actor.GetProperty().SetColor(0.6, 1.0, 0.6)
+    return actor
 
 
 class _ViewportTreeOverlay(QFrame):
@@ -147,6 +169,7 @@ class MeshPreview(QWidget):
         self._actor_records: list[_PreviewActorRecord] = []
         self._topology_issue_actors: list[object] = []
         self._surface_visibility: dict[tuple[str, int | None], bool] = {}
+        self._highlighted_boundary: tuple[str, str] | None = None
         self._hierarchy: PreviewHierarchy | None = None
         self._tree_updating = False
         self._observation_clip_active = False
@@ -541,6 +564,7 @@ class MeshPreview(QWidget):
             surface_key: old_visibility.get(surface_key, True) for surface_key in hierarchy.surface_keys
         }
         self._rebuild_body_tree()
+        self._update_boundary_outline()
         self._apply_actor_visibility(render=render)
 
     def _rebuild_body_tree(self) -> None:
@@ -876,6 +900,26 @@ class MeshPreview(QWidget):
             )
         )
 
+    def highlight_boundary(self, surface: tuple[str, str] | None) -> None:
+        if self._highlighted_boundary == surface:
+            return
+        self._highlighted_boundary = surface
+        if self.viewer is not None:
+            self._update_boundary_outline()
+            self.viewer.render()
+
+    def _update_boundary_outline(self) -> None:
+        key = self._hierarchy.rendered_groups.get(self._highlighted_boundary) if self._hierarchy else None
+        for record in self._actor_records:
+            if key is not None and record.surface_key == key and not record.motion_arrow:
+                if record.outline is None:
+                    record.outline = _boundary_outline(record.actor, self.viewer.camera)
+                    self.viewer.renderer.AddActor(record.outline)
+                record.outline.SetVisibility(record.actor.GetVisibility())
+            elif record.outline is not None:
+                self.viewer.renderer.RemoveActor(record.outline)
+                record.outline = None
+
     def _apply_actor_visibility(self, *, render: bool = True) -> None:
         if self.viewer is None:
             return
@@ -890,6 +934,8 @@ class MeshPreview(QWidget):
             if self._observation_clip_active and record.mesh_region == PREVIEW_REGION_INTERIOR:
                 visible = False
             record.actor.SetVisibility(visible)
+            if record.outline is not None:
+                record.outline.SetVisibility(visible)
         self._update_motion_arrows()
         if render:
             self.viewer.render()

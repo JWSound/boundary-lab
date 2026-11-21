@@ -34,6 +34,7 @@ class PreviewRegionNode:
 @dataclass(frozen=True)
 class PreviewHierarchy:
     regions: tuple[PreviewRegionNode, ...]
+    rendered_groups: dict[tuple[str, str], PreviewSurfaceKey]
 
     @property
     def surface_keys(self) -> tuple[PreviewSurfaceKey, ...]:
@@ -57,6 +58,12 @@ def build_preview_hierarchy(
 ) -> PreviewHierarchy:
     """Describe regions, source meshes, and rendered boundary actors."""
 
+    rendered_groups = {
+        (mesh_name, group): solver_surface_by_source[mesh_name, tag]
+        for mesh_name, names in source_surface_tags_by_mesh.items()
+        for group, tag in names.items()
+        if (mesh_name, tag) in solver_surface_by_source
+    }
     if system is None:
         meshes = tuple(
             _fallback_mesh_node(
@@ -67,7 +74,7 @@ def build_preview_hierarchy(
             )
             for mesh in source_mesh_configs
         )
-        return PreviewHierarchy((PreviewRegionNode("region:exterior", "Exterior", meshes),))
+        return PreviewHierarchy((PreviewRegionNode("region:exterior", "Exterior", meshes),), rendered_groups)
 
     resources_by_id = {mesh.id: mesh for mesh in system.meshes}
     boundaries_by_region_mesh: dict[tuple[str, str], list] = {}
@@ -138,7 +145,7 @@ def build_preview_hierarchy(
     )
     if unassigned_meshes:
         regions.append(PreviewRegionNode("region:unassigned", "Unassigned", unassigned_meshes))
-    return PreviewHierarchy(tuple(regions))
+    return PreviewHierarchy(tuple(regions), rendered_groups)
 
 
 def _fallback_mesh_node(

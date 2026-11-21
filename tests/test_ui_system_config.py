@@ -2021,3 +2021,30 @@ def test_coupled_cuda_matches_cpu_exterior_pressure() -> None:
     assert cpu_pressure.dtype == np.complex64
     assert cuda_pressure.dtype == np.complex64
     assert relative_l2 < 5e-3
+
+
+def test_boundary_selection_identifies_surface_by_mesh_and_clears_on_tab_change(qapp):
+    dialog = _configured_fixture_dialog()
+    selected = []
+    dialog.boundarySelectionChanged.connect(selected.append)
+    dialog.tabs.setCurrentWidget(dialog.boundaries_tab)
+    table = dialog.boundaries_table
+    for row in range(table.rowCount()):
+        if table.item(row, 2).text() == "Interface":
+            table.selectRow(row)
+            assert selected[-1] == (table.item(row, 1).text(), "Interface")
+    assert ("Interior", "Interface") in selected
+    assert ("Exterior", "Interface") in selected
+    dialog.show()
+    qapp.processEvents()
+    table.selectRow(0)
+    editor = table.cellWidget(1, 3)
+    QTest.mouseClick(editor, Qt.LeftButton)
+    assert selected[-1] == (table.item(1, 1).text(), table.item(1, 2).text())
+    editor.hidePopup()
+    table.clearSelection()
+    assert selected[-1] is None
+    table.selectRow(0)
+    dialog.tabs.setCurrentWidget(dialog.regions_tab)
+    assert selected[-1] is None
+    dialog.close()

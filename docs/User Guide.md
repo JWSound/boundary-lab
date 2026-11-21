@@ -402,6 +402,8 @@ tab is enabled only when both bounded and unbounded regions exist.
 
 <img src="../assets/boundarieswindow.png" alt="System Boundaries tab" width="700">
 
+Select a boundary row to outline its surface in light green in the visible 3D viewport.
+
 Classify each region surface as **Rigid**, **Moving**, or—where applicable—
 **Interface** or **Plane-wave tube termination**. A bounded rigid surface may
 additionally use a rigid-backed porous lining via **Wall Impedance**. The Miki

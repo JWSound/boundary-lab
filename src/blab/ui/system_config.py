@@ -7,7 +7,7 @@ from pathlib import Path
 
 import meshio
 import numpy as np
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -210,6 +210,7 @@ class SystemConfigDialog(QDialog):
     """Edit regions, boundaries, inferred interfaces, and physical components."""
 
     systemApplied = Signal(object)
+    boundarySelectionChanged = Signal(object)
 
     def __init__(
         self,
@@ -372,6 +373,9 @@ class SystemConfigDialog(QDialog):
         )
         self.boundaries_table.verticalHeader().setVisible(False)
         self.boundaries_table.setAlternatingRowColors(True)
+        self.boundaries_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.boundaries_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.boundaries_table.itemSelectionChanged.connect(self._notify_boundary_selection)
         self.boundaries_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.boundaries_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         self.boundaries_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
@@ -653,6 +657,29 @@ class SystemConfigDialog(QDialog):
         elif self.tabs.widget(index) is self.components_tab:
             self._refresh_components_boundary_choices()
 
+        self._notify_boundary_selection()
+
+    def eventFilter(self, editor, event):
+        # Embedded controls receive clicks directly, bypassing the table's row selection.
+        if event.type() in (QEvent.Type.MouseButtonPress, QEvent.Type.FocusIn):
+            table = self.boundaries_table
+            if editor.parent() is table.viewport():
+                index = table.indexAt(editor.geometry().center())
+                if index.isValid():
+                    table.setCurrentCell(index.row(), index.column())
+        return super().eventFilter(editor, event)
+
+    def _notify_boundary_selection(self) -> None:
+        rows = self.boundaries_table.selectionModel().selectedRows()
+        surface = None
+        if rows and self.tabs.currentWidget() is self.boundaries_tab:
+            row = rows[0].row()
+            mesh = self.boundaries_table.item(row, 1)
+            group = self.boundaries_table.item(row, 2)
+            if mesh is not None and group is not None:
+                surface = (mesh.text(), group.text())
+        self.boundarySelectionChanged.emit(surface)
+
     def _current_boundary_assignments(self) -> dict[tuple[str, str, str], tuple[str, BoundaryKind | None, dict]]:
         assignments = {}
         for row in range(self.boundaries_table.rowCount()):
@@ -774,6 +801,8 @@ class SystemConfigDialog(QDialog):
         )
         impedance_button.setProperty("thermoviscous_combo", thermoviscous_combo)
         self.boundaries_table.setCellWidget(row, 5, thermoviscous_combo)
+        for editor in (combo, impedance_button, thermoviscous_combo):
+            editor.installEventFilter(self)
         thermoviscous_combo.currentIndexChanged.connect(
             lambda _index, button=impedance_button, loss=thermoviscous_combo: self._store_thermoviscous_selection(
                 button, loss
