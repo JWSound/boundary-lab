@@ -329,3 +329,60 @@ def test_solve_worker_logs_and_emits_backend_status(monkeypatch, caplog) -> None
     assert statuses == ["initializing backend detail", "assembling backend detail"]
     assert "initializing backend detail" in caplog.text
     assert "assembling backend detail" in caplog.text
+
+
+def test_pattern_completion_uses_trained_frequency_count(qapp):
+    controller = SolveController()
+    controller._begin_run(50)
+    trained = SimpleNamespace(frequencies_hz=(20, 100, 500))
+    controller._on_pattern_ready(trained)
+    controller._on_finished()
+    assert controller.trained_pattern is trained
+    assert controller.last_completion.completed
+    assert controller.last_completion.solved_count == 3
+    assert controller.last_completion.expected_count == 3
+
+
+def test_background_pattern_worker_dispatches_a_band_independent_of_plot_samples(qapp, monkeypatch):
+    from dataclasses import replace
+
+    import blab.ui.system_solve as worker_module
+    from blab.physical_model import PhysicalSolveKind
+    from blab.system_contract import SystemSolveRequest
+    from blab.system_solve import PreparedSystemSolve
+
+    prepared = PreparedSystemSolve(
+        SystemSolveRequest(None, (45.0, 110.0), ("port",)),
+        "beat_cpu",
+        PhysicalSolveKind.EXTERIOR_BEM,
+        np.empty(0),
+        np.array(["main"]),
+        np.array(["driver"]),
+        0,
+        0,
+        pattern_band_hz=(20.0, 500.0),
+    )
+    trained = SimpleNamespace(frequencies_hz=np.geomspace(20, 500, 9))
+    calls = []
+
+    def train(batch, *, session_factory, stop_requested, event_callback):
+        calls.append(replace(batch, request=prepared.request))
+        assert not stop_requested()
+        event_callback({"event": "frequency_completed", "freq_hz": 20})
+        return trained
+
+    monkeypatch.setattr(worker_module, "solve_speaker_package_system", train)
+    controller = SolveController()
+    completions = []
+    regular_results = []
+    controller.finished.connect(completions.append)
+    controller.result_ready.connect(regular_results.append)
+    assert controller.start(prepared)
+    deadline = time.monotonic() + 3
+    while not completions and time.monotonic() < deadline:
+        qapp.processEvents()
+        time.sleep(0.005)
+    assert completions and completions[0].completed
+    assert calls[0].pattern_band_hz == (20, 500)
+    assert controller.trained_pattern is trained
+    assert regular_results == []

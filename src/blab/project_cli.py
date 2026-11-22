@@ -134,10 +134,30 @@ def _build_arg_parser(prog: str | None = None) -> argparse.ArgumentParser:
     export_speaker.add_argument("--viewport-model", type=Path, help="Optional expanded +Z-forward OBJ")
     export_speaker.add_argument("--viewport-model-scale", type=float, default=1.0, help="OBJ units to meters")
     export_speaker.add_argument("--fidelity", choices=("pattern", "fixed", "coupled"), default="pattern")
-    export_speaker.add_argument("--speaker-rom-rank", type=int, default=32)
-    export_speaker.add_argument("--speaker-rom-training-count", type=int, default=96)
-    export_speaker.add_argument("--speaker-rom-validation-count", type=int, default=24)
-    export_speaker.add_argument("--request", type=Path, help="Optional headless solve-request JSON overlay")
+    export_speaker.add_argument("--adaptive-pattern", action="store_true", help=argparse.SUPPRESS)
+    export_speaker.add_argument(
+        "--pattern-max-solves",
+        type=int,
+        default=512,
+        help="Maximum number of direct training and check frequencies for an adaptive Level 1 export",
+    )
+    export_speaker.add_argument(
+        "--speaker-rom-rank", type=int, default=128, help="Maximum retained continuous interior rank"
+    )
+    export_speaker.add_argument(
+        "--speaker-rom-training-count", type=int, default=32, help="Maximum continuous ROM training frequencies"
+    )
+    export_speaker.add_argument(
+        "--speaker-rom-validation-count",
+        type=int,
+        default=24,
+        help="Uniform validation frequencies in addition to training-interval midpoints",
+    )
+    export_speaker.add_argument(
+        "--request",
+        type=Path,
+        help="Headless solve overlay for sampled outputs. Level 1 and Level 3 training use the saved project band.",
+    )
     export_speaker.add_argument("--backend", choices=HEADLESS_BACKEND_IDS, default=HEADLESS_BACKEND_AUTO)
     export_speaker.add_argument("--events", choices=("text", "ndjson"), default="text")
     export_speaker.add_argument(
@@ -149,7 +169,7 @@ def _build_arg_parser(prog: str | None = None) -> argparse.ArgumentParser:
 
     speaker_preflight = commands.add_parser(
         "speaker-preflight",
-        help="Estimate Level-3 package storage and per-frequency interior working sets",
+        help="Estimate parity-ROM storage and per-frequency interior working sets",
     )
     speaker_preflight.add_argument("project_file", type=Path, help="Path to the .blab.json project")
     speaker_preflight.add_argument("--request", type=Path, help="Optional headless solve-request JSON overlay")
@@ -364,7 +384,7 @@ def _speaker_preflight(args: argparse.Namespace) -> None:
         return
     sizes = payload["sizes"]
     print(
-        f"Level-3 preflight for '{project.physical_system.name}': "
+        f"Legacy parity-ROM preflight for '{project.physical_system.name}': "
         f"{estimate.frequency_count} frequencies, {estimate.state_count} retained states, "
         f"{estimate.bem_node_count} BEM nodes / {estimate.bem_face_count} faces."
     )
@@ -387,7 +407,9 @@ def _export_speaker(args: argparse.Namespace) -> None:
     sphere_angle_deg = min(max(float(project.preferences.balloon_angle_precision_deg), 0.5), 15.0)
     sphere_point_count = max(int(round(41253.0 / sphere_angle_deg**2)), 1)
     fidelity = SpeakerPackageFidelity.parse(args.fidelity)
-    coupled_representation = SpeakerPackageCoupledRepresentation.PARITY_ROM
+    if args.adaptive_pattern and fidelity != SpeakerPackageFidelity.PATTERN:
+        raise ValueError("--adaptive-pattern requires --fidelity pattern.")
+    coupled_representation = SpeakerPackageCoupledRepresentation.CONTINUOUS_ROM
     backend_id = resolve_headless_backend(args.backend, julia_executable=args.julia_executable)
     temporary: tempfile.TemporaryDirectory[str] | None = None
     try:
@@ -416,6 +438,7 @@ def _export_speaker(args: argparse.Namespace) -> None:
             coupled_representation=coupled_representation,
             sphere_point_count=sphere_point_count,
             sphere_radius_m=project.preferences.polar_observation_distance_m,
+            training_band_hz=(project.preferences.freq_min_hz, project.preferences.freq_max_hz),
             speaker_rom_rank=args.speaker_rom_rank,
             speaker_rom_training_count=args.speaker_rom_training_count,
             speaker_rom_validation_count=args.speaker_rom_validation_count,
@@ -427,12 +450,10 @@ def _export_speaker(args: argparse.Namespace) -> None:
             elif (text := format_solve_event(event)) is not None:
                 print(text, file=sys.stderr, flush=True)
 
-        solved = solve_speaker_package_system(
-            prepared,
-            event_callback=emit,
-            julia_executable=args.julia_executable,
-            julia_threads=args.julia_threads,
+        solve_options = dict(
+            event_callback=emit, julia_executable=args.julia_executable, julia_threads=args.julia_threads
         )
+        solved = solve_speaker_package_system(prepared, max_solves=args.pattern_max_solves, **solve_options)
         result = export_speaker_package(
             solved,
             SpeakerPackageConfig(

@@ -15,6 +15,7 @@ from typing import Any, Callable
 
 import numpy as np
 
+from blab.adaptive_pattern import PATTERN_EVALUATOR, train_pattern
 from blab.config import normalize_symmetry
 from blab.phasor import LEGACY_PHASOR_CONVENTION, SOLVER_PHASOR_CONVENTION, convert_phasor
 from blab.physical_model import AcousticRegionKind, PhysicalSolveKind
@@ -99,6 +100,7 @@ class SpeakerPackageFidelity(IntEnum):
 class SpeakerPackageCoupledRepresentation(str, Enum):
     """On-disk representation of a Level-3 interior model."""
 
+    CONTINUOUS_ROM = "continuous_rom"
     EXACT_SYSTEM = "exact_system"
     PARITY_ROM = "parity_rom"
 
@@ -114,7 +116,8 @@ class SpeakerPackageCoupledRepresentation(str, Enum):
             "exact": cls.EXACT_SYSTEM,
             "exact_system": cls.EXACT_SYSTEM,
             "sparse": cls.EXACT_SYSTEM,
-            "rom": cls.PARITY_ROM,
+            "continuous_rom": cls.CONTINUOUS_ROM,
+            "rom": cls.CONTINUOUS_ROM,
             "parity_rom": cls.PARITY_ROM,
             "parity_petrov_galerkin": cls.PARITY_ROM,
             "petrov_galerkin": cls.PARITY_ROM,
@@ -123,7 +126,7 @@ class SpeakerPackageCoupledRepresentation(str, Enum):
             return aliases[normalized]
         except KeyError as exc:
             raise ValueError(
-                "Coupled speaker representation must be 'parity-rom' or the developer-only 'exact-system'."
+                "Coupled speaker representation must be 'continuous-rom', 'parity-rom', or 'exact-system'."
             ) from exc
 
 
@@ -132,7 +135,7 @@ class SpeakerPackageConfig:
     output_path: Path
     name: str
     fidelity: SpeakerPackageFidelity = SpeakerPackageFidelity.PATTERN
-    coupled_representation: SpeakerPackageCoupledRepresentation = SpeakerPackageCoupledRepresentation.PARITY_ROM
+    coupled_representation: SpeakerPackageCoupledRepresentation = SpeakerPackageCoupledRepresentation.CONTINUOUS_ROM
     viewport_model_path: Path | None = None
     viewport_model_scale_to_m: float = 1.0
 
@@ -195,11 +198,13 @@ def prepare_speaker_package_solve(
     prepared: PreparedSystemSolve,
     *,
     fidelity: int | str | SpeakerPackageFidelity,
-    coupled_representation: str | SpeakerPackageCoupledRepresentation = SpeakerPackageCoupledRepresentation.PARITY_ROM,
+    coupled_representation: str
+    | SpeakerPackageCoupledRepresentation = SpeakerPackageCoupledRepresentation.CONTINUOUS_ROM,
     sphere_point_count: int,
     sphere_radius_m: float,
-    speaker_rom_rank: int = 32,
-    speaker_rom_training_count: int = 96,
+    training_band_hz: tuple[float, float] | None = None,
+    speaker_rom_rank: int | None = None,
+    speaker_rom_training_count: int | None = None,
     speaker_rom_validation_count: int = 24,
 ) -> PreparedSystemSolve:
     """Add the physical outputs required by a speaker package solve."""
@@ -282,6 +287,8 @@ def prepare_speaker_package_solve(
                 "Level-3 speaker package preparation requires a temporary full-domain system with symmetry off."
             )
         if representation == SpeakerPackageCoupledRepresentation.PARITY_ROM:
+            speaker_rom_rank = 32 if speaker_rom_rank is None else speaker_rom_rank
+            speaker_rom_training_count = 96 if speaker_rom_training_count is None else speaker_rom_training_count
             if speaker_rom_rank <= 0:
                 raise ValueError("Speaker ROM rank must be positive.")
             if speaker_rom_training_count < speaker_rom_rank:
@@ -302,6 +309,23 @@ def prepare_speaker_package_solve(
                 "symmetry": "off",
             }
         )
+        if representation == SpeakerPackageCoupledRepresentation.CONTINUOUS_ROM:
+            band = training_band_hz or (min(request.frequencies_hz), max(request.frequencies_hz))
+            lo, hi = map(float, band)
+            if not np.isfinite([lo, hi]).all() or not 0 < lo < hi:
+                raise ValueError("Continuous Level 3 requires a finite positive minimum below the maximum frequency.")
+            rank = 128 if speaker_rom_rank is None else speaker_rom_rank
+            budget = 32 if speaker_rom_training_count is None else speaker_rom_training_count
+            if rank < 1 or budget < 2 or speaker_rom_validation_count < 1:
+                raise ValueError(
+                    "Continuous ROM needs a positive rank, at least two training frequencies and a validation frequency."
+                )
+            solver_options["continuous_speaker_rom"] = {
+                "band_hz": [lo, hi],
+                "max_rank": rank,
+                "max_training": budget,
+                "validation_count": speaker_rom_validation_count,
+            }
         if representation == SpeakerPackageCoupledRepresentation.PARITY_ROM:
             expansion = request.compiled_system.metadata.get("speaker_export_symmetry_expansion", {})
             source_symmetry = expansion.get("source_symmetry", "off") if isinstance(expansion, dict) else "off"
@@ -311,22 +335,40 @@ def prepare_speaker_package_solve(
                 "validation_count_per_sector": int(speaker_rom_validation_count),
                 "symmetry": normalize_symmetry(source_symmetry),
             }
+    pattern_band = None
+    if level == SpeakerPackageFidelity.PATTERN:
+        lo, hi = training_band_hz or (min(request.frequencies_hz), max(request.frequencies_hz))
+        if not np.isfinite([lo, hi]).all() or not 0 < lo < hi:
+            raise ValueError("Level 1 requires a finite positive minimum below the maximum frequency.")
+        pattern_band = (float(lo), float(hi))
     updated_request = replace(request, outputs=tuple(outputs), solver_options=solver_options)
     validate_solve_plan(updated_request)
     return replace(
         prepared,
         request=updated_request,
         result_domains=tuple(domains),
+        pattern_band_hz=pattern_band,
         backend_id=prepared.backend_id,
     )
 
 
 def solve_speaker_package_system(
+    prepared: PreparedSystemSolve, *, max_solves: int = 512, **solve_options
+) -> SolvedSystem:
+    """Solve the frequency representation selected during package preparation."""
+    if prepared.pattern_band_hz is not None:
+        return solve_adaptive_pattern_system(prepared, prepared.pattern_band_hz, max_solves=max_solves, **solve_options)
+    return _solve_package_batch(prepared, **solve_options)
+
+
+def _solve_package_batch(
     prepared: PreparedSystemSolve,
     *,
     event_callback: Callable[[dict[str, Any]], None] | None = None,
     julia_executable: str = "julia",
     julia_threads: str | int | None = None,
+    session_factory=None,
+    stop_requested=None,
 ) -> SolvedSystem:
     """Run an export-prepared solve and return its complete canonical snapshot."""
 
@@ -343,17 +385,21 @@ def solve_speaker_package_system(
         domains=prepared.result_domains,
         compiled_system=request.compiled_system,
     )
-    backend = PhysicalSystemProductionBackend(
-        bem_backend=prepared.backend_id.removeprefix("beat_"),
-        julia_executable=julia_executable,
-        julia_threads=julia_threads,
-    )
+    if stop_requested and stop_requested():
+        raise InterruptedError("Speaker package solve cancelled.")
+    if session_factory is None:
+        backend = PhysicalSystemProductionBackend(
+            bem_backend=prepared.backend_id.removeprefix("beat_"),
+            julia_executable=julia_executable,
+            julia_threads=julia_threads,
+        )
+        session_factory = backend.create_system_session
     progress = SolveProgress(len(request.frequencies_hz))
-    session = backend.create_system_session(request)
+    session = session_factory(request)
     progress.start_warm_up(session.warm_up_key())
     emit({"event": "started", "frequency_count": len(request.frequencies_hz)})
     try:
-        for raw_result in session.solve_stream():
+        for raw_result in session.solve_stream(stop_requested=stop_requested):
             result = canonicalize_observation_result(prepared, raw_result)
             index = builder.add(result)
             emit(
@@ -375,10 +421,74 @@ def solve_speaker_package_system(
     return solved
 
 
+def solve_adaptive_pattern_system(
+    prepared: PreparedSystemSolve,
+    band_hz: tuple[float, float],
+    *,
+    tolerance: float = 0.02,
+    max_solves: int = 512,
+    **solve_options,
+) -> SolvedSystem:
+    """Train and check the continuous radiated pressure on the package sphere."""
+    domain = next(domain for domain in prepared.result_domains if domain.id == SPHERE_DOMAIN_ID)
+    radii = np.linalg.norm(domain.coordinates["points_m"], axis=1)
+    (exterior,) = (
+        region for region in prepared.request.compiled_system.regions if region.kind == AcousticRegionKind.UNBOUNDED_AIR
+    )
+    last = None
+    runs = []
+    batch_ids = []
+    diagnostics = {}
+    started_at = None
+
+    def solve_batch(frequencies):
+        nonlocal last, started_at
+        request = replace(prepared.request, frequencies_hz=tuple(frequencies))
+        last = _solve_package_batch(replace(prepared, request=request), **solve_options)
+        if started_at is None:
+            started_at = last.provenance.started_at_utc
+        quantity = last.quantity(SPHERE_PRESSURE_ID)
+        if not quantity.available_frequency_mask.all():
+            raise ValueError("Adaptive training requires complete spherical pressure for every frequency.")
+        batch_ids.append(last.run_id)
+        for run in last.provenance.engine_runs:
+            if run not in runs:
+                runs.append(run)
+        diagnostics.update(zip(frequencies, last.diagnostics_by_frequency, strict=True))
+        return quantity.values
+
+    frequencies, pressure, descriptor = train_pattern(
+        band_hz, radii / exterior.sound_speed_m_per_s, solve_batch, tolerance=tolerance, max_solves=max_solves
+    )
+    mask = np.ones(len(frequencies), dtype=bool)
+    descriptor["training_batch_ids"] = batch_ids
+    provenance = replace(
+        last.provenance,
+        engine_runs=tuple(runs),
+        started_at_utc=started_at,
+    )
+    sphere = last.quantity(SPHERE_PRESSURE_ID)
+    quantity = replace(
+        sphere,
+        values=pressure,
+        available_frequency_mask=mask,
+        metadata={**sphere.metadata, "adaptive_pattern": descriptor},
+    )
+    return replace(
+        last,
+        provenance=provenance,
+        frequencies_hz=frequencies,
+        completion_mask=mask,
+        diagnostics_by_frequency=tuple(diagnostics[f] for f in frequencies),
+        quantities={SPHERE_PRESSURE_ID: quantity},
+    )
+
+
 def speaker_package_issues(
     solved: SolvedSystem | None,
     fidelity: int | str | SpeakerPackageFidelity,
-    coupled_representation: str | SpeakerPackageCoupledRepresentation = SpeakerPackageCoupledRepresentation.PARITY_ROM,
+    coupled_representation: str
+    | SpeakerPackageCoupledRepresentation = SpeakerPackageCoupledRepresentation.CONTINUOUS_ROM,
 ) -> tuple[SpeakerPackageIssue, ...]:
     level = SpeakerPackageFidelity.parse(fidelity)
     representation = SpeakerPackageCoupledRepresentation.parse(coupled_representation)
@@ -411,6 +521,11 @@ def speaker_package_issues(
         elif not np.all(np.asarray(sphere_pressure.available_frequency_mask, dtype=bool)):
             issues.append(SpeakerPackageIssue("incomplete_sphere_pressure", "Spherical pressure is incomplete."))
 
+    if level == SpeakerPackageFidelity.PATTERN and sphere_pressure is not None:
+        descriptor = sphere_pressure.metadata.get("adaptive_pattern", {})
+        if descriptor.get("evaluator") != PATTERN_EVALUATOR:
+            issues.append(SpeakerPackageIssue("missing_continuous_pattern", "Level 1 requires a trained continuous pattern."))
+
     if level >= SpeakerPackageFidelity.FIXED_SOURCES:
         bem_domain = solved.domains.get(BEM_BOUNDARY_DOMAIN_ID)
         pressure = solved.quantities.get(BEM_BOUNDARY_PRESSURE_ID)
@@ -441,6 +556,14 @@ def speaker_package_issues(
                 np.asarray(neumann.available_frequency_mask, dtype=bool)
             ):
                 issues.append(SpeakerPackageIssue("incomplete_bem_traces", "BEM boundary traces are incomplete."))
+    if level >= SpeakerPackageFidelity.COUPLED and representation == SpeakerPackageCoupledRepresentation.CONTINUOUS_ROM:
+        if not any((item or {}).get("continuous_speaker_rom") for item in solved.diagnostics_by_frequency):
+            issues.append(
+                SpeakerPackageIssue(
+                    "missing_continuous_rom",
+                    "The solve returned no continuous Level 3 model. Use a BEAT worker with continuous speaker export support.",
+                )
+            )
     if level >= SpeakerPackageFidelity.COUPLED and representation == SpeakerPackageCoupledRepresentation.EXACT_SYSTEM:
         system = solved.compiled_system
         if system is None:
@@ -575,6 +698,55 @@ def validate_speaker_package(path: str | Path) -> dict[str, Any]:
                 actual = hashlib.sha256(archive.read(member)).hexdigest()
                 if actual != expected:
                     raise ValueError(f"Speaker package member {member!r} failed its checksum.")
+            patterns = manifest.get("files", {}).get("patterns", {})
+            continuous = "continuous_complex_spherical_pattern" in manifest.get("capabilities", ())
+            if continuous or "evaluator" in patterns:
+                if (
+                    not continuous
+                    or patterns.get("evaluator") != PATTERN_EVALUATOR
+                    or patterns.get("path") not in checksums
+                    or manifest.get("fidelity_level") != 1
+                ):
+                    raise ValueError("Invalid continuous Level 1 pattern descriptor.")
+                with np.load(io.BytesIO(archive.read(patterns["path"])), allow_pickle=False) as payload:
+                    knots = payload["frequencies_hz"]
+                    radius = payload["radius_m"]
+                    pressure = payload["pressure_pa"]
+                    if (
+                        knots.ndim != 1
+                        or knots.size < 2
+                        or not np.isfinite(knots).all()
+                        or knots[0] <= 0
+                        or np.any(np.diff(knots) <= 0)
+                        or patterns.get("frequency_band_hz") != [knots[0], knots[-1]]
+                        or manifest.get("frequencies_hz") != knots.tolist()
+                        or radius.ndim != 1
+                        or not np.isfinite(radius).all()
+                        or np.any(radius <= 0)
+                        or pressure.shape != (knots.size, len(manifest["excitation_port_ids"]), radius.size)
+                        or not np.iscomplexobj(pressure)
+                        or not np.isfinite(pressure).all()
+                    ):
+                        raise ValueError("Invalid continuous Level 1 pattern data.")
+            if "continuous_speaker_rom" in manifest.get("capabilities", ()):
+                descriptor = manifest.get("files", {}).get("coupled_model", {})
+                member = descriptor.get("path")
+                if member not in checksums or descriptor.get("representation") != "continuous_speaker_rom":
+                    raise ValueError("Continuous Level 3 package is missing its checksummed model.")
+                model = json.loads(archive.read(member))
+                metadata = model.get("metadata", {})
+                if (
+                    manifest.get("fidelity_level") != 3
+                    or descriptor.get("frequency_continuous_within_band") is not True
+                    or metadata.get("format") != "continuous-speaker-v1"
+                    or model.get("band") != descriptor.get("frequency_band_hz")
+                    or model.get("ports") != manifest.get("excitation_port_ids")
+                    or metadata.get("phasor") != manifest.get("phasor_convention")
+                    or metadata.get("training") != descriptor.get("training_frequencies_hz")
+                    or metadata.get("validation") != descriptor.get("validation")
+                    or metadata.get("rank") != descriptor.get("rank")
+                ):
+                    raise ValueError("Inconsistent continuous Level 3 package descriptor.")
             convert_phasor(0j, manifest.get("phasor_convention", LEGACY_PHASOR_CONVENTION))
             return manifest
     except zipfile.BadZipFile as exc:
@@ -632,6 +804,10 @@ def _archive_members(solved: SolvedSystem, config: SpeakerPackageConfig) -> tupl
             "dimensions": ["frequency", "excitation", "direction"],
         }
     }
+    adaptive = sphere_pressure.metadata.get("adaptive_pattern")
+    if adaptive and config.fidelity == SpeakerPackageFidelity.PATTERN:
+        files["patterns"].update(adaptive)
+        capabilities.append("continuous_complex_spherical_pattern")
     if config.fidelity >= SpeakerPackageFidelity.FIXED_SOURCES:
         domain = solved.domains[BEM_BOUNDARY_DOMAIN_ID]
         pressure = solved.quantities[BEM_BOUNDARY_PRESSURE_ID]
@@ -696,6 +872,40 @@ def _archive_members(solved: SolvedSystem, config: SpeakerPackageConfig) -> tupl
             members.update(exact_members)
             capabilities.append("exact_frequency_parametric_interior")
             files["coupled_model"] = exact_descriptor
+        elif config.coupled_representation == SpeakerPackageCoupledRepresentation.CONTINUOUS_ROM:
+            raw = next(
+                d["continuous_speaker_rom"]
+                for d in solved.diagnostics_by_frequency
+                if d and "continuous_speaker_rom" in d
+            )
+            model = json.loads(raw)
+            metadata = model["metadata"]
+            band = solved.provenance.solver_options["continuous_speaker_rom"]["band_hz"]
+            if (
+                metadata["format"] != "continuous-speaker-v1"
+                or model["band"] != band
+                or model["ports"] != list(solved.excitation_ids)
+                or metadata["phasor"] != SOLVER_PHASOR_CONVENTION
+            ):
+                raise ValueError("Continuous model format, frequency band, ports or phasor differs from the solve.")
+            if not np.array_equal(model["geometry"]["triangles"], payload["triangles"]) or not np.allclose(
+                model["geometry"]["points"], payload["points_m"], atol=1e-8, rtol=0
+            ):
+                raise ValueError("Continuous model and fixed sources use different boundary meshes.")
+            member = "data/continuous-interior.json"
+            members[member] = raw.encode("utf-8")
+            capabilities.append("continuous_speaker_rom")
+            files["coupled_model"] = {
+                "path": member,
+                "representation": "continuous_speaker_rom",
+                "format_version": 1,
+                "frequency_continuous_within_band": True,
+                "frequency_band_hz": band,
+                "input_ports": _coupled_input_ports(solved),
+                "rank": metadata["rank"],
+                "training_frequencies_hz": metadata["training"],
+                "validation": metadata["validation"],
+            }
         elif config.coupled_representation == SpeakerPackageCoupledRepresentation.PARITY_ROM:
             quantity_by_archive_name = {
                 archive_name: solved.quantities[identifier]
@@ -1106,6 +1316,7 @@ __all__ = [
     "expand_bem_boundary_symmetry",
     "prepare_speaker_package_solve",
     "rotate_source_points",
+    "solve_adaptive_pattern_system",
     "solve_speaker_package_system",
     "speaker_package_issues",
     "validate_speaker_package",

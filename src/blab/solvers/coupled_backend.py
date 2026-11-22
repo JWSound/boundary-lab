@@ -250,6 +250,10 @@ class CoupledSession:
         self._worker = self._pooled_worker()
         callback = self.request.status_callback
         request = self.request
+        if "continuous_speaker_rom" in request.solver_options:
+            self._worker.ensure_started(status_callback=callback)
+            if 1 not in (self._worker.worker_info or {}).get("continuous_speaker_rom_versions", ()):
+                raise RuntimeError("Level 3 export requires a BEAT worker with continuous speaker ROM v1 support.")
         if self.cuda_worker_reuse and request.solver_options.get("bem_backend") == "cuda":
             configure_idle = getattr(self._worker, "configure_idle_cleanup", None)
             if configure_idle is not None:

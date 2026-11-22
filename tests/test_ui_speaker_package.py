@@ -18,7 +18,7 @@ def test_speaker_package_dialog_exposes_solve_and_export_configuration(qapp, tmp
         assert config.name == "Monitor A"
         assert config.output_path == tmp_path / "monitor-a.blabsp"
         assert config.fidelity == SpeakerPackageFidelity.COUPLED
-        assert config.coupled_representation == SpeakerPackageCoupledRepresentation.PARITY_ROM
+        assert config.coupled_representation == SpeakerPackageCoupledRepresentation.CONTINUOUS_ROM
         assert config.viewport_model_path is None
         obj = tmp_path / "cabinet.obj"
         obj.write_text("v 0 0 0\nv 120 0 0\nv 0 52.8 -80\nf 1 2 3\n")
