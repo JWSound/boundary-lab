@@ -72,6 +72,7 @@ class SystemSolveWorker(QObject):
             )
         if self._stop:
             return
+
         def create_session(batch):
             session = backend.create_system_session(batch)
             if self.prepared.backend_id != "beat_remote":

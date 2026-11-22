@@ -262,8 +262,13 @@ def _trained_pattern_snapshot():
     knots, values, metadata = train_pattern((lo, hi), delay, sample)
     mask = np.ones(len(knots), dtype=bool)
     quantity = replace(sphere, values=values, available_frequency_mask=mask, metadata={"adaptive_pattern": metadata})
-    return replace(solved, frequencies_hz=knots, completion_mask=mask, diagnostics_by_frequency=({},) * len(knots),
-                   quantities={sphere.id: quantity})
+    return replace(
+        solved,
+        frequencies_hz=knots,
+        completion_mask=mask,
+        diagnostics_by_frequency=({},) * len(knots),
+        quantities={sphere.id: quantity},
+    )
 
 
 def test_level_one_archive_is_versioned_and_preserves_complex_pattern(tmp_path: Path) -> None:

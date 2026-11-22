@@ -524,7 +524,9 @@ def speaker_package_issues(
     if level == SpeakerPackageFidelity.PATTERN and sphere_pressure is not None:
         descriptor = sphere_pressure.metadata.get("adaptive_pattern", {})
         if descriptor.get("evaluator") != PATTERN_EVALUATOR:
-            issues.append(SpeakerPackageIssue("missing_continuous_pattern", "Level 1 requires a trained continuous pattern."))
+            issues.append(
+                SpeakerPackageIssue("missing_continuous_pattern", "Level 1 requires a trained continuous pattern.")
+            )
 
     if level >= SpeakerPackageFidelity.FIXED_SOURCES:
         bem_domain = solved.domains.get(BEM_BOUNDARY_DOMAIN_ID)
