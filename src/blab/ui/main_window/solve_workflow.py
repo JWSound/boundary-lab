@@ -300,6 +300,7 @@ class SolveWorkflowController(QObject):
                 prepared,
                 fidelity=normalized.fidelity,
                 coupled_representation=normalized.coupled_representation,
+                training_band_hz=(float(frequencies.min_hz), float(frequencies.max_hz)),
                 sphere_point_count=balloon_sampling_points(preferences.balloon_angle_precision_deg),
                 sphere_radius_m=preferences.polar_observation_distance_m,
             )
@@ -502,6 +503,10 @@ class SolveWorkflowController(QObject):
                 "Front and rear driven areas differ by more than 10%. "
                 "Normalized acoustic impedance will use their average:\n\n" + details,
             )
+        if getattr(prepared, "pattern_band_hz", None) is not None:
+            self._view.set_workflow_phase(OperationPhase.RUNNING)
+            self._view.show_status("Training continuous Level 1 pattern...")
+            return self._solve_controller.start(prepared)
         self._begin_run(status)
         regions = tuple(getattr(compiled_system, "regions", ()))
         reference_region = regions[0] if regions else None
@@ -769,6 +774,21 @@ class SolveWorkflowController(QObject):
 
     @Slot(object)
     def _on_solve_finished(self, completion: SolveCompletion) -> None:
+        pending = self._pending_speaker_package
+        if pending is not None and pending.fidelity == SpeakerPackageFidelity.PATTERN:
+            self._pending_speaker_package = None
+            self._view.set_workflow_phase(OperationPhase.IDLE)
+            trained = self._solve_controller.trained_pattern
+            self._solve_controller.trained_pattern = None
+            if completion.completed:
+                try:
+                    package = export_speaker_package(trained, pending)
+                    self._view.show_status(f"Exported speaker package to {package.path}")
+                except Exception as exc:
+                    self._view.show_error("Speaker package export failed", str(exc))
+            elif completion.phase == OperationPhase.CANCELLED:
+                self._view.show_status("Speaker package export cancelled")
+            return
         self._plots.cancel_live_refresh()
         self._view.set_workflow_phase(OperationPhase.IDLE)
         session = self._session

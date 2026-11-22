@@ -70,6 +70,7 @@ class PreparedSystemSolve:
     result_domains: tuple[ResultDomain, ...] = ()
     remote_options: dict[str, str] | None = field(default=None, repr=False)
     cuda_worker_reuse: bool = False
+    pattern_band_hz: tuple[float, float] | None = None
 
 
 def prepare_system_solve(

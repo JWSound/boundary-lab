@@ -138,6 +138,8 @@ class SolveController(QObject):
         self._cancelled = False
         self.last_error: str | None = None
         self.last_completion: SolveCompletion | None = None
+        self._training_pattern = False
+        self.trained_pattern = None
 
     @property
     def active(self) -> bool:
@@ -146,6 +148,8 @@ class SolveController(QObject):
     def start(self, request: PreparedSystemSolve) -> bool:
         if self.active:
             return False
+        self._training_pattern = getattr(request, "pattern_band_hz", None) is not None
+        self.trained_pattern = None
         self._begin_run(len(request.request.frequencies_hz))
         thread = QThread(self)
         worker = SystemSolveWorker(request)
@@ -155,6 +159,8 @@ class SolveController(QObject):
         thread.started.connect(worker.run)
         worker.initialized.connect(self._on_initialized)
         worker.result_ready.connect(self._on_result)
+        if self._training_pattern:
+            worker.pattern_ready.connect(self._on_pattern_ready)
         worker.status.connect(self._on_status)
         worker.warm_up_key.connect(self._on_warm_up_key)
         worker.failed.connect(self._on_failed)
@@ -223,6 +229,14 @@ class SolveController(QObject):
             self._set_state(OperationPhase.RUNNING, message)
             self.status.emit(message)
 
+    @Slot(object)
+    def _on_pattern_ready(self, solved) -> None:
+        if self._failed or self._cancelled:
+            return
+        self._ticker.stop()
+        self.trained_pattern = solved
+        self._expected_count = self._solved_count = len(solved.frequencies_hz)
+
     def reject_result(self, message: str) -> None:
         """Stop a run whose canonical result could not be accumulated or projected."""
         self._failed = True
@@ -242,6 +256,11 @@ class SolveController(QObject):
         # Backend detail remains in the worker's logs. Warm-up phases are shown;
         # after the first result, the last completed frequency stays until the next.
         if self._solved_count or self.state.phase != OperationPhase.RUNNING:
+            return
+        if self._training_pattern:
+            self._ticker.stop()
+            self._set_state(OperationPhase.RUNNING, message)
+            self.status.emit(message)
             return
         self._warm_up_message = message
         self._show_warm_up()
