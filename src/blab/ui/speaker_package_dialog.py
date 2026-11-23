@@ -87,7 +87,7 @@ class SpeakerPackageDialog(QDialog):
         form.addRow(self.viewport_status)
 
         note = QLabel(
-            "Level 1 trains continuous spherical pressure over the project frequency range. "
+            "Every level includes continuous spherical pressure over the project frequency range. "
             "Level 2 exports boundary traces at the configured frequency samples. "
             "Level 3 adds a continuous interior model over the project frequency range. "
             "Exported packages use +Y as forward."

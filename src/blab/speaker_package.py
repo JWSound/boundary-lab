@@ -335,19 +335,17 @@ def prepare_speaker_package_solve(
                 "validation_count_per_sector": int(speaker_rom_validation_count),
                 "symmetry": normalize_symmetry(source_symmetry),
             }
-    pattern_band = None
-    if level == SpeakerPackageFidelity.PATTERN:
-        lo, hi = training_band_hz or (min(request.frequencies_hz), max(request.frequencies_hz))
-        if not np.isfinite([lo, hi]).all() or not 0 < lo < hi:
-            raise ValueError("Level 1 requires a finite positive minimum below the maximum frequency.")
-        pattern_band = (float(lo), float(hi))
+    lo, hi = training_band_hz or (min(request.frequencies_hz), max(request.frequencies_hz))
+    if not np.isfinite([lo, hi]).all() or not 0 < lo < hi:
+        raise ValueError("Continuous patterns require a finite positive minimum below the maximum frequency.")
     updated_request = replace(request, outputs=tuple(outputs), solver_options=solver_options)
     validate_solve_plan(updated_request)
     return replace(
         prepared,
         request=updated_request,
         result_domains=tuple(domains),
-        pattern_band_hz=pattern_band,
+        pattern_band_hz=(float(lo), float(hi)),
+        package_boundary_solve=level >= SpeakerPackageFidelity.FIXED_SOURCES,
         backend_id=prepared.backend_id,
     )
 
@@ -356,9 +354,16 @@ def solve_speaker_package_system(
     prepared: PreparedSystemSolve, *, max_solves: int = 512, **solve_options
 ) -> SolvedSystem:
     """Solve the frequency representation selected during package preparation."""
-    if prepared.pattern_band_hz is not None:
-        return solve_adaptive_pattern_system(prepared, prepared.pattern_band_hz, max_solves=max_solves, **solve_options)
-    return _solve_package_batch(prepared, **solve_options)
+    if prepared.pattern_band_hz is None:
+        return _solve_package_batch(prepared, **solve_options)
+    pattern = solve_adaptive_pattern_system(prepared, prepared.pattern_band_hz, max_solves=max_solves, **solve_options)
+    if not prepared.package_boundary_solve:
+        return pattern
+
+    boundary_ids = {BEM_BOUNDARY_PRESSURE_ID, BEM_BOUNDARY_NEUMANN_ID, *(item[0] for item in SPEAKER_ROM_QUANTITIES)}
+    request = replace(prepared.request, outputs=tuple(o for o in prepared.request.outputs if o.id in boundary_ids))
+    boundary = _solve_package_batch(replace(prepared, request=request), **solve_options)
+    return replace(boundary, speaker_pattern=pattern)
 
 
 def _solve_package_batch(
@@ -431,7 +436,24 @@ def solve_adaptive_pattern_system(
 ) -> SolvedSystem:
     """Train and check the continuous radiated pressure on the package sphere."""
     domain = next(domain for domain in prepared.result_domains if domain.id == SPHERE_DOMAIN_ID)
-    radii = np.linalg.norm(domain.coordinates["points_m"], axis=1)
+    points = np.asarray(domain.coordinates["points_m"])
+    output = OutputRequest(
+        id="ui:exterior-pressure",
+        quantity="exterior_pressure",
+        options={
+            "points_m": points.tolist(),
+            "observation_domains": [
+                {"id": SPHERE_DOMAIN_ID, "quantity_id": SPHERE_PRESSURE_ID, "offset": 0, "count": len(points)}
+            ],
+        },
+    )
+    options = {
+        k: v for k, v in prepared.request.solver_options.items() if k not in {"continuous_speaker_rom", "speaker_rom"}
+    }
+    prepared = replace(
+        prepared, request=replace(prepared.request, outputs=(output,), solver_options=options), result_domains=(domain,)
+    )
+    radii = np.linalg.norm(points, axis=1)
     (exterior,) = (
         region for region in prepared.request.compiled_system.regions if region.kind == AcousticRegionKind.UNBOUNDED_AIR
     )
@@ -498,8 +520,11 @@ def speaker_package_issues(
     if not solved.complete:
         issues.append(SpeakerPackageIssue("incomplete_frequency", "Every requested frequency must be complete."))
 
-    sphere_domain = solved.domains.get(SPHERE_DOMAIN_ID)
-    sphere_pressure = solved.quantities.get(SPHERE_PRESSURE_ID)
+    pattern = solved.speaker_pattern or solved
+    if pattern.excitation_ids != solved.excitation_ids:
+        issues.append(SpeakerPackageIssue("invalid_pattern_ports", "Pattern and boundary excitation ports differ."))
+    sphere_domain = pattern.domains.get(SPHERE_DOMAIN_ID)
+    sphere_pressure = pattern.quantities.get(SPHERE_PRESSURE_ID)
     if sphere_domain is None:
         issues.append(SpeakerPackageIssue("missing_sphere_domain", "Spherical sampling geometry was not retained."))
     if sphere_pressure is None:
@@ -507,7 +532,11 @@ def speaker_package_issues(
     if sphere_domain is not None and sphere_pressure is not None:
         points = np.asarray(sphere_domain.coordinates.get("points_m"))
         values = np.asarray(sphere_pressure.values)
-        expected = (solved.frequencies_hz.size, len(solved.excitation_ids), points.shape[0] if points.ndim == 2 else -1)
+        expected = (
+            pattern.frequencies_hz.size,
+            len(solved.excitation_ids),
+            points.shape[0] if points.ndim == 2 else -1,
+        )
         if (
             points.ndim != 2
             or points.shape[1] != 3
@@ -521,11 +550,13 @@ def speaker_package_issues(
         elif not np.all(np.asarray(sphere_pressure.available_frequency_mask, dtype=bool)):
             issues.append(SpeakerPackageIssue("incomplete_sphere_pressure", "Spherical pressure is incomplete."))
 
-    if level == SpeakerPackageFidelity.PATTERN and sphere_pressure is not None:
+    if sphere_pressure is not None:
         descriptor = sphere_pressure.metadata.get("adaptive_pattern", {})
         if descriptor.get("evaluator") != PATTERN_EVALUATOR:
             issues.append(
-                SpeakerPackageIssue("missing_continuous_pattern", "Level 1 requires a trained continuous pattern.")
+                SpeakerPackageIssue(
+                    "missing_continuous_pattern", "Speaker package export requires a trained continuous pattern."
+                )
             )
 
     if level >= SpeakerPackageFidelity.FIXED_SOURCES:
@@ -662,6 +693,8 @@ def export_speaker_package(
     if issues:
         raise ValueError("Speaker package is not exportable: " + "; ".join(issue.message for issue in issues))
 
+    if normalized.fidelity == SpeakerPackageFidelity.PATTERN and solved.speaker_pattern is not None:
+        solved = solved.speaker_pattern
     destination = normalized.output_path.resolve()
     destination.parent.mkdir(parents=True, exist_ok=True)
     handle, temp_name = tempfile.mkstemp(prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent)
@@ -707,7 +740,7 @@ def validate_speaker_package(path: str | Path) -> dict[str, Any]:
                     not continuous
                     or patterns.get("evaluator") != PATTERN_EVALUATOR
                     or patterns.get("path") not in checksums
-                    or manifest.get("fidelity_level") != 1
+                    or manifest.get("fidelity_level") not in (1, 2, 3)
                 ):
                     raise ValueError("Invalid continuous Level 1 pattern descriptor.")
                 with np.load(io.BytesIO(archive.read(patterns["path"])), allow_pickle=False) as payload:
@@ -721,7 +754,7 @@ def validate_speaker_package(path: str | Path) -> dict[str, Any]:
                         or knots[0] <= 0
                         or np.any(np.diff(knots) <= 0)
                         or patterns.get("frequency_band_hz") != [knots[0], knots[-1]]
-                        or manifest.get("frequencies_hz") != knots.tolist()
+                        or (manifest["fidelity_level"] == 1 and manifest.get("frequencies_hz") != knots.tolist())
                         or radius.ndim != 1
                         or not np.isfinite(radius).all()
                         or np.any(radius <= 0)
@@ -777,8 +810,9 @@ def _write_archive(path: Path, solved: SolvedSystem, config: SpeakerPackageConfi
 
 
 def _archive_members(solved: SolvedSystem, config: SpeakerPackageConfig) -> tuple[dict[str, bytes], dict[str, Any]]:
-    sphere = solved.domains[SPHERE_DOMAIN_ID]
-    sphere_pressure = solved.quantities[SPHERE_PRESSURE_ID]
+    pattern = solved.speaker_pattern or solved
+    sphere = pattern.domains[SPHERE_DOMAIN_ID]
+    sphere_pressure = pattern.quantity(SPHERE_PRESSURE_ID)
     sphere_points = np.asarray(sphere.coordinates["points_m"], dtype=np.float64)
     radius = np.linalg.norm(sphere_points, axis=1)
     directions = np.divide(
@@ -789,11 +823,11 @@ def _archive_members(solved: SolvedSystem, config: SpeakerPackageConfig) -> tupl
     )
     members: dict[str, bytes] = {
         "data/patterns.npz": _npz_bytes(
-            frequencies_hz=np.asarray(solved.frequencies_hz),
+            frequencies_hz=np.asarray(pattern.frequencies_hz),
             points_m=rotate_source_points(sphere_points),
             directions_xyz=rotate_source_points(directions),
             radius_m=radius,
-            pressure_pa=np.asarray(sphere_pressure.values),
+            pressure_pa=convert_phasor(sphere_pressure.values, pattern.provenance.phasor_convention),
         )
     }
     medium = _exterior_medium(solved)
@@ -806,10 +840,8 @@ def _archive_members(solved: SolvedSystem, config: SpeakerPackageConfig) -> tupl
             "dimensions": ["frequency", "excitation", "direction"],
         }
     }
-    adaptive = sphere_pressure.metadata.get("adaptive_pattern")
-    if adaptive and config.fidelity == SpeakerPackageFidelity.PATTERN:
-        files["patterns"].update(adaptive)
-        capabilities.append("continuous_complex_spherical_pattern")
+    files["patterns"].update(sphere_pressure.metadata["adaptive_pattern"])
+    capabilities.append("continuous_complex_spherical_pattern")
     if config.fidelity >= SpeakerPackageFidelity.FIXED_SOURCES:
         domain = solved.domains[BEM_BOUNDARY_DOMAIN_ID]
         pressure = solved.quantities[BEM_BOUNDARY_PRESSURE_ID]

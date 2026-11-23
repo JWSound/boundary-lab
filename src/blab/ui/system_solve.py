@@ -88,7 +88,7 @@ class SystemSolveWorker(QObject):
                 if event["event"] == "frequency_completed":
                     completed += 1
                     self.status.emit(
-                        f"Training Level 1 pattern ({completed} frequencies solved, {event['freq_hz']:g} Hz)"
+                        f"Solving speaker package ({completed} frequencies solved, {event['freq_hz']:g} Hz)"
                     )
 
             solved = solve_speaker_package_system(

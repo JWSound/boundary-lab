@@ -119,6 +119,9 @@ class SolvedSystem:
     schema_version: int = RESULT_MODEL_VERSION
     finished_at_utc: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
 
+    # Package boundary traces and adaptive sphere pressure have independent frequency axes.
+    speaker_pattern: SolvedSystem | None = None
+
     @property
     def solved_count(self) -> int:
         return int(np.count_nonzero(self.completion_mask))

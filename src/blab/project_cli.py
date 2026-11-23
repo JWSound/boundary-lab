@@ -139,7 +139,7 @@ def _build_arg_parser(prog: str | None = None) -> argparse.ArgumentParser:
         "--pattern-max-solves",
         type=int,
         default=512,
-        help="Maximum number of direct training and check frequencies for an adaptive Level 1 export",
+        help="Maximum number of direct training and check frequencies for the continuous pattern at any export level",
     )
     export_speaker.add_argument(
         "--speaker-rom-rank", type=int, default=128, help="Maximum retained continuous interior rank"
@@ -156,7 +156,7 @@ def _build_arg_parser(prog: str | None = None) -> argparse.ArgumentParser:
     export_speaker.add_argument(
         "--request",
         type=Path,
-        help="Headless solve overlay for sampled outputs. Level 1 and Level 3 training use the saved project band.",
+        help="Headless solve overlay for sampled outputs. Pattern and interior ROM training use the saved project band.",
     )
     export_speaker.add_argument("--backend", choices=HEADLESS_BACKEND_IDS, default=HEADLESS_BACKEND_AUTO)
     export_speaker.add_argument("--events", choices=("text", "ndjson"), default="text")
@@ -407,8 +407,6 @@ def _export_speaker(args: argparse.Namespace) -> None:
     sphere_angle_deg = min(max(float(project.preferences.balloon_angle_precision_deg), 0.5), 15.0)
     sphere_point_count = max(int(round(41253.0 / sphere_angle_deg**2)), 1)
     fidelity = SpeakerPackageFidelity.parse(args.fidelity)
-    if args.adaptive_pattern and fidelity != SpeakerPackageFidelity.PATTERN:
-        raise ValueError("--adaptive-pattern requires --fidelity pattern.")
     coupled_representation = SpeakerPackageCoupledRepresentation.CONTINUOUS_ROM
     backend_id = resolve_headless_backend(args.backend, julia_executable=args.julia_executable)
     temporary: tempfile.TemporaryDirectory[str] | None = None

@@ -36,7 +36,7 @@ def pattern_errors(actual, predicted):
 
 
 def train_pattern(band, delay_s, solve_batch, *, tolerance=0.02, max_solves=512):
-    """Solve interval midpoints on demand, then audit at new off-centre frequencies."""
+    """Retain adaptive knots and their final midpoints, then audit the interpolant off-centre."""
     lo, hi = map(float, band)
     if not np.isfinite([lo, hi, tolerance]).all() or not 0 < lo < hi or not 0 < tolerance < 1:
         raise ValueError("Expected a positive increasing frequency band and a fractional tolerance.")
@@ -76,6 +76,13 @@ def train_pattern(band, delay_s, solve_batch, *, tolerance=0.02, max_solves=512)
         failures = []
         checks = []
         for (left, right), f in zip(intervals, probes, strict=True):
+            if audit:
+                # The exported interval is split at the directly solved midpoint.
+                midpoint = left * (right / left) ** 0.5
+                if f < midpoint:
+                    right = midpoint
+                else:
+                    left = midpoint
             prediction = interpolate_pressure(f, left, right, cache[left], cache[right], delay_s)
             rms, peak = pattern_errors(cache[f], prediction)
             checks.append(dict(frequency_hz=f, rms_relative=rms, peak_relative=peak))
@@ -92,6 +99,7 @@ def train_pattern(band, delay_s, solve_batch, *, tolerance=0.02, max_solves=512)
             if not failures:
                 break
         knots = sorted([*knots, *failures])
+    knots = sorted([*knots, *(row["frequency_hz"] for row in midpoint_checks)])
     return (
         np.asarray(knots),
         np.stack([cache[f] for f in knots]),
