@@ -786,8 +786,9 @@ def test_provider_cancel_cannot_stop_unrelated_job(controller):
 
 
 @pytest.mark.parametrize("phase", [OperationPhase.COMPLETED, OperationPhase.CANCELLED, OperationPhase.FAILED])
-def test_pattern_export_finishes_with_trained_result_only(controller, monkeypatch, tmp_path, phase):
-    config = solve_workflow_module.SpeakerPackageConfig(tmp_path / "speaker.blabsp", "Cabinet")
+@pytest.mark.parametrize("fidelity", list(solve_workflow_module.SpeakerPackageFidelity))
+def test_pattern_export_finishes_with_trained_result_only(controller, monkeypatch, tmp_path, phase, fidelity):
+    config = solve_workflow_module.SpeakerPackageConfig(tmp_path / "speaker.blabsp", "Cabinet", fidelity)
     controller._pending_speaker_package = config
     pattern = object()
     controller.solve.trained_pattern = pattern

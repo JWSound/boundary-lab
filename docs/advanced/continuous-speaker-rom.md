@@ -1,6 +1,6 @@
 # Continuous speaker package data
 
-Level 1 provides radiated complex pressure for each cabinet excitation port.
+Every fidelity level includes a continuous Level 1 pattern of radiated complex pressure for each cabinet excitation port.
 Level 3 provides the interior response to terminal voltage and external
 acoustic loading. Both representations cover the project frequency band.
 
@@ -40,8 +40,9 @@ complex source drives when summing cabinets.
 For the `continuous_speaker_rom` capability, read the model named by
 `files.coupled_model.path`. The descriptor records the interior frequency
 band, retained rank, training frequencies, and validation results.
-The top-level frequency list indexes the accompanying sampled spherical
-pressure and fixed-source traces.
+In Levels 2 and 3, the top-level `frequencies_hz` list indexes the fixed-source
+traces. The `frequencies_hz` array inside the pattern NPZ independently indexes
+the pressure samples used for continuous pattern evaluation.
 
 At an in-band frequency, supply the total complex surface pressure in Pa and
 the voltage at each excitation port in manifest order. The model returns the

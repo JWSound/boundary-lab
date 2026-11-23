@@ -505,7 +505,7 @@ class SolveWorkflowController(QObject):
             )
         if getattr(prepared, "pattern_band_hz", None) is not None:
             self._view.set_workflow_phase(OperationPhase.RUNNING)
-            self._view.show_status("Training continuous Level 1 pattern...")
+            self._view.show_status("Preparing continuous speaker package...")
             return self._solve_controller.start(prepared)
         self._begin_run(status)
         regions = tuple(getattr(compiled_system, "regions", ()))
@@ -775,7 +775,7 @@ class SolveWorkflowController(QObject):
     @Slot(object)
     def _on_solve_finished(self, completion: SolveCompletion) -> None:
         pending = self._pending_speaker_package
-        if pending is not None and pending.fidelity == SpeakerPackageFidelity.PATTERN:
+        if pending is not None:
             self._pending_speaker_package = None
             self._view.set_workflow_phase(OperationPhase.IDLE)
             trained = self._solve_controller.trained_pattern
@@ -788,6 +788,9 @@ class SolveWorkflowController(QObject):
                     self._view.show_error("Speaker package export failed", str(exc))
             elif completion.phase == OperationPhase.CANCELLED:
                 self._view.show_status("Speaker package export cancelled")
+            if self._pending_speaker_package_temp_dir is not None:
+                self._pending_speaker_package_temp_dir.cleanup()
+                self._pending_speaker_package_temp_dir = None
             return
         self._plots.cancel_live_refresh()
         self._view.set_workflow_phase(OperationPhase.IDLE)
@@ -796,22 +799,6 @@ class SolveWorkflowController(QObject):
         provider_job_id, self._provider_job_id = self._provider_job_id, None
         if provider_job_id is not None:
             self.provider_solve_finished.emit(provider_job_id, completion, session.solved_system)
-        pending_package = self._pending_speaker_package
-        self._pending_speaker_package = None
-        pending_package_temp_dir = self._pending_speaker_package_temp_dir
-        self._pending_speaker_package_temp_dir = None
-        package_result = None
-        try:
-            if pending_package is not None and completion.completed:
-                solved = session.solved_system
-                if solved is not None and solved.complete:
-                    try:
-                        package_result = export_speaker_package(solved, pending_package)
-                    except Exception as exc:
-                        self._view.show_error("Speaker package export failed", str(exc))
-        finally:
-            if pending_package_temp_dir is not None:
-                pending_package_temp_dir.cleanup()
         observation_planes = getattr(self._view, "observation_plane_controller", None)
         if observation_planes is not None:
             observation_planes.sync_view()
@@ -870,10 +857,7 @@ class SolveWorkflowController(QObject):
             if completion.phase == OperationPhase.FAILED:
                 self._view.show_status(f"Solve failed after {solved_count} frequencies{elapsed_text}")
                 return
-            if package_result is not None:
-                self._view.show_status(f"Exported speaker package to {package_result.path}")
-            else:
-                self._view.show_status(f"Solve complete: {solved_count} frequencies{elapsed_text}")
+            self._view.show_status(f"Solve complete: {solved_count} frequencies{elapsed_text}")
         elif completion.phase == OperationPhase.CANCELLED:
             self._view.show_status("Solve stopped")
         else:

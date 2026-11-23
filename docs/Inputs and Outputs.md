@@ -151,19 +151,20 @@ the `exp(+i omega t)` phasor convention.
 - **Level 1 — Pattern superposition** provides complex radiated pressure at any
   frequency within the project band, on the configured Fibonacci observation
   sphere. The exporter starts with nine logarithmically spaced frequencies,
-  refines intervals using direct solves at their midpoints, and checks the
-  resulting pattern at off-centre frequencies. For every port, relative sphere
+  refines intervals using direct solves at their midpoints, and stores the
+  final interval endpoints and midpoints. It checks the exported pattern at
+  held-out off-centre frequencies. For every port, relative sphere
   RMS error and maximum directional error normalized to that port's peak
   pressure must each be at most 2% at the check frequencies. The default
   budget is 512 direct frequencies including checks. The CLI option
   `--pattern-max-solves` sets this budget. The export fails if training
   requires more solves.
-- **Level 2 — Fixed distributed sources** stores spherical pressure and exterior
-  BEM traces at the configured frequency samples. The traces are P1 pressure
+- **Level 2 — Fixed distributed sources** includes the continuous Level 1 pattern
+  and stores exterior BEM traces at the configured frequency samples. The traces are P1 pressure
   and facewise DP0 outward pressure derivative. Together they define the
   equivalent source `D[p] - S[q]`.
 - **Level 3 — Reduced interior coupling** provides a continuous interior model
-  over the project band and includes the sampled spherical pressure and fixed
+  over the project band and includes the continuous spherical pattern and fixed
   sources described under Level 2. A reader can evaluate how an external
   pressure field and terminal voltages excite the cabinet at an in-band
   frequency. The exporter checks chamber pressure, boundary flux, and driver
