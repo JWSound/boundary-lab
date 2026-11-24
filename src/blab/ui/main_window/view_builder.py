@@ -295,6 +295,9 @@ class ViewBuilderMixin:
                 tool_actions.extend((entry.widget.calculate_action, entry.widget.trace_filter_action))
             elif entry.plot_id == "spinorama":
                 tool_actions.append(self.spherical_spin_action)
+            iec_scale_action = getattr(entry.widget, "iec_scale_action", None)
+            if iec_scale_action is not None:
+                tool_actions.append(iec_scale_action)
             dock = self._make_panel_dock(
                 f"{entry.plot_id}_dock",
                 entry.title,
