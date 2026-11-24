@@ -42,13 +42,6 @@ from blab.plot_style import (
 from blab.plotting import VisualizerConfig
 from blab.spinorama import SpinoramaCurves, SpinoramaSeriesId, compute_spinorama_from_planes, spinorama_curve_colors
 from blab.ui.iec_scale_canvas import IecScaleCanvasMixin
-from blab.ui.marker_readout import (
-    MarkerReadoutBox,
-    MarkerReadoutCurve,
-    MarkerReadoutRow,
-    interpolate_log_frequency,
-    phase_readout_curves,
-)
 from blab.ui.plot_scale import SpinoramaLegendPlacement, spinorama_iec_layout
 from blab.ui.series_visibility import SeriesVisibilityMixin
 from blab.ui.theme import application_palette_is_dark
@@ -71,7 +64,7 @@ SPINORAMA_DI_LIMITS = (0.0, SPINORAMA_DB_SPAN)
 # Legend baseline, in figure coordinates. Axes-relative placement scales with
 # the axes height and falls off short panels.
 SPINORAMA_LEGEND_BOTTOM = 0.006
-# Crosshair and Marker styling shared by every plot.
+# Crosshair styling shared by every plot.
 CROSSHAIR_COLOR = "#101214"
 CROSSHAIR_LABEL_FACE = "#f8fbff"
 CROSSHAIR_LABEL_EDGE = "#2868ff"
@@ -227,7 +220,7 @@ def plot_background_is_dark(axes) -> bool:
 
 
 def format_plot_frequency(freq_hz: float) -> str:
-    """Frequency label for crosshairs and the Marker: whole Hz, or kHz to two decimals."""
+    """Frequency label for crosshairs: whole Hz, or kHz to two decimals."""
     if freq_hz >= 1000.0:
         return f"{freq_hz / 1000.0:.2f}".rstrip("0").rstrip(".") + " kHz"
     return f"{freq_hz:.0f} Hz"
@@ -279,43 +272,8 @@ class InteractivePlotCanvas(SeriesVisibilityMixin, FigureCanvas):
         self._crosshair_background = None
         self._empty_plot_pending = False
         self._redraw_on_show = False
-        self._marker_overlay = None
         super().__init__(figure)
         self._connect_interaction_events()
-
-    def set_marker_overlay(self, overlay) -> None:
-        """Attach the shared Marker drawing from ``blab.ui.plot_marker``."""
-        self._marker_overlay = overlay
-
-    def _marker_hides_crosshair(self) -> bool:
-        return self._marker_overlay is not None and self._marker_overlay.enabled
-
-    # Marker contract used by ``blab.ui.plot_marker.PlotMarkerOverlay``. Frequencies
-    # are in the user domain (Hz), whatever the x-axis data domain is.
-
-    def marker_frequency_at(self, event) -> float | None:
-        """Frequency under a mouse event, or ``None`` outside the plot or without data."""
-        if not self._event_is_in_plot(event) or not self._has_crosshair_data():
-            return None
-        # On twin-axes plots the event lands on the twin; read x from the primary axes.
-        axis_x = float(self.axes.transData.inverted().transform((event.x, event.y))[0])
-        return self._x_limits_to_user_domain((axis_x, axis_x))[0]
-
-    def marker_frequency_range(self) -> tuple[float, float] | None:
-        """Visible frequency span, low to high, or ``None`` without data."""
-        if not self._has_crosshair_data():
-            return None
-        low, high = sorted(self._x_limits_to_user_domain(self.axes.get_xlim()))
-        return low, high
-
-    def frequency_to_axis_x(self, freq_hz: float) -> float:
-        """Primary-axes x data coordinate of ``freq_hz``."""
-        return self._x_limits_from_user_domain((freq_hz, freq_hz))[0]
-
-    def update_marker_readout(self, freq_hz: float | None) -> tuple[object, ...]:
-        """Update per-curve values at the Marker (``None`` hides them); return artists to blit."""
-        del freq_hz
-        return ()
 
     def clear_for_solve(self) -> None:
         """Discard current data now, rebuilding hidden axes only when needed."""
@@ -535,8 +493,6 @@ class InteractivePlotCanvas(SeriesVisibilityMixin, FigureCanvas):
         self._end_comparison()
 
     def _on_crosshair_button_press(self, event) -> None:
-        if self._marker_hides_crosshair():
-            return
         if not self._event_is_in_plot(event) or event.button != MouseButton.LEFT:
             return
         if self._event_hits_series_legend(event):
@@ -554,8 +510,6 @@ class InteractivePlotCanvas(SeriesVisibilityMixin, FigureCanvas):
             self._crosshair_dragging = False
 
     def _on_crosshair_motion(self, event) -> None:
-        if self._marker_hides_crosshair():
-            return
         if not self._crosshair_dragging or not self._event_is_in_plot(event):
             return
         self._set_crosshair_from_event(event)
@@ -596,7 +550,6 @@ class InteractivePlotCanvas(SeriesVisibilityMixin, FigureCanvas):
             self.draw_idle()
 
     def _set_crosshair_artist_visibility(self, visible: bool) -> None:
-        visible = visible and not self._marker_hides_crosshair()
         for artist in self._crosshair_artists():
             if artist is not None:
                 artist.set_visible(visible)
@@ -1380,31 +1333,7 @@ class RawCoordinatePlotCanvas(InteractivePlotCanvas):
         self._crosshair_freq_label = None
         self._crosshair_y_label = None
         self._crosshair_secondary_label = None
-        self._marker_readout_box = MarkerReadoutBox(fontsize=PLOT_LEGEND_SIZE)
         super().__init__(figure, title)
-
-    def _marker_readout_curves(self) -> tuple[MarkerReadoutCurve, ...]:
-        """Curves listed at the Marker: by default every legend entry, in legend order."""
-        return tuple(MarkerReadoutCurve(str(line.get_label()), line) for _series, line in self._series_legend_entries)
-
-    def update_marker_readout(self, freq_hz: float | None) -> tuple[object, ...]:
-        if freq_hz is None:
-            self._marker_readout_box.hide()
-            return ()
-        rows = []
-        for curve in self._marker_readout_curves():
-            line = curve.line
-            if not line.get_visible() or line.axes is None or not line.axes.get_visible():
-                continue
-            value = interpolate_log_frequency(line.get_xdata(), line.get_ydata(), freq_hz, period=curve.period)
-            if value is None:
-                continue
-            text = self._format_crosshair_y(value) if line.axes is self.axes else self._format_secondary_marker_y(value)
-            rows.append(MarkerReadoutRow(curve.label, line.get_color(), text, line.get_linestyle()))
-        rows.append(MarkerReadoutRow("Frequency", "none", format_plot_frequency(freq_hz), "None"))
-        display_x = self.axes.transData.transform((self.frequency_to_axis_x(freq_hz), 0.0))
-        axes_x = self.axes.transAxes.inverted().transform(display_x)[0]
-        return self._marker_readout_box.update(self.axes, rows, marker_axes_x=float(axes_x))
 
     def _interactive_axes(self) -> tuple[object, ...]:
         if self.secondary_axes is None:
@@ -1574,9 +1503,6 @@ class RawCoordinatePlotCanvas(InteractivePlotCanvas):
 
     def _format_secondary_crosshair_y(self, value: float) -> str:
         return f"{value:.1f}"
-
-    def _format_secondary_marker_y(self, value: float) -> str:
-        return self._format_secondary_crosshair_y(value)
 
 
 class ImpedanceCanvas(RawCoordinatePlotCanvas):
@@ -2029,9 +1955,6 @@ class OnAxisResponseCanvas(IecScaleCanvasMixin, RawCoordinatePlotCanvas):
             any_phase_visible = any_phase_visible or phase_visible
         self.phase_axes.set_visible(any_phase_visible)
         self._show_series_legend((label, self._magnitude_lines[label]) for label in self._series_labels)
-
-    def _marker_readout_curves(self) -> tuple[MarkerReadoutCurve, ...]:
-        return (*super()._marker_readout_curves(), *phase_readout_curves(self._series_labels, self._phase_lines))
 
     def _update_visible_series_limits(self) -> None:
         finite_rows = []

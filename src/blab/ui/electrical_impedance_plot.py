@@ -10,7 +10,6 @@ from matplotlib.ticker import AutoMinorLocator, LogLocator, MaxNLocator
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QMenu
 
-from blab.ui.marker_readout import MarkerReadoutCurve, phase_readout_curves
 from blab.ui.plots import (
     DUAL_AXIS_LAYOUT,
     GRID_LINE_ALPHA,
@@ -105,9 +104,6 @@ class ElectricalImpedanceCanvas(RawCoordinatePlotCanvas):
 
     def _format_secondary_crosshair_y(self, value: float) -> str:
         return f"{value:.1f} deg"
-
-    def _format_secondary_marker_y(self, value: float) -> str:
-        return f"{value:.1f}°"
 
     def set_comparison_plot(
         self,
@@ -214,9 +210,6 @@ class ElectricalImpedanceCanvas(RawCoordinatePlotCanvas):
             any_phase_visible = any_phase_visible or phase_visible
         self.phase_axes.set_visible(any_phase_visible)
         self._show_series_legend((label, self._magnitude_lines[label]) for label in self._series_labels)
-
-    def _marker_readout_curves(self) -> tuple[MarkerReadoutCurve, ...]:
-        return (*super()._marker_readout_curves(), *phase_readout_curves(self._series_labels, self._phase_lines))
 
     def _update_visible_series_limits(self) -> None:
         finite_rows = []
