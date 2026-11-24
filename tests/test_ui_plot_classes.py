@@ -48,11 +48,13 @@ def test_spinorama_canvas_uses_adaptive_layout_and_external_legend() -> None:
 def test_plot_widgets_use_compact_title_padding() -> None:
     plot_source = source_text("ui", "plots.py")
 
-    assert "PLOT_TITLE_PAD = 7" in plot_source
+    from blab.plot_style import GRID_LINE_ALPHA, PLOT_TITLE_PAD
+
+    assert PLOT_TITLE_PAD == 7
     assert "class PlotLayoutProfile" in plot_source
     assert "SINGLE_AXIS_LAYOUT = PlotLayoutProfile" in plot_source
     assert "DUAL_AXIS_LAYOUT = PlotLayoutProfile" in plot_source
-    assert "GRID_LINE_ALPHA = 0.6" in plot_source
+    assert GRID_LINE_ALPHA == 0.6
     assert "_set_plot_title(self.title, pad=PLOT_TITLE_PAD)" in plot_source
     assert "set_yticks(np.arange(-180, 181, 45))" in plot_source
     assert 'grid(which="major", color="#808080", linewidth=0.8, alpha=GRID_LINE_ALPHA)' in plot_source
@@ -185,14 +187,7 @@ def test_completed_solves_use_final_isobar_resolution() -> None:
     assert "icon_label.setToolTip(tooltip)" in dialog_source
     assert "self.live_plot_quality_combo.setEnabled(preferences.live_plot_streaming)" in dialog_source
     assert "self.live_plot_streaming_check.toggled.connect(self.live_plot_quality_combo.setEnabled)" in dialog_source
-    observation_config_block = dialog_source[
-        dialog_source.index('"Observation Config"') : dialog_source.index("left_column.addStretch")
-    ]
-    application_block = dialog_source[
-        dialog_source.index('"Application"') : dialog_source.index(
-            "right_column.addStretch", dialog_source.index('"Application"')
-        )
-    ]
+    application_block, observation_config_block = dialog_source.split("class ProjectConfigurationDialog", 1)
     assert '"Solver Config"' not in dialog_source
     assert '"BEM Solver"' not in dialog_source
     assert "self.solve_backend_combo" not in observation_config_block
@@ -209,28 +204,15 @@ def test_completed_solves_use_final_isobar_resolution() -> None:
     assert "Burton Miller Formulation" not in dialog_source
     assert "self.gmres_spin" not in dialog_source
     assert "self.burton_miller_check" not in dialog_source
-    assert '"Balloon Sampling",\n                        self.spherical_sampling_check,' in dialog_source
-    assert '"Balloon Angle Precision",\n                        self.balloon_angle_precision_spin,' in dialog_source
-    assert "self.spherical_sampling_check" in observation_config_block
-    assert "self.balloon_angle_precision_spin" in observation_config_block
-    assert "Gather spherical observation data for 3d ballon viewer" in dialog_source
-    assert (
-        '"Normalized Channel Correction",\n                        self.normalized_channel_correction_check,'
-        in dialog_source
-    )
-    assert (
-        "Applies a per-channel reference-axis magnitude correction before channel gain, delay, and crossover filters."
-        in dialog_source
-    )
     assert '"preferences/normalized_channel_correction"' in settings_source
-    assert "normalized_channel_correction: bool = True" in settings_source
+    assert "normalized_channel_correction: bool = False" in settings_source
     assert "flat_target_normalization_enabled=preferences.normalized_channel_correction" in main_source
     assert '"preferences/live_plot_quality"' in settings_source
     assert '"preferences/live_plot_streaming"' in settings_source
     assert '"preferences/isobar_contour_step_db"' in settings_source
     assert "live_plot_streaming: bool = True" in settings_source
     assert "isobar_contour_step_db: float = 3.0" in settings_source
-    assert '"Isobar Contour Step"' in dialog_source
+    assert '"Isobar contour interval"' in observation_config_block
     assert "live_plot_angle_samples(self.preferences.live_plot_quality)" in main_source
     assert "live_plot_freq_samples(self.preferences.live_plot_quality)" in main_source
     solve_source = main_window_source("solve_workflow")

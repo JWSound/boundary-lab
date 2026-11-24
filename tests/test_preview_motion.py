@@ -7,7 +7,7 @@ import vtk
 from blab.config import MeshConfig
 from blab.physical_model import ComponentKind
 from blab.preview_motion import motion_arrow_anchor, motion_arrow_geometry, preview_motion_assignments
-from blab.ui.mesh_preview import MeshPreview
+from blab.ui.mesh_preview import MeshPreview, _PreviewActorRecord, _triangles_to_polydata
 from test_prescribed_source_motion import axial, source_system
 
 
@@ -70,7 +70,8 @@ class PreviewHarness:
         self._camera_position = lambda: "unchanged"
         self._restore_camera_or_reset = lambda value: None
         self._restore_observation_plane_scene = lambda _: None
-        self._set_total_element_count = lambda *args, **kwargs: None
+        self.dimensions_label = SimpleNamespace(clear=lambda: None)
+        self._set_dimensions = lambda *args, **kwargs: None
         self._add_orientation_guides = lambda _: None
         self.set_hierarchy = lambda *args, **kwargs: None
         self.set_topology_report = lambda *args, **kwargs: None
@@ -185,3 +186,31 @@ def test_component_arrow_moves_to_another_visible_region_and_tracks_camera():
     after = record.actor.GetMapper().GetInput().GetBounds()
     assert after[5] < before[4]
     assert len(preview._motion_component_actors) == 1
+
+
+def test_boundary_outline_uses_surface_perimeter_and_follows_visibility():
+    # Two triangles form a square. Its outline has four edges, excluding the diagonal.
+    scene = PreviewHarness()
+    scene._motion_arrows_built = False
+    scene._highlighted_boundary = None
+    scene._update_boundary_outline = lambda: MeshPreview._update_boundary_outline(scene)
+    scene._hierarchy = SimpleNamespace(rendered_groups={("Cabinet", "Front"): ("stitched", 7)})
+    scene.viewer.renderer = vtk.vtkRenderer()
+    scene.viewer.camera = scene.viewer.renderer.GetActiveCamera()
+    scene.viewer.camera.SetPosition(0, 0, 3)
+    poly = _triangles_to_polydata(
+        np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]]), np.array([[0, 1, 2], [0, 2, 3]])
+    )
+    actor = scene.add_mesh(poly)
+    record = _PreviewActorRecord(actor, "stitched", ("stitched", 7), "exterior")
+    scene._actor_records = [record]
+    MeshPreview.highlight_boundary(scene, ("Cabinet", "Front"))
+    outline = record.outline
+    outline.GetMapper().Update()
+    assert outline.GetMapper().GetInput().GetNumberOfLines() == 4
+    assert not outline.GetPickable() and not outline.GetUseBounds()
+    scene._surface_visibility[record.surface_key] = False
+    scene._apply_actor_visibility()
+    assert not outline.GetVisibility()
+    MeshPreview.highlight_boundary(scene, None)
+    assert record.outline is None and not scene.viewer.renderer.HasViewProp(outline)

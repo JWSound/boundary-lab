@@ -21,7 +21,7 @@ def _missing_gui_dependency_message(exc: ImportError) -> str:
 
 
 try:
-    from PySide6.QtCore import QRect, Qt
+    from PySide6.QtCore import QEvent, QRect, Qt, QTimer
     from PySide6.QtGui import QColor, QFont, QIcon, QImage, QPainter, QPixmap
     from PySide6.QtWidgets import QApplication, QMessageBox, QSplashScreen
 except ImportError as exc:  # pragma: no cover - exercised only by manual GUI launch
@@ -295,10 +295,26 @@ def _create_splash_screen() -> QSplashScreen | None:
 
 
 def main(argv: list[str] | None = None, prog: str | None = None) -> None:
-    del argv, prog
+    del prog
+    pending = [
+        Path(arg) for arg in (sys.argv[1:] if argv is None else argv) if arg.lower().endswith((".blab", ".blab.json"))
+    ]
+    window = None
+
+    class ProjectApplication(QApplication):
+        def event(self, event):
+            if event.type() == QEvent.Type.FileOpen and event.file():
+                path = Path(event.file())
+                if window is None:
+                    pending.append(path)
+                else:
+                    QTimer.singleShot(0, lambda: window.open_recent_project(path))
+                return True
+            return super().event(event)
+
     mp.freeze_support()
     _set_windows_app_user_model_id()
-    app = QApplication(sys.argv)
+    app = ProjectApplication(sys.argv)
     app_icon = _create_app_icon()
     if not app_icon.isNull():
         app.setWindowIcon(app_icon)
@@ -343,6 +359,8 @@ def main(argv: list[str] | None = None, prog: str | None = None) -> None:
         if splash is not None:
             splash.finish(window)
         reporter.finish_startup()
+        if pending:
+            QTimer.singleShot(0, lambda: window.open_recent_project(pending[-1]))
     except Exception as exc:  # pragma: no cover - exercised only by manual GUI launch
         if splash is not None:
             splash.close()

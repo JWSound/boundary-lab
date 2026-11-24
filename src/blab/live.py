@@ -19,7 +19,9 @@ from blab.channel_synthesis import (
 from blab.config import DEFAULT_CHANNEL_VOLTAGE_V, ChannelConfig
 from blab.max_spl import MaxSplLimit, calculate_max_spl_curves
 from blab.phasor import solver_phase_deg, solver_to_standard_phasor
+from blab.polar_channels import PolarChannelBasis
 from blab.postprocess import PrepConfig, prepare_visualization_data_from_arrays
+from blab.solve_results.derived import peak_excursion_mm
 from blab.solve_results.model import DIAPHRAGM_VELOCITY_ID, INTERFACE_VELOCITY_ID, VOICE_COIL_CURRENT_ID
 from blab.solvers.base import FrequencyResult
 from blab.system_contract import SystemFrequencyResult
@@ -54,8 +56,11 @@ class LiveSolveDataset:
         channels: tuple[ChannelConfig, ...],
         *,
         flat_target_reference_angle_deg: float | None = None,
+        flat_target_enabled: bool | None = None,
     ) -> None:
         self.channel_configs = tuple(channels)
+        if flat_target_enabled is not None:
+            self.flat_target_normalization_enabled = flat_target_enabled
         if flat_target_reference_angle_deg is not None:
             self.flat_target_reference_angle_deg = float(flat_target_reference_angle_deg)
 
@@ -113,6 +118,29 @@ class LiveSolveDataset:
             np.complex64, copy=False
         )
         return freqs, self.polar_angle_deg.astype(np.float32, copy=False), horizontal, vertical
+
+    def polar_channel_basis(self) -> PolarChannelBasis | None:
+        """Snapshot weighted channel pressures without changing the solve or its synthesis."""
+        if not self.supports_channel_resynthesis:
+            return None
+        ordered = self.ordered_results()
+        names = tuple(str(name) for name in ordered[0].channel_names)
+        horizontal, vertical = [], []
+        for result in ordered:
+            result_names = tuple(str(name) for name in result.channel_names)
+            if set(result_names) != set(names):
+                return None
+            indices = [result_names.index(name) for name in names]
+            weights = self.channel_basis_weights(result)[:, np.newaxis]
+            horizontal.append((np.asarray(result.horizontal_pressure) * weights)[indices])
+            vertical.append((np.asarray(result.vertical_pressure) * weights)[indices])
+        return PolarChannelBasis(
+            self.solved_frequencies,
+            self.polar_angle_deg.copy(),
+            names,
+            np.stack(horizontal),
+            np.stack(vertical),
+        )
 
     def as_channel_on_axis_export_arrays(
         self,
@@ -573,7 +601,7 @@ class TransducerMotionDataset:
         self,
         acoustic: LiveSolveDataset,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
-        """Return frequency, transducer names, and synthesized excursion in mm."""
+        """Return frequency, transducer names, and synthesized one-way peak excursion in mm."""
 
         frequencies = sorted(set(self.results).intersection(acoustic.results))
         if not frequencies:
@@ -598,7 +626,8 @@ class TransducerMotionDataset:
                 raise ValueError(f"No synthesized channel basis is available for {exc.args[0]!r}.") from exc
             velocity = self.results[frequency]
             synthesized_velocity = np.sum(velocity * excitation_weights[:, np.newaxis], axis=0)
-            excursion_mm = np.abs(synthesized_velocity / (1j * 2.0 * np.pi * frequency)) * 1000.0
+            # Solver phasors are RMS; display one-way peak displacement.
+            excursion_mm = peak_excursion_mm(synthesized_velocity, frequency)
             rows.append(excursion_mm.astype(np.float32, copy=False))
         return (
             np.asarray(frequencies, dtype=np.float32),

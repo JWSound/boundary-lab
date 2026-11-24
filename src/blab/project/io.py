@@ -16,8 +16,8 @@ from blab.observation_planes import observation_planes_from_payload
 from blab.project.model import ProjectPreferencesState
 
 PROJECT_SCHEMA_VERSION = 10
-PROJECT_FILE_FILTER = "Boundary Lab project files (*.blab.json *.json);;JSON files (*.json);;All files (*)"
-PROJECT_DEFAULT_NAME = "boundary_lab_project.blab.json"
+PROJECT_FILE_FILTER = "Boundary Lab project files (*.blab *.blab.json *.json);;JSON files (*.json);;All files (*)"
+PROJECT_DEFAULT_NAME = "boundary_lab_project.blab"
 PROJECT_PAYLOAD_KEYS = (
     "schema_version",
     "generator_documents",
@@ -44,6 +44,10 @@ def normalize_project_path(path: str | Path) -> Path:
 
 def write_project_file(path: str | Path, payload: dict[str, Any]) -> Path:
     project_path = normalize_project_path(path)
+    if project_path.suffix.lower() == ".blab":
+        from blab.project.package import write_package
+
+        return write_package(project_path, payload)
     project_path.parent.mkdir(parents=True, exist_ok=True)
     portable_payload = _project_payload_with_portable_paths(payload, project_path.parent)
     project_path.write_text(
@@ -56,6 +60,10 @@ def write_project_file(path: str | Path, payload: dict[str, Any]) -> Path:
 
 def read_project_file(path: str | Path) -> dict[str, Any]:
     project_path = Path(path)
+    if project_path.suffix.lower() == ".blab":
+        from blab.project.package import read_package
+
+        return read_package(project_path)[0]
     payload = json.loads(project_path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError("Project file must contain a JSON object.")
@@ -353,7 +361,7 @@ def build_project_payload(
     active_generator_document_id: str | None,
     imported_meshes: list[dict[str, Any]],
     source_config_by_name: dict[str, Any],
-    stitch_imported_meshes: bool = False,
+    stitch_imported_meshes: bool = True,
     symmetry: str = "off",
     channel_config_by_name: dict[str, Any] | None = None,
     max_spl_limits_by_channel: dict[str, Any] | None = None,

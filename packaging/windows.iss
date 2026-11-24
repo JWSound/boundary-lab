@@ -2,7 +2,7 @@
   #error Pass /DPayload=<absolute staged runtime directory>
 #endif
 #ifndef AppVersion
-  #define AppVersion "0.5.0.dev0"
+  #define AppVersion "0.5.1.dev0"
 #endif
 #ifndef Flavor
   #define Flavor "cpu"
@@ -31,6 +31,15 @@ LicenseFile=..\LICENSE
 CloseApplications=yes
 CloseApplicationsFilter=Boundary Lab.exe,python.exe,pythonw.exe,julia.exe
 RestartApplications=no
+
+ChangesAssociations=yes
+
+[Registry]
+Root: HKCU; Subkey: "Software\Classes\.blab"; ValueType: string; ValueData: "BoundaryLab.Project"; Flags: createvalueifdoesntexist
+Root: HKCU; Subkey: "Software\Classes\.blab\OpenWithProgids"; ValueType: string; ValueName: "BoundaryLab.Project"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\Classes\BoundaryLab.Project"; ValueType: string; ValueData: "Boundary Lab project"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\BoundaryLab.Project\DefaultIcon"; ValueType: string; ValueData: "{app}\Boundary Lab.exe,0"
+Root: HKCU; Subkey: "Software\Classes\BoundaryLab.Project\shell\open\command"; ValueType: string; ValueData: """{app}\Boundary Lab.exe"" ""%1"""
 
 [Files]
 Source: "{#Payload}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs

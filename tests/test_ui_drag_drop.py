@@ -6,7 +6,7 @@ from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import QApplication
 
 from blab.ui.dialogs import MeshDropTable
-from blab.ui.main_window import ADD_DESIGN_TAB_LABEL, AthScriptEditor
+from blab.ui.main_window import AthScriptEditor
 
 _APP = QApplication.instance() or QApplication([])
 
@@ -76,6 +76,5 @@ def test_empty_design_tabs_keep_add_drop_target(main_window) -> None:
     window.rebuild_generator_document_tabs()
 
     assert window.editor_tabs.count() == 1
-    assert window.editor_tabs.tabText(0) == ADD_DESIGN_TAB_LABEL
-    assert isinstance(window.editor_tabs.widget(0), AthScriptEditor)
-    assert window.editor_tabs.widget(0).isReadOnly()
+    assert isinstance(window.editor_pages.widget(0), AthScriptEditor)
+    assert window.editor_pages.widget(0).isReadOnly()

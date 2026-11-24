@@ -118,7 +118,7 @@ def test_source_symmetry_and_interior_restrictions():
         with pytest.raises(PhysicalModelCompileError, match="symmetry planes"):
             PhysicalSystemCompiler().compile(source_system(axial((1, 0, 1))), symmetry_mode=symmetry)
         assert prescribed_source_parameters(axial((0, 0, 1e300)), symmetry=symmetry)["motion_axis"] == [0, 0, 1]
-    with pytest.raises(ValueError, match="exterior-only"):
+    with pytest.raises(ValueError, match="exterior BEM or coupled"):
         prescribed_source_parameters(axial(), exterior=False)
     with pytest.raises(ValueError, match="requires motion_profile"):
         prescribed_source_parameters({"motion_axis": [0, 0, 1]})
@@ -155,7 +155,7 @@ def test_editor_source_modes_and_flip():
     assert legacy.motion_group.isHidden()
     assert not legacy.source_motion_note.isHidden()
     editor = _ComponentEditorDialog(replace(draft, id="", parameters={}, motion_axis_mode="manual"), **options)
-    assert not hasattr(editor, "motion_profile_combo")
+    assert editor.motion_profile_combo.currentData() == "rigid_translation"
     assert not editor.motion_group.isHidden()
     automatic = editor.component_draft()
     assert automatic.parameters["motion_axis"] == pytest.approx([0, 0, 1])
@@ -172,6 +172,13 @@ def test_editor_source_modes_and_flip():
     bounded = _ComponentEditorDialog(replace(draft, id="", parameters={}), exterior_only=False, **options)
     assert bounded.component_draft().parameters["motion_profile"] == "uniform"
     assert bounded.motion_group.isHidden()
+    coupled = _ComponentEditorDialog(draft, exterior_only=False, coupled=True, **options)
+    assert coupled.component_draft().parameters["motion_profile"] == "uniform"
+    coupled.motion_profile_combo.setCurrentIndex(coupled.motion_profile_combo.findData("rigid_translation"))
+    assert coupled.component_draft().parameters["motion_axis"] == pytest.approx([0, 0, 1])
+    assert not coupled.motion_group.isHidden()
+    coupled.close()
+
     assert app is not None
     for dialog in (editor, reopened, bounded, legacy):
         dialog.close()
@@ -252,3 +259,70 @@ def test_engine_axial_complex_pressure_and_neumann_parity(flat):
         tangent = solve(axial((1, 0, 0)))
         for values in tangent.values():
             np.testing.assert_allclose(values, 0, atol=1e-7)
+
+
+@pytest.mark.skipif(
+    os.environ.get("BLAB_RUN_COUPLED_AXIAL") != "1", reason="Set BLAB_RUN_COUPLED_AXIAL=1 for Julia coupled parity"
+)
+def test_engine_coupled_axial_fem_and_bem_sources():
+    from test_physical_compiler import _mixed_prescribed_fixture_system
+
+    system = _mixed_prescribed_fixture_system()
+    backend = CoupledProductionBackend(bem_backend="cpu")
+
+    def solve(direction, weight=1.0, combined=False):
+        components = tuple(
+            replace(
+                component,
+                parameters={
+                    "motion_profile": "rigid_translation",
+                    "motion_axis": [0, 0, direction],
+                    "boundary_motion_weights": {boundary: weight for boundary in component.boundary_ids},
+                },
+            )
+            for component in system.components
+        )
+        ports = system.excitation_ports
+        if combined:
+            boundary_ids = tuple(boundary for component in components for boundary in component.boundary_ids)
+            components = (
+                replace(
+                    components[0],
+                    boundary_ids=boundary_ids,
+                    parameters={
+                        "motion_profile": "rigid_translation",
+                        "motion_axis": [0, 0, direction],
+                        "boundary_motion_weights": {boundary: weight for boundary in boundary_ids},
+                    },
+                ),
+            )
+            ports = ports[:1]
+        compiled = PhysicalSystemCompiler().compile(replace(system, components=components, excitation_ports=ports))
+        request = SystemSolveRequest(
+            compiled_system=compiled,
+            frequencies_hz=(500,),
+            excitation_port_ids=tuple(port.id for port in ports),
+            outputs=(
+                OutputRequest(id="fem", quantity="fem_nodal_pressure"),
+                OutputRequest(id="bem", quantity="bem_boundary_pressure"),
+                OutputRequest(id="q", quantity="bem_boundary_neumann"),
+                OutputRequest(id="field", quantity="exterior_pressure", options={"points_m": [[0, 0, 1]]}),
+            ),
+            solver_options={"quadrature_order": 1, "singular_order": 1, "validation_diagnostics": False},
+        )
+        (result,) = backend.create_system_session(request).solve_stream()
+        assert result.excitation_port_ids == request.excitation_port_ids
+        return {q.id: q.values for q in result.quantities}
+
+    forward = solve(10)
+    reverse = solve(-1)
+    weighted = solve(1, 0.5)
+    combined = solve(1, combined=True)
+    for name, values in forward.items():
+        assert values.shape[0] == 2
+        assert np.isfinite(values).all()
+        assert np.linalg.norm(values[0]) > 0
+        assert np.linalg.norm(values[1]) > 0
+        np.testing.assert_allclose(reverse[name], -values, rtol=2e-5, atol=1e-6)
+        np.testing.assert_allclose(weighted[name], 0.5 * values, rtol=2e-5, atol=1e-6)
+        np.testing.assert_allclose(combined[name][0], values.sum(axis=0), rtol=2e-4, atol=2e-5)

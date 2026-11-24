@@ -6,9 +6,9 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from blab.channel_synthesis import channel_drive, channel_voltage_gain, flat_target_corrections
+from blab.channel_synthesis import excitation_weights
 from blab.config import ChannelConfig
-from blab.fem_fields import sample_pressure_velocity
+from blab.fem_fields import sample_pressure_velocity, tetrahedral_shape_gradients
 from blab.observation_planes import ObservationPlaneDisplay, ObservationPlaneType
 from blab.physical_model import AcousticRegionKind, ExcitationPortKind
 from blab.solve_results import (
@@ -70,7 +70,7 @@ class InteriorFieldResults:
         solve_index = int(self.frequency_indices[available_index])
         frequency = float(self.frequencies_hz[available_index])
         basis = np.asarray(self.pressure_by_frequency[solve_index])
-        weights = _excitation_weights(
+        weights = excitation_weights(
             solve_index=solve_index,
             frequency_hz=frequency,
             response_id=response_id,
@@ -119,6 +119,7 @@ class ExteriorFieldResults:
     horizontal_angles_deg: np.ndarray | None = None
     flat_target_enabled: bool = False
     flat_target_reference_angle_deg: float = 0.0
+    density_kg_per_m3: float = 1.2041
 
     @property
     def run_id(self) -> str:
@@ -145,7 +146,7 @@ class ExteriorFieldResults:
         solve_index = int(self.traces.frequency_indices[available_index])
         frequency = float(self.frequencies_hz[available_index])
         pressure_basis, normal_basis = self.traces.excitation_basis(frequency)
-        weights = _excitation_weights(
+        weights = excitation_weights(
             solve_index=solve_index,
             frequency_hz=frequency,
             response_id=response_id,
@@ -278,40 +279,6 @@ def interior_field_results_from_solved_system(
     )
 
 
-def tetrahedral_shape_gradients(points_m: np.ndarray, tetrahedra: np.ndarray) -> np.ndarray:
-    """Return physical P1 basis gradients with shape ``(tetrahedron, 4, xyz)``."""
-
-    points = np.asarray(points_m, dtype=float)
-    cells = np.asarray(tetrahedra, dtype=np.int64)
-    if points.ndim != 2 or points.shape[1] != 3:
-        raise ValueError("FEM points must have shape (node, 3).")
-    if cells.ndim != 2 or cells.shape[1] != 4:
-        raise ValueError("FEM tetrahedra must have shape (tetrahedron, 4).")
-    if np.any(cells < 0) or np.any(cells >= points.shape[0]):
-        raise ValueError("FEM tetrahedra reference nodes outside the point array.")
-    vertices = points[cells]
-    jacobians = np.stack(
-        (
-            vertices[:, 1] - vertices[:, 0],
-            vertices[:, 2] - vertices[:, 0],
-            vertices[:, 3] - vertices[:, 0],
-        ),
-        axis=2,
-    )
-    determinants = np.linalg.det(jacobians)
-    edge_scale = np.max(np.abs(jacobians), axis=(1, 2))
-    tolerance = np.finfo(float).eps * edge_scale**3
-    if np.any(np.abs(determinants) <= tolerance):
-        raise ValueError("FEM volume mesh contains a numerically degenerate tetrahedron.")
-    reference_gradients = np.asarray(
-        [[-1.0, 1.0, 0.0, 0.0], [-1.0, 0.0, 1.0, 0.0], [-1.0, 0.0, 0.0, 1.0]],
-        dtype=float,
-    )
-    right_hand_side = np.broadcast_to(reference_gradients, (cells.shape[0], 3, 4))
-    gradients = np.linalg.solve(np.swapaxes(jacobians, 1, 2), right_hand_side)
-    return np.swapaxes(gradients, 1, 2)
-
-
 def _tetrahedron_density_kg_per_m3(
     solved: SolvedSystem,
     domain,
@@ -379,6 +346,7 @@ def exterior_field_results_from_solved_system(
         traces=traces,
         backend_id=solved.provenance.backend_id,
         sound_speed_m_per_s=float(unbounded_regions[0].sound_speed_m_per_s),
+        density_kg_per_m3=float(unbounded_regions[0].density_kg_per_m3),
         channel_names_by_excitation=channel_names,
         channel_configs=tuple(channel_configs),
         voltage_channel_names=voltage_channel_names,
@@ -473,59 +441,6 @@ def _nearest_frequency_index(frequencies_hz: np.ndarray, frequency_hz: float | N
     if frequency_hz is None or not np.isfinite(frequency_hz):
         return 0
     return int(np.argmin(np.abs(frequencies_hz - float(frequency_hz))))
-
-
-def _excitation_weights(
-    *,
-    solve_index: int,
-    frequency_hz: float,
-    response_id: str,
-    excitation_ids: tuple[str, ...],
-    channel_names_by_excitation: tuple[str, ...],
-    channel_configs: tuple[ChannelConfig, ...],
-    voltage_channel_names: frozenset[str],
-    horizontal_pressure_by_frequency: np.ndarray | None,
-    horizontal_angles_deg: np.ndarray | None,
-    flat_target_enabled: bool,
-    flat_target_reference_angle_deg: float,
-) -> np.ndarray:
-    configs = {channel.name: channel for channel in channel_configs}
-    channel_names = tuple(dict.fromkeys(channel_names_by_excitation))
-    correction_by_channel = {name: 1.0 for name in channel_names}
-    if flat_target_enabled and horizontal_pressure_by_frequency is not None and horizontal_angles_deg is not None:
-        horizontal_basis = np.asarray(horizontal_pressure_by_frequency[solve_index])
-        grouped = np.vstack(
-            [
-                np.sum(
-                    horizontal_basis[
-                        [index for index, candidate in enumerate(channel_names_by_excitation) if candidate == name]
-                    ],
-                    axis=0,
-                )
-                for name in channel_names
-            ]
-        )
-        corrections = flat_target_corrections(
-            grouped,
-            horizontal_angles_deg,
-            flat_target_reference_angle_deg,
-            enabled=True,
-        )
-        correction_by_channel.update(
-            {name: float(correction) for name, correction in zip(channel_names, corrections, strict=True)}
-        )
-
-    selected_channel = response_id.removeprefix("channel:") if response_id.startswith("channel:") else None
-    if selected_channel not in channel_names:
-        selected_channel = None
-    weights = np.zeros(len(excitation_ids), dtype=np.complex64)
-    for index, channel_name in enumerate(channel_names_by_excitation):
-        if selected_channel is not None and channel_name != selected_channel:
-            continue
-        config = configs.get(channel_name, ChannelConfig(name=channel_name))
-        voltage_gain = channel_voltage_gain(config) if channel_name in voltage_channel_names else 1.0
-        weights[index] = correction_by_channel[channel_name] * channel_drive(config, frequency_hz) * voltage_gain
-    return weights
 
 
 def project_field_scalars(

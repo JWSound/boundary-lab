@@ -143,28 +143,42 @@ a same-name fallback). Material colors are supported; texture maps are omitted
 with a message in the dialog. For the S218BP example OBJ, select **Centimeters**.
 
 Use **File > Export Speaker Package...** to configure a package and select
-**Solve and Export**. Boundary Lab starts a new physical-system solve with the
-raw complex quantities required by the selected fidelity; it does not reuse a
-plot-normalized result.
+**Solve and Export**. Set the minimum and maximum frequency in the project
+frequency controls. Boundary Lab solves the raw complex responses independently
+for each excitation port and writes a versioned ZIP64 `.blabsp` archive using
+the `exp(+i omega t)` phasor convention.
 
-Speaker packages use the `.blabsp` extension and are versioned ZIP64 archives.
-They preserve the independent excitation-port basis and the
-`exp(+i omega t)` phasor convention. Legacy negative-time packages remain importable.
+- **Level 1 — Pattern superposition** provides complex radiated pressure at any
+  frequency within the project band, on the configured Fibonacci observation
+  sphere. The exporter starts with nine logarithmically spaced frequencies,
+  refines intervals using direct solves at their midpoints, and stores the
+  final interval endpoints and midpoints. It checks the exported pattern at
+  held-out off-centre frequencies. For every port, relative sphere
+  RMS error and maximum directional error normalized to that port's peak
+  pressure must each be at most 2% at the check frequencies. The default
+  budget is 512 direct frequencies including checks. The CLI option
+  `--pattern-max-solves` sets this budget. The export fails if training
+  requires more solves.
+- **Level 2 — Fixed distributed sources** includes the continuous Level 1 pattern
+  and stores exterior BEM traces at the configured frequency samples. The traces are P1 pressure
+  and facewise DP0 outward pressure derivative. Together they define the
+  equivalent source `D[p] - S[q]`.
+- **Level 3 — Reduced interior coupling** provides a continuous interior model
+  over the project band and includes the continuous spherical pattern and fixed
+  sources described under Level 2. A reader can evaluate how an external
+  pressure field and terminal voltages excite the cabinet at an in-band
+  frequency. The exporter checks chamber pressure, boundary flux, and driver
+  velocity against full-order responses to prescribed loads and voltage
+  drives, then checks front and side point sources with the terminals at zero
+  volts. It increases rank or adds training frequencies as needed. The export
+  fails if the checks exceed 1% at the training limits. The model supports
+  voltage-driven electrodynamic drivers and linear tetrahedral chambers with a
+  shared acoustic medium. Thermoviscous boundary layers require a different
+  interior model.
 
-- **Level 1 — Pattern superposition** contains complex pressure on a spherical
-  Fibonacci sampling surface.
-- **Level 2 — Fixed distributed sources** contains level 1 data plus the
-  exterior BEM surface, continuous P1 pressure, and facewise DP0 pressure
-  normal derivative. These traces define the fixed equivalent source
-  `D[p] - S[q]`; they are not two simultaneously imposed boundary conditions.
-- **Level 3 — Reduced interior coupling** contains levels 1 and 2 plus a
-  rank-32-per-sector parity Petrov–Galerkin ROM at every exported frequency.
-  Deploy Schur-eliminates each reduced interior response into the shared
-  exterior BEM problem, retaining mutual loading and transducer feedback while
-  keeping package size and array-solve cost practical. Single-cabinet comparisons
-  are made by sweeping a one-cabinet Deploy scene and capturing the results.
-  New packages do not include a separate isolated acoustic impedance reference;
-  older archives containing that optional data remain loadable.
+The frequency checks measure model error against direct solves on the same
+mesh. For evaluator identifiers, array conventions, and CLI examples, see
+[Continuous speaker package data](advanced/continuous-speaker-rom.md).
 
 Boundary Lab uses +Z as forward. Exported speaker packages use the array-tool
 frame with +Y as forward by applying the proper right-handed rotation
@@ -183,9 +197,7 @@ frequency and excitation order, provenance, payload semantics, and checksums.
 
 Level 3 must represent asymmetric incident fields from other array elements.
 Boundary Lab therefore recompiles an export-only full-domain system with
-symmetry off, then decomposes its response into every parity sector required by
-the source project: one general sector for no symmetry, even-X and odd-X for X
-symmetry, or four sectors for XY symmetry. It prefers retained generated
+symmetry off. It prefers retained generated
 full-domain meshes; otherwise it reflects the reduced FEM and BEM meshes,
 welds cut-plane nodes, corrects element orientation, removes FEM cut facets,
 and rebuilds the physical interfaces. A driver divided by a cut plane remains

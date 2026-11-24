@@ -1,6 +1,7 @@
 import os
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import meshio
 import numpy as np
@@ -442,6 +443,7 @@ def test_preview_falls_back_to_unstitched_meshes_when_preview_stitching_fails(tm
     window.symmetry = "xy"
     window.stitch_imported_meshes = True
     window.preview = PreviewStub()
+    window.activity_status = SimpleNamespace(set_unknown_counts=lambda *counts: loaded.update(counts=counts))
     window.status_label = StatusStub()
     window.has_solver_meshes = lambda: True
     window.prepare_mesh_assembly = lambda _radiators: (_ for _ in ()).throw(RuntimeError(STITCH_FAILURE_MESSAGE))
@@ -454,6 +456,7 @@ def test_preview_falls_back_to_unstitched_meshes_when_preview_stitching_fails(tm
     assert loaded["kwargs"]["symmetry"] == "xy"
     assert loaded["status"] == "Mesh preview showing unstitched meshes; stitching failed"
     assert "cleared" not in loaded
+    assert loaded["counts"] == (None, None)
 
 
 def test_solver_channels_include_radiator_default_channel_when_missing() -> None:
@@ -559,8 +562,7 @@ def _project_controller(monkeypatch, *, payload=None, project_preferences=None):
         geometry_store=None,
         preferences=lambda: None,
         set_preferences=lambda _preferences: None,
-        save_preferences=lambda: None,
-        save_frequency_settings=lambda: None,
+        new_project_defaults=ProjectPreferencesState,
         remember_recent=lambda _path: None,
         forget_recent=lambda _path: None,
     )
@@ -604,24 +606,11 @@ def test_project_dirty_state_ignores_generated_geometry_artifacts(monkeypatch) -
     assert controller.has_unsaved_project_changes()
 
 
-def test_project_preference_prompt_only_appears_for_differences(monkeypatch) -> None:
-    current = ProjectPreferencesState()
-    controller = _project_controller(monkeypatch, project_preferences=current)
-
-    assert controller._confirm_apply_project_preferences(None) is False
-    assert controller._confirm_apply_project_preferences(current) is False
-    assert controller._view.confirmed == []
-
-    different = ProjectPreferencesState(horizontal_normalization_angle=15.0)
-    assert controller._confirm_apply_project_preferences(different) is True
-    assert "unique application preferences" in controller._view.confirmed[0][1]
-
-
-def test_declined_project_preferences_remain_attached_to_loaded_project(monkeypatch, tmp_path: Path) -> None:
+def test_saved_project_configuration_applies_automatically(monkeypatch, tmp_path: Path) -> None:
     current = ProjectPreferencesState()
     stored = ProjectPreferencesState(horizontal_normalization_angle=15.0)
     controller = _project_controller(monkeypatch, project_preferences=current)
-    controller._view.answer = False
+    applied = []
     controller._remember_recent = lambda _path: None
 
     class FakeInputs:
@@ -677,10 +666,12 @@ def test_declined_project_preferences_remain_attached_to_loaded_project(monkeypa
     monkeypatch.setattr(
         controller,
         "_apply_project_preferences",
-        lambda _preferences: pytest.fail("declined preferences must not be applied to the application"),
+        applied.append,
     )
     controller._load_project_from_path(tmp_path / "stored.blab.json")
 
+    assert applied == [stored]
+    assert controller._view.confirmed == []
     assert controller._session.document.project_preferences == stored
     assert controller._session.path == tmp_path / "stored.blab.json"
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QTimer, Slot
@@ -10,6 +11,7 @@ from PySide6.QtWidgets import QDialog
 
 from blab.ui.dialogs import (
     PreferencesDialog,
+    ProjectConfigurationDialog,
 )
 from blab.ui.main_window.constants import (
     CAPTURE_CONTOURS_DARK_ICON,
@@ -38,10 +40,12 @@ from blab.ui.project_history import (
 )
 from blab.ui.settings import (
     GuiPreferences,
+    gui_preferences_with_project_preferences,
     load_gui_preferences,
     preferences_require_solve_invalidation,
     preferences_require_visualization_refresh,
-    save_gui_preferences,
+    save_application_preferences,
+    save_project_defaults,
 )
 from blab.ui.theme import apply_application_theme
 
@@ -69,8 +73,13 @@ class PreferencesMixin:
     def _load_preferences(self) -> GuiPreferences:
         return load_gui_preferences(self.settings)
 
+    def _update_project_preferences(self, **changes) -> None:
+        current = self.project.project_preferences or self._current_project_preferences()
+        self.project.project_preferences = replace(current, **changes)
+        self.preferences = replace(self.preferences, **changes)
+
     def _save_preferences(self) -> None:
-        save_gui_preferences(self.settings, self.preferences)
+        save_application_preferences(self.settings, self.preferences)
 
     def _apply_theme(self) -> None:
         apply_application_theme(self.preferences.theme)
@@ -121,13 +130,8 @@ class PreferencesMixin:
             electrical_impedance_plot.show_phase_action.setIcon(phase_icon)
 
     @Slot()
-    def _save_frequency_settings(self) -> None:
-        frequencies = self.frequency_range()
-        self.settings.setValue("solve/freq_min_hz", frequencies.min_hz)
-        self.settings.setValue("solve/freq_max_hz", frequencies.max_hz)
-        self.settings.setValue("solve/freq_count", frequencies.count)
-        if hasattr(self, "project"):
-            self.project.project_preferences = self._current_project_preferences()
+    def _update_project_frequency(self) -> None:
+        self.project.project_preferences = self._current_project_preferences()
 
     def _restore_window_state(self) -> None:
         geometry = self.settings.value("window/geometry")
@@ -202,10 +206,46 @@ class PreferencesMixin:
         self.open_recent_menu.addAction(clear_action)
 
     @Slot()
+    def open_project_configuration(self) -> None:
+        current = self._current_project_preferences()
+        dialog = ProjectConfigurationDialog(current, self)
+        try:
+            if dialog.exec() != QDialog.Accepted:
+                return
+            project = dialog.configuration()
+            effective = gui_preferences_with_project_preferences(self.preferences, project)
+            invalidate = preferences_require_solve_invalidation(self.preferences, effective)
+            if invalidate and not self._confirm_clear_solved_data():
+                return
+            if project != current:
+                self.preferences = effective
+                self.project.project_preferences = project
+                if invalidate:
+                    self.solve_results_invalidated.emit("project_configuration_changed")
+                else:
+                    if self.live_dataset is not None:
+                        self.live_dataset.set_channel_synthesis(
+                            self.channel_configs(),
+                            flat_target_reference_angle_deg=project.horizontal_normalization_angle,
+                        )
+                    if self.balloon_window is not None and self.balloon_window.isVisible():
+                        self.balloon_window.set_presentation(
+                            project.spl_min_db, project.spl_max_db, project.polar_smoothing
+                        )
+                    self._refresh_channel_responses()
+            if dialog.use_as_defaults.isChecked():
+                self.new_project_defaults = project
+                save_project_defaults(self.settings, project)
+            self.status_label.setText("Project configuration updated")
+        finally:
+            dialog.deleteLater()
+
+    @Slot()
     def open_preferences(self) -> None:
         previous_preferences = self.preferences
         dialog = PreferencesDialog(self.preferences, self)
         if dialog.exec() != QDialog.Accepted:
+            dialog.deleteLater()
             return
         preferences = dialog.preferences()
         symmetry_will_be_disabled = (
@@ -226,7 +266,6 @@ class PreferencesMixin:
         self.preferences = preferences
         self._apply_field_preferences()
         self._save_preferences()
-        self.project.project_preferences = self._current_project_preferences()
         symmetry_disabled = self.reconcile_symmetry_with_backend()
         QTimer.singleShot(0, self._apply_theme)
         self.mesh_state_changed.emit("preferences_changed")
@@ -251,14 +290,12 @@ class PreferencesMixin:
         dialog = ProviderPackagesDialog(
             self.preferences.enabled_geometry_providers,
             self,
-            default_provider=self.preferences.default_geometry_provider,
             is_busy=self.generator_plugins_busy,
         )
         try:
             if dialog.exec() != QDialog.Accepted:
                 return
             self.preferences.enabled_geometry_providers = tuple(sorted(dialog.enabled))
-            self.preferences.default_geometry_provider = dialog.default_provider
             provider_catalog().enabled = set(dialog.enabled)
             self._save_preferences()
             self.rebuild_generator_document_tabs()

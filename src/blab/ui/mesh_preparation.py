@@ -12,6 +12,7 @@ from blab.mesh_data import read_resource_mesh
 from blab.mesh_inventory import InventoryEntry, inspect_system_mesh_variants
 from blab.mesh_topology import analyze_exterior_mesh_topology
 from blab.physical_model import PhysicalSystem
+from blab.pressure_unknowns import pressure_unknown_counts
 from blab.preview_hierarchy import build_preview_hierarchy, physical_system_preview_metadata
 from blab.preview_motion import preview_motion_assignments
 from blab.project.model import ImportedMeshState
@@ -120,4 +121,10 @@ def prepare_preview(snapshot: MeshPreparationSnapshot, output_root):
         hierarchy=hierarchy,
         loaded_meshes={mesh.name: read_resource_mesh(mesh) for mesh in assembly.mesh_configs},
     )
-    return assembly, snapshot.generated, view_options, warning
+    counts = pressure_unknown_counts(
+        assembly.physical_system,
+        view_options["loaded_meshes"],
+        {m.name for m in assembly.source_mesh_configs},
+        exterior_ready=warning is None,
+    )
+    return assembly, snapshot.generated, view_options, warning, counts

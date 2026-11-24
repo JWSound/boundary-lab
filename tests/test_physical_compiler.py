@@ -109,13 +109,14 @@ def test_compiler_records_weighted_area_for_exterior_prescribed_velocity() -> No
     assert record.relative_side_mismatch is None
 
 
-def test_compiler_rejects_axial_prescribed_source_in_coupled_system() -> None:
+def test_compiler_accepts_axial_prescribed_source_in_coupled_system() -> None:
     system = _fixture_system()
     component = replace(
         system.components[0], parameters={"motion_profile": "rigid_translation", "motion_axis": [0, 0, 1]}
     )
-    with pytest.raises(PhysicalModelCompileError, match="exterior-only"):
-        PhysicalSystemCompiler().compile(replace(system, components=(component,)))
+    compiled = PhysicalSystemCompiler().compile(replace(system, components=(component,)))
+    assert compiled.contract_version == 2
+    assert compiled.components[0].parameters["motion_axis"] == [0, 0, 1]
 
 
 @pytest.mark.parametrize(
@@ -245,6 +246,20 @@ def test_coupled_production_backend_forces_fp32_and_selects_cuda_project() -> No
     cpu_session = CoupledProductionBackend(bem_backend="cpu").create_system_session(request)
     assert cpu_session.julia_threads == 8
     assert cpu_session.request.solver_options["static_condensation"] is True
+
+
+@pytest.mark.parametrize("backend", ["cpu", "cuda", "rocm"])
+def test_coupled_production_backend_accepts_configured_float64(backend) -> None:
+    request = SystemSolveRequest(
+        compiled_system=PhysicalSystemCompiler().compile(_fixture_system()),
+        frequencies_hz=(500.0,),
+        excitation_port_ids=("excitation:radiator",),
+        outputs=(OutputRequest(id="output:fem", quantity="fem_nodal_pressure"),),
+    )
+    session = CoupledProductionBackend(bem_backend=backend, precision="float64").create_system_session(request)
+    assert session.request.solver_options["precision"] == "float64"
+    assert session.request.solver_options["bem_backend"] == backend
+    assert session.request.solver_options["static_condensation"] is True
 
 
 def test_coupled_production_backend_keeps_full_matrix_diagnostics_monolithic() -> None:
@@ -394,6 +409,23 @@ def test_coupled_backend_accepts_mixed_fem_and_bem_prescribed_sources() -> None:
     assert exterior_component.boundary_ids == (exterior_boundary.id,)
     assert exterior_component.parameters["boundary_motion_weights"][exterior_boundary.id] == pytest.approx(0.5)
     assert exterior_boundary.kind == BoundaryKind.MOVING
+
+
+@pytest.mark.parametrize("axis", [(0, 0, 1), (1, 0, -1)])
+def test_coupled_backend_accepts_exterior_axial_prescribed_source(axis) -> None:
+    system = _mixed_prescribed_fixture_system()
+    exterior = replace(system.components[-1], parameters={"motion_profile": "rigid_translation", "motion_axis": axis})
+    compiled = PhysicalSystemCompiler().compile(replace(system, components=(*system.components[:-1], exterior)))
+    assert compiled.contract_version == 2
+    request = SystemSolveRequest(
+        compiled_system=compiled,
+        frequencies_hz=(500.0,),
+        excitation_port_ids=tuple(port.id for port in compiled.excitation_ports),
+    )
+    session = CoupledProductionBackend(bem_backend="cpu").create_system_session(request)
+    assert session.request.compiled_system.components[-1].parameters["motion_axis"] == pytest.approx(
+        np.array(axis) / np.linalg.norm(axis)
+    )
 
 
 def test_coupled_cancel_keeps_persistent_worker_warm(tmp_path: Path) -> None:
@@ -570,6 +602,30 @@ def test_coupled_backend_accepts_mmd_electrodynamic_component_and_voltage_port()
     assert DEFAULT_TRANSDUCER_REFERENCE_VOLTAGE_V == pytest.approx(2.83)
     assumptions = {item.statement for item in compiled.assumptions}
     assert "Linear single-axis rigid-body electrodynamic transducers with dry moving mass" in assumptions
+
+
+@pytest.mark.parametrize("reference", [{"name": "21SW152-4"}, {"name": "Measured", "sd_m2": 0.0522}])
+def test_imported_driver_reference_stays_out_of_solver_parameters(reference) -> None:
+    system = _electrodynamic_fixture_system()
+    component = replace(
+        system.components[0],
+        parameters={**system.components[0].parameters, "driver_reference": reference},
+    )
+    system = replace(system, components=(component,))
+    compiled = PhysicalSystemCompiler().compile(system)
+    request = SystemSolveRequest(
+        compiled_system=compiled,
+        frequencies_hz=(500.0,),
+        excitation_port_ids=("excitation:radiator",),
+    )
+
+    CoupledProductionBackend(bem_backend="cpu").create_system_session(request)
+
+    assert "driver_reference" not in compiled.components[0].parameters
+    wire_parameters = system_solve_request_to_dict(request)["compiled_system"]["components"][0]["parameters"]
+    assert "driver_reference" not in wire_parameters
+    assert system.components[0].parameters["driver_reference"] == reference
+    assert physical_system_to_dict(system)["components"][0]["parameters"]["driver_reference"] == reference
 
 
 def test_coupled_backend_accepts_enabled_semi_inductance_model() -> None:
@@ -947,8 +1003,20 @@ def test_coupled_reference_backend_solves_fixture_and_returns_basis_quantities()
     os.environ.get("BLAB_RUN_COUPLED_REFERENCE") != "1",
     reason="Set BLAB_RUN_COUPLED_REFERENCE=1 to run the mixed prescribed-source integration.",
 )
-def test_coupled_reference_backend_solves_mixed_fem_and_bem_prescribed_sources() -> None:
-    compiled = PhysicalSystemCompiler().compile(_mixed_prescribed_fixture_system())
+@pytest.mark.parametrize("axial", [False, True])
+def test_coupled_reference_backend_solves_mixed_fem_and_bem_prescribed_sources(axial) -> None:
+    system = _mixed_prescribed_fixture_system()
+    if axial:
+        exterior = replace(
+            system.components[-1],
+            parameters={
+                "motion_profile": "rigid_translation",
+                "motion_axis": [1, 0, 1],
+                "boundary_motion_weights": {"boundary:exterior": 0.5},
+            },
+        )
+        system = replace(system, components=(*system.components[:-1], exterior))
+    compiled = PhysicalSystemCompiler().compile(system)
     request = SystemSolveRequest(
         compiled_system=compiled,
         frequencies_hz=(500.0,),
@@ -969,7 +1037,7 @@ def test_coupled_reference_backend_solves_mixed_fem_and_bem_prescribed_sources()
     (result,) = tuple(
         CoupledReferenceBackend(
             julia_executable=os.environ.get("BLAB_JULIA_EXE", "julia"),
-            persistent_worker=False,
+            persistent_worker=axial,
         )
         .create_system_session(request)
         .solve_stream()
@@ -987,6 +1055,18 @@ def test_coupled_reference_backend_solves_mixed_fem_and_bem_prescribed_sources()
     assert result.diagnostics["pressure_continuity_error"] < 1e-8
     assert result.diagnostics["flux_conservation_error"] < 1e-10
     assert result.diagnostics["all_bem_replay_error"] < 1e-8
+    if axial:
+        flipped = replace(exterior, parameters={**exterior.parameters, "motion_axis": [-1, 0, -1]})
+        flipped_system = replace(system, components=(*system.components[:-1], flipped))
+        flipped_request = replace(request, compiled_system=PhysicalSystemCompiler().compile(flipped_system))
+        (flipped_result,) = tuple(
+            CoupledReferenceBackend(julia_executable=os.environ.get("BLAB_JULIA_EXE", "julia"), persistent_worker=axial)
+            .create_system_session(flipped_request)
+            .solve_stream()
+        )
+        for original, reversed_axis in zip(result.quantities, flipped_result.quantities):
+            np.testing.assert_allclose(reversed_axis.values[0], original.values[0], rtol=1e-8, atol=1e-9)
+            np.testing.assert_allclose(reversed_axis.values[1], -original.values[1], rtol=1e-8, atol=1e-9)
 
 
 @pytest.mark.parametrize(

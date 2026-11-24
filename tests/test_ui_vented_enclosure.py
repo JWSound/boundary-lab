@@ -9,10 +9,9 @@ from test_vented_enclosure_generator import PROVIDER
 from test_vented_enclosure_generator import plugin as plugin
 
 
-def test_bundled_plugin_is_enabled_once_and_keeps_existing_default():
+def test_bundled_plugin_is_enabled_once():
     settings = MemorySettings({"providers/default": "ath", "providers/enabled": ["custom.plugin", {}]})
     preferences = load_gui_preferences(settings)
-    assert preferences.default_geometry_provider == "ath"
     assert preferences.enabled_geometry_providers == ("custom.plugin", PROVIDER)
     preferences.enabled_geometry_providers = ("custom.plugin",)
     save_gui_preferences(settings, preferences)
@@ -22,8 +21,7 @@ def test_bundled_plugin_is_enabled_once_and_keeps_existing_default():
 def test_slider_editor_uses_host_revisions_and_busy_state(main_window, plugin, monkeypatch, qapp):
     catalog, _, _ = plugin
     monkeypatch.setattr(catalog_module, "_catalog", catalog)
-    main_window.preferences.default_geometry_provider = PROVIDER
-    main_window.add_generator_document()
+    main_window.add_generator_document(PROVIDER)
     document = main_window.active_generator_document()
     editor, host = main_window._provider_editors[document.id]
     assert document.mesh_scale_factor == 1
@@ -57,8 +55,7 @@ def test_generate_from_dock_accepts_coupled_assembly(main_window, plugin, monkey
     monkeypatch.setattr(geometry_workflow, "GENERATED_GEOMETRY_ROOT", tmp_path)
     errors = []
     monkeypatch.setattr(main_window, "show_error", lambda *args: errors.append(args))
-    main_window.preferences.default_geometry_provider = PROVIDER
-    main_window.add_generator_document()
+    main_window.add_generator_document(PROVIDER)
     document = main_window.active_generator_document()
     editor, host = main_window._provider_editors[document.id]
     host.generate(expected_revision=host.snapshot().revision)

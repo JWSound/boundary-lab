@@ -9,6 +9,7 @@ import numpy as np
 from blab.channel_synthesis import complex_reference_pressure
 from blab.live import LiveSolveDataset
 from blab.phasor import solver_phase_deg
+from blab.polar_channels import finite_pressure_spl
 
 
 def export_polar_text_files(
@@ -19,18 +20,34 @@ def export_polar_text_files(
     relative_phase: bool = True,
     planes: tuple[str, ...] = ("H", "V"),
     reference_angles_deg: dict[str, float] | None = None,
+    selected_channels: frozenset[str] | None = None,
 ) -> list[Path]:
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    freqs, angles, horizontal, vertical = dataset.as_polar_export_arrays()
+    selected_complex = None
+    if selected_channels is not None:
+        basis = dataset.polar_channel_basis()
+        if basis is None:
+            raise ValueError("Channel selection requires channel-basis pressure data.")
+        selected_complex = basis.sum(selected_channels)
+        freqs, angles = basis.freq_hz, basis.angle_deg
+        horizontal, vertical = (finite_pressure_spl(pressure) for pressure in selected_complex)
+        reference = horizontal[:, int(np.argmin(np.abs(angles)))].copy()
+        horizontal = horizontal - reference[:, np.newaxis]
+        vertical = vertical - reference[:, np.newaxis]
+    else:
+        freqs, angles, horizontal, vertical = dataset.as_polar_export_arrays()
     horizontal_phase = None
     vertical_phase = None
     requested_planes = tuple(str(value).upper() for value in planes)
     if not requested_planes or any(value not in {"H", "V"} for value in requested_planes):
         raise ValueError("Polar export planes must contain H, V, or both.")
     if include_phase and dataset.supports_channel_resynthesis:
-        _, _, horizontal_complex, vertical_complex = dataset.as_complex_polar_export_arrays()
+        if selected_complex is None:
+            _, _, horizontal_complex, vertical_complex = dataset.as_complex_polar_export_arrays()
+        else:
+            horizontal_complex, vertical_complex = selected_complex
         horizontal_phase = _polar_phase_deg(
             horizontal_complex,
             angles,

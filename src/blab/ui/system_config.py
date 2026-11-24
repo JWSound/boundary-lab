@@ -7,7 +7,7 @@ from pathlib import Path
 
 import meshio
 import numpy as np
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QDoubleSpinBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -105,6 +106,7 @@ class SystemConfigResult:
     component_channel_by_id: dict[str, str]
     mesh_file_overrides_by_name: dict[str, str] = field(default_factory=dict)
     stitch_exterior_meshes: bool = False
+    stitch_tolerance_mm: float = 2.0
 
 
 @dataclass(frozen=True)
@@ -208,6 +210,7 @@ class SystemConfigDialog(QDialog):
     """Edit regions, boundaries, inferred interfaces, and physical components."""
 
     systemApplied = Signal(object)
+    boundarySelectionChanged = Signal(object)
 
     def __init__(
         self,
@@ -234,7 +237,6 @@ class SystemConfigDialog(QDialog):
         self._channel_names = channel_names or ("main",)
         self._component_channel_by_id = dict(component_channel_by_id or {})
         self._stitch_exterior_meshes = bool(stitch_exterior_meshes)
-        self._stitch_tolerance_mm = stitch_tolerance_mm
         self._collected_component_channels: dict[str, str] = {}
         self._mesh_file_overrides_by_name: dict[str, str] = {}
         self._interface_status_by_id: dict[str, str] = {}
@@ -297,7 +299,7 @@ class SystemConfigDialog(QDialog):
         self.tabs.addTab(self.components_tab, "Components")
         self.tabs.currentChanged.connect(self._on_tab_changed)
 
-        self._build_regions_tab()
+        self._build_regions_tab(stitch_tolerance_mm)
         self._build_boundaries_tab()
         self._build_interfaces_tab()
         self._build_components_tab()
@@ -321,7 +323,7 @@ class SystemConfigDialog(QDialog):
         layout.addWidget(buttons)
         self.resize(980, 560)
 
-    def _build_regions_tab(self) -> None:
+    def _build_regions_tab(self, stitch_tolerance_mm: float) -> None:
         self.regions_table = QTableWidget(0, 5)
         self.regions_table.setHorizontalHeaderLabels(["Name", "Type", "Mesh", "Volume Group", "FEM Bulk Loss Factor"])
         self.regions_table.verticalHeader().setVisible(False)
@@ -345,6 +347,20 @@ class SystemConfigDialog(QDialog):
         self.stitch_exterior_meshes_check.toggled.connect(self._invalidate_identified_interfaces)
         row.addSpacing(16)
         row.addWidget(self.stitch_exterior_meshes_check)
+        tolerance_label = QLabel("Stitch tolerance")
+        self.stitch_tolerance_spin = QDoubleSpinBox()
+        self.stitch_tolerance_spin.setDecimals(3)
+        self.stitch_tolerance_spin.setRange(0.001, 1000.0)
+        self.stitch_tolerance_spin.setSingleStep(0.5)
+        self.stitch_tolerance_spin.setKeyboardTracking(False)
+        self.stitch_tolerance_spin.setSuffix(" mm")
+        self.stitch_tolerance_spin.setValue(stitch_tolerance_mm)
+        tolerance_label.setBuddy(self.stitch_tolerance_spin)
+        for widget in (tolerance_label, self.stitch_tolerance_spin):
+            row.addWidget(widget)
+            widget.setVisible(self.stitch_exterior_meshes_check.isChecked())
+            self.stitch_exterior_meshes_check.toggled.connect(widget.setVisible)
+        self.stitch_tolerance_spin.valueChanged.connect(self._invalidate_identified_interfaces)
         row.addStretch(1)
         layout = QVBoxLayout(self.regions_tab)
         layout.addWidget(self.regions_table)
@@ -357,6 +373,9 @@ class SystemConfigDialog(QDialog):
         )
         self.boundaries_table.verticalHeader().setVisible(False)
         self.boundaries_table.setAlternatingRowColors(True)
+        self.boundaries_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.boundaries_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.boundaries_table.itemSelectionChanged.connect(self._notify_boundary_selection)
         self.boundaries_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.boundaries_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         self.boundaries_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
@@ -638,6 +657,29 @@ class SystemConfigDialog(QDialog):
         elif self.tabs.widget(index) is self.components_tab:
             self._refresh_components_boundary_choices()
 
+        self._notify_boundary_selection()
+
+    def eventFilter(self, editor, event):
+        # Embedded controls receive clicks directly, bypassing the table's row selection.
+        if event.type() in (QEvent.Type.MouseButtonPress, QEvent.Type.FocusIn):
+            table = self.boundaries_table
+            if editor.parent() is table.viewport():
+                index = table.indexAt(editor.geometry().center())
+                if index.isValid():
+                    table.setCurrentCell(index.row(), index.column())
+        return super().eventFilter(editor, event)
+
+    def _notify_boundary_selection(self) -> None:
+        rows = self.boundaries_table.selectionModel().selectedRows()
+        surface = None
+        if rows and self.tabs.currentWidget() is self.boundaries_tab:
+            row = rows[0].row()
+            mesh = self.boundaries_table.item(row, 1)
+            group = self.boundaries_table.item(row, 2)
+            if mesh is not None and group is not None:
+                surface = (mesh.text(), group.text())
+        self.boundarySelectionChanged.emit(surface)
+
     def _current_boundary_assignments(self) -> dict[tuple[str, str, str], tuple[str, BoundaryKind | None, dict]]:
         assignments = {}
         for row in range(self.boundaries_table.rowCount()):
@@ -759,6 +801,8 @@ class SystemConfigDialog(QDialog):
         )
         impedance_button.setProperty("thermoviscous_combo", thermoviscous_combo)
         self.boundaries_table.setCellWidget(row, 5, thermoviscous_combo)
+        for editor in (combo, impedance_button, thermoviscous_combo):
+            editor.installEventFilter(self)
         thermoviscous_combo.currentIndexChanged.connect(
             lambda _index, button=impedance_button, loss=thermoviscous_combo: self._store_thermoviscous_selection(
                 button, loss
@@ -882,7 +926,7 @@ class SystemConfigDialog(QDialog):
                         boundaries=boundaries,
                         interfaces=tuple(self._interfaces),
                     ),
-                    stitch_tolerance_mm=self._stitch_tolerance_mm,
+                    stitch_tolerance_mm=self.stitch_tolerance_spin.value(),
                     symmetry_mode=self._symmetry_mode,
                     output_root=self._interface_output_root,
                     identify_interfaces=True,
@@ -1546,6 +1590,7 @@ class SystemConfigDialog(QDialog):
             mesh_cache=self._motion_axis_mesh_cache,
             projected_geometry_cache=self._projected_area_geometry_cache,
             exterior_only=not any(region.kind == AcousticRegionKind.BOUNDED_AIR for region in _regions),
+            coupled=any(region.kind == AcousticRegionKind.UNBOUNDED_AIR for region in _regions),
             parent=self,
         )
         if editor.exec() != QDialog.DialogCode.Accepted:
@@ -1838,12 +1883,12 @@ class SystemConfigDialog(QDialog):
         )
         self._refresh_component_symmetry_parameters(boundaries, resources)
         components, ports, component_channels = self._collect_components(boundaries)
-        if any(region.kind == AcousticRegionKind.BOUNDED_AIR for region in regions) and any(
+        if not any(region.kind == AcousticRegionKind.UNBOUNDED_AIR for region in regions) and any(
             component.kind == ComponentKind.IDEAL_VELOCITY_SOURCE
             and component.parameters.get("motion_profile") == "rigid_translation"
             for component in components
         ):
-            raise ValueError("Axial prescribed-velocity sources require an exterior-only BEM system.")
+            raise ValueError("Axial prescribed-velocity sources require an exterior BEM or coupled FEM/BEM system.")
         if not any(region.kind == AcousticRegionKind.BOUNDED_AIR for region in regions):
             unsupported = [
                 component.name for component in components if component.kind != ComponentKind.IDEAL_VELOCITY_SOURCE
@@ -1884,6 +1929,7 @@ class SystemConfigDialog(QDialog):
             component_channel_by_id=dict(self._collected_component_channels),
             mesh_file_overrides_by_name=dict(self._mesh_file_overrides_by_name),
             stitch_exterior_meshes=bool(self.stitch_exterior_meshes_check.isChecked()),
+            stitch_tolerance_mm=self.stitch_tolerance_spin.value(),
         )
 
     def apply(self) -> bool:

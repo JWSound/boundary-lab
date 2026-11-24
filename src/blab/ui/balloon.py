@@ -346,6 +346,15 @@ class BalloonPlotWindow(QMainWindow):
             f"QLabel {{background: {background};color: {text};padding-left: 8px;padding-right: 8px;}}"
         )
 
+    def set_presentation(self, min_db, max_db, polar_smoothing) -> None:
+        if (min_db, max_db, polar_smoothing) == (self._min_db, self._max_db, self._polar_smoothing):
+            return
+        self._min_db, self._max_db, self._polar_smoothing = min_db, max_db, polar_smoothing
+        self.radar_plot.set_range(min_db, max_db)
+        self._raw_balloon_signature = None
+        # The surface actor owns the color range used by VTK.
+        self._mesh_geometry_signature = None
+
     @Slot()
     def refresh_from_latest_results(self) -> None:
         if self._raw_balloon_data_provider is None:
@@ -1730,6 +1739,9 @@ class SliceRadarCanvas(FigureCanvas):
         self._min_db = float(min_db)
         self._max_db = float(max_db)
         self._draw_empty()
+
+    def set_range(self, min_db: float, max_db: float) -> None:
+        self._min_db, self._max_db = min_db, max_db
 
     def sizeHint(self) -> QSize:
         return QSize(235, 286)

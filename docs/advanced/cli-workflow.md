@@ -1,435 +1,85 @@
-# Advanced CLI Workflow
+# Boundary Lab CLI workflow
 
-### Drive-dependent desktop plots
+## Headless project workflow
 
-**Radiated SPL by Interface** shows each FEM-BEM interface's contribution at
-`(0, 0, observation_distance_m)`, on the project +Z axis. It uses the full
-spatial complex interface flux from the operating coupled solution and replays
-each contribution through the whole exterior BEM system, including cabinet
-scattering. It does not average the interface velocity or mask boundary pressure.
-These are contributions with the original coupled motion held fixed, not
-predictions of blocking or removing another opening. The curves are absolute
-SPL; channel voltage, gain, delay, polarity and DSP apply before taking magnitude.
+**Starting from a saved run?** Go directly to [inspect and query saved results](#inspect-and-query-saved-results). Starting from a `.blab.json` project? Choose the outputs you will need, validate the request, then solve.
 
-The **Combined** trace is the independently evaluated total pressure. For mixed
-designs, **Other exterior sources** groups directly radiating exterior components.
-Sum the complex contributions, excluding Combined, to reconstruct the total;
-adding their SPL values is not meaningful. The plot supports trace filtering,
-previous-solve comparison, image export, and tabular export of SPL, phase and
-complex pressure. Older results without the new quantity leave it unavailable.
+The following example runs the bundled sealed box at three frequencies. From the repository root, save this as `request.json`:
 
-The output `interface_radiated_pressure` has axes
-`(frequency, excitation, radiation_source, observation)` and units Pa. Metadata
-records source IDs/names, observation coordinates and decomposition method.
-Per-frequency diagnostics record the boundary-pressure reconstruction error. It requires an engine advertising that
-optional output. Replay adds one shared host exterior LU factorization per
-frequency and per-interface right-hand sides; it does not rerun the coupled FEM
-solve. This extra cost is absent when the output is not requested.
-
-Project observations include this on-axis output by default for coupled designs
-with interfaces. With `include_project_observations: false`, add
-`"interface_radiated_pressure"` to `retain` to request it explicitly, still at
-the project's on-axis observation distance. Arbitrary probe points do not change
-that retained on-axis location. No full boundary-trace retention is required.
-
-Real Input Power shows signed RMS terminal power per voltage-only channel and
-its total, in watts. It combines the complex current response to all excitations
-before computing `Re(V * conj(I))`, including physical driver multiplicities.
-Negative channel power is retained. This is electrical input power, not solely
-voice-coil heating. Channel voltage and DSP changes update it without a new solve.
-
-Coupled projects with FEM-BEM interfaces request `interface_average_normal_velocity`.
-The canonical complex output has axes `(frequency, excitation, interface)` and
-units m/s. Metadata identifies each interface, its represented mesh area, and
-the bounded-region outward normal. The Interface Particle Velocity plot shows
-the magnitude of area-weighted complex normal velocity after channel synthesis,
-in RMS m/s. This is net average flow, not maximum local velocity or a port-noise
-limit. Area metadata refers to the symmetry-reduced mesh patch; averaging is
-unchanged by identical symmetry replication.
-
-Both plots support trace filtering, previous-solve comparisons, image export,
-and tabular export. Older results without the new quantity leave interface
-velocity unavailable. This output requires a BEAT worker advertising
-`interface_average_normal_velocity` in `optional_output_quantities`; the pinned
-BEAT Engine 0.4.0 release includes this capability.
-Headless artifacts retain independent complex bases without GUI processing.
-
-Boundary Lab still includes command-line tools for mesh cleaning, solving, data preparation, and static plot generation. The GUI is the recommended entry point for normal use.
-
-## Headless Project Workflow
-
-The project CLI loads a complete `.blab.json` physical system and runs the same
-BEAT Engine physical-system path used by the desktop application. It supports
-exterior BEM, interior FEM, and coupled FEM-BEM-LEM projects without opening Qt.
-
-Validate a project before starting an expensive solve:
-
-```bash
-blab project validate examples/Simple_Sealed/simple_sealed.blab.json --json
+```json
+{"schema_version": 1, "frequencies_hz": [400, 500, 630]}
 ```
 
-Validation migrates the project schema, resolves paths relative to the project,
-loads and compiles all meshes and physical groups, checks backend capabilities,
-and reports the solve kind, assumptions, mesh hashes, excitations, outputs, and
-frequency range. It does not launch Julia or assemble solver matrices.
-
-Run the project using its saved frequency, polar, sphere, symmetry, channel, and
-observation-plane settings:
-
 ```bash
-blab project solve speaker.blab.json --backend beat_cpu --output runs/speaker-check
+blab project validate examples/Simple_Sealed/simple_sealed.blab.json --request request.json --backend beat_cpu --json
+blab project solve examples/Simple_Sealed/simple_sealed.blab.json --request request.json --backend beat_cpu --events ndjson --output runs/sealed-check
+blab results inspect runs/sealed-check
+blab results report runs/sealed-check on-axis-frequency-response
 ```
 
-When `stitch_exterior_meshes` is enabled, GUI preview, Build/Identify Interfaces,
-mesh reload, and GUI/headless solve preparation use the same exterior-region
-assembly. Assign every part to be stitched (including generated waveguides) to
-the exterior region in System. Enabled assets outside that region are not
-implicitly included, and FEM volume meshes are never stitched.
+Check validation's `solve_kind`, `backend_id`, frequency range, excitation IDs and requested outputs before solving. Use the same request and backend for both commands. Mesh paths resolve relative to the project. The output directory must be new. NDJSON emits one event per line, including completed frequencies and terminal status.
 
-Preparation transforms exterior parts to project coordinates, stitches them
-using `project_preferences.stitch_tolerance_mm`, and then conforms configured
-interfaces to the authoritative FEM facets. Application interface construction
-allows up to 0.55 mm of geometry deviation when rebuilding an interface. This
-allowance is separate from exterior stitching tolerance and does not relax the
-final FEM-to-BEM coordinate/connectivity checks. Closure is checked on the assembled
-exterior, allowing edges on active symmetry planes. Intentional cutouts may be
-open in source assets but must be closed by the assembly. Missing parts or
-unmatched seams still fail validation.
-
-Derived meshes and preparation manifests are written under `runs/`; source
-assets, FEM connectivity, component IDs, excitation ports, and channel assignments
-remain intact. Manifests record source hashes, transforms, stitch tolerance,
-symmetry, and physical-group mappings. The old all-enabled-mesh stitching and
-conversion through legacy radiator inputs have been retired. Saved legacy
-radiator assignments remain readable for project migration.
-
-The default `--backend beat_auto` always selects a BEAT Engine backend. It probes
-the configured Julia CUDA environment and uses `beat_cuda` when CUDA is
-functional; otherwise it falls back to `beat_cpu`. Use an explicit
-`--backend beat_cpu`, `--backend beat_cuda`, or `--backend beat_rocm` to disable
-automatic selection. `beat_cpu` uses the ordinary CPU path for exterior-only
-projects, sparse UMFPACK pressure FEM for interior-only projects, and exact FEM
-interface condensation for coupled production projects.
-The former `beat_cpu_condensed` ID remains a compatibility alias for `beat_cpu`.
-`--julia-executable` and `--julia-threads` select the Julia installation and
-thread count. The output directory must not already exist, which prevents an
-agent from accidentally overwriting a previous run.
-
-For machine-readable progress, request newline-delimited JSON events:
-
-```bash
-blab project solve speaker.blab.json --request diagnosis.json --events ndjson
-```
+Omit `--request` to use the project's saved sweep and observations. Omit `--backend` for automatic selection, which can launch Julia to probe CUDA and falls back to CPU. Explicit `beat_cpu` skips that probe.
 
 ### Solve request overlays
 
-A request overlay changes one experiment without modifying the project. All
-coordinates use the project's meter-based global coordinate frame. For example:
+Choose inputs **before** the solve according to the report you want afterward. Overlay coordinates are in project metres (+Z forward).
+
+| Analysis needed | What to request |
+| --- | --- |
+| On-axis response, isobars, group delay, Spinorama | Keep project observations (default). Group delay needs at least three distinct frequencies. |
+| Balloon or spherical Spinorama | Also enable spherical sampling in the project. |
+| Saved channel or system response | Include every excitation port assigned to that response. Keeping all ports is the default. Saved flat-target correction needs horizontal polar pressure. |
+| Pressure at known exterior points | Add named `probes`. For example, `"probes": [{"id":"front","coordinate_frame":"project","points_m":[[0,0,1]]}]`. |
+| Plane positioned after solving | Set `retain` to `["fem_nodal_pressure"]` for interior, `["bem_boundary_traces"]` for exterior, or both for combined. Interior-only solves retain nodal pressure automatically. Fields increase artifact size. |
+| On-axis contribution from each coupled interface | Keep project observations, or explicitly retain `interface_radiated_pressure` when `include_project_observations` is false. |
+
+For a sweep, replace `frequencies_hz` with `"frequency_sweep": {"min_hz":20,"max_hz":500,"count":100,"spacing":"log"}`. Spacing may also be `linear`. To restrict the basis, supply `excitation_port_ids` from validation. For a probe-only exterior experiment, `"include_project_observations": false` omits the saved polar and sphere samples.
+
+### Inspect and query saved results
+
+`blab results inspect RUN` lists status, completion mask, manifest frequencies, excitation-to-channel mapping, quantity IDs, axes, units, domains and saved planes. Use those IDs for queries. Frequencies are exact manifest samples. An interrupted run can still supply its committed frequencies.
+
+| Question | Command for the example run |
+| --- | --- |
+| What happened at one frequency? | `blab results inspect runs/sealed-check --diagnostics 500` |
+| Which index is the angle I want? | `blab results domain runs/sealed-check observation:horizontal-polar angle_deg` |
+| What is the complex pressure for each excitation there? | `blab results query runs/sealed-check acoustic:pressure:horizontal-polar --frequency 500 --index observation 180` |
+| What is the saved system SPL at that index across the sweep? | `blab results query runs/sealed-check acoustic:pressure:horizontal-polar --response system --index observation 180 --view spl --format csv` |
+
+Index 180 is zero degrees on this example's 1° grid. Look up the index for other projects. Raw queries preserve complex excitation bases. Use `--excitation PORT_ID` for one basis or `--response channel:NAME` for a saved drive. Synthesis applies voltage where applicable, gain, polarity, delay and crossover before calculating SPL. If horizontal polar data is missing, `--uncorrected` explicitly omits flat-target correction and still applies channel DSP. JSON returns parallel real and imaginary arrays and uses null for undefined values.
+
+### Extract desktop plots and observation planes
+
+Use `blab results report RUN METRIC` for desktop quantities. JSON is the default. Add `--format svg` for a figure. `blab results report --help` lists the full catalog. [Desktop plot definitions](../User%20Guide.md#plot-views)
+
+- **Drive and limits.** `peak-excursion` gives one-way peak mm. `maximum-spl` needs on-axis pressure, diaphragm velocity and saved Xmax/Pmax ratings on a voltage-only channel. `normalized-impedance` reports complex acoustic load divided by ρcSd. For terminal quantities use `electrical-impedance` or `real-input-power`.
+- **Directivity.** Use `spinorama --spherical` for spherical sound power. Select one frequency for a `balloon` SVG. Isobar frequency coordinates describe the interpolated plot grid.
+- **Interfaces.** `interface-velocity` gives RMS area-averaged normal velocity. For `interface-radiation`, sum complex source pressures and compare with the independent Combined trace.
+
+For a plane, use an ID from `inspect` (`--plane-id ID`) or supply geometry in a JSON file. For example, save the following as `plane.json` and use a run with the corresponding retained fields:
 
 ```json
-{
-  "schema_version": 1,
-  "frequencies_hz": [35.5, 40.0, 45.0, 50.0, 56.0, 63.0],
-  "excitation_port_ids": ["excitation:woofer"],
-  "include_project_observations": false,
-  "probes": [
-    {
-      "id": "farfield_on_axis",
-      "coordinate_frame": "project",
-      "points_m": [[0.0, 0.0, 3.0]]
-    },
-    {
-      "id": "port_nearfield",
-      "coordinate_frame": "project",
-      "points_m": [[0.18, -0.12, 0.03]]
-    }
-  ],
-  "retain": ["bem_boundary_traces", "fem_nodal_pressure"],
-  "solver_options": {
-    "quadrature_order": 4,
-    "singular_order": 4
-  }
-}
+{"id":"cross-section","type":"combined","center_m":[0,0,-0.1],"orientation_wxyz":[1,0,0,0],"width_m":0.5,"height_m":0.3,"resolution_m":0.025,"display":"spl"}
 ```
 
-`frequency_sweep` may replace `frequencies_hz`:
-
-```json
-{
-  "schema_version": 1,
-  "frequency_sweep": {
-    "min_hz": 20,
-    "max_hz": 500,
-    "count": 100,
-    "spacing": "log"
-  }
-}
+```bash
+blab results plane RUN --plane-file plane.json --frequency 500
 ```
 
-Supported `retain` entries are `bem_boundary_pressure`,
-`bem_boundary_neumann`, `bem_boundary_traces` (both BEM traces), and
-`fem_nodal_pressure`. Retaining fields can substantially increase solve output.
-Complex results remain separated by excitation port; the headless path does not
-collapse them into synthesized GUI channels.
-
-Exterior-only CUDA and Metal solves select direct Burton–Miller system
-assembly. The engine assembles the dense system and excitation right-hand sides
-on the GPU without materializing the four boundary-operator matrices, and
-shares one pivoted LU factorization across all excitations at each frequency.
-Metal factorizes on the host. CPU and ROCm retain operator-matrix assembly. Result diagnostics record `burton_miller_assembly`
-and `factorization_count`.
-
-For numerical or performance comparisons, select the previous CUDA or Metal path in a
-request overlay with `"solver_options": {"burton_miller_assembly":
-"operator_matrices"}`. This option applies to exterior-only solving.
-
-Coupled CUDA solves without full-matrix diagnostics default to combined
-Burton–Miller A/C assembly, sparse interface projection, and fused symmetry
-images. To compare with individual operators, use `"solver_options":
-{"coupled_bem_assembly": "operators"}`. `coupled_bem_image_fusion: false`
-keeps separate image launches. `coupled_bem_max_registers` defaults to `0`
-(compiler default); values from 32 through 255 cap the fused kernel. A cap of
-160 was beneficial on the RTX 2080 Ti benchmark, but is not a universal default.
-Frequency diagnostics record the effective assembly mode, fusion, and cap.
-Full-matrix diagnostics use individual operators; CPU and ROCm retain their
-existing assembly paths. See [Coupled Solver](../Coupled%20Solver.md).
-
-Interior-only projects do not accept exterior point probes or retained BEM
-traces. Their FEM nodal pressure is retained automatically and can drive
-Interior observation planes.
-
-In the plane properties window, **Acoustic Flow Arrows** displays equally spaced
-in-plane arrows inside the FEM volume. With animation off, direction and length
-show active acoustic intensity, `Re(p * conjugate(v))`, in W/m^2 (RMS phasors).
-With **Animate Cycle** enabled, they show instantaneous in-plane particle velocity,
-`sqrt(2) * Re(v * exp(i theta))`, in m/s. Normal-to-plane motion is excluded.
-Standing waves can show strong animated motion with little static intensity.
-These are linear acoustic fields, not streaming or turbulent flow.
-
-**Arrow density** controls anchors across the longer plane side (5 to 60), with
-equal physical spacing in both directions. Anchors outside the FEM volume are
-omitted. Length and colour scale automatically for the selected plane, frequency
-and response; the velocity scale stays fixed through each animation cycle.
-The separate **Instantaneous velocity scale** and **Active intensity scale**
-controls can override Automatic with a fixed full-scale magnitude in m/s or W/m^2.
-This sets both the maximum arrow length and the top of the colour legend; larger
-magnitudes saturate. Both settings are saved with the plane.
-The legend gives the physical scale. Density changes and animation reuse retained
-complex results and do not launch another solve. P1 fields use constant element
-gradients; P2 fields use all ten pressure nodes and evaluate gradients at each
-anchor. Increasing density does not refine the underlying FEM solution.
-
-Plane properties show controls only for the selected display and rendering mode;
-hidden settings retain their values. Flow arrows show the intensity scale while
-static and the instantaneous velocity scale while animated. Resolution is hidden
-for arrows and Element Field, and playback speed appears only during playback.
-
-SPL supports an automatic 60 dB range below the plane maximum or manual minimum
-and maximum values. Normalized SPL exposes its range below 0 dB (40 dB by default).
-Particle Velocity Magnitude supports an automatic maximum or a manual maximum
-in m/s instead of a fixed 35 m/s colour limit. These settings are saved per plane.
-Automatic velocity scaling remains constant over each cycle.
-
-**Animate Cycle** is available for Real Pressure, Imaginary Pressure, Particle
-Velocity Magnitude, and Acoustic Flow Arrows. Selecting SPL, Normalized SPL, or
-Phase stops cycle playback and hides its controls; frequency sweeping remains
-available. Pressure and scalar-speed animations convert RMS phasors to physical
-instantaneous quantities with `sqrt(2) * Re(P * exp(i theta))`, consistent with
-the velocity arrows. Static real/imaginary pressure and velocity magnitudes
-continue to use the retained RMS phasors.
-
-Full-matrix `validation_diagnostics` may be enabled for monolithic coupled BEAT
-CPU solves. They cannot be combined with CPU, CUDA, or ROCm FEM static
-condensation; project validation rejects that combination before Julia starts.
+JSON returns project coordinates, region masks, complex pressure and particle velocity, SPL, phase and in-plane intensity. Use `shape_yx` to reshape the grid (X varies fastest) and `valid_mask` to exclude undefined points. Exterior and combined sampling require PyVista (`fields` or `gui` extra) and a local BEAT worker. CPU is the default. Use `--pressure-only` to skip exterior gradients. [Plane geometry and display conventions](../User%20Guide.md#observation-planes)
 
 ### Result artifact
 
-Each run is a self-describing directory:
+For provenance or a custom reader, open `manifest.json` first. It records project and mesh hashes, backend, solver options, phasor convention, completion mask and per-frequency file references. The run also contains the project snapshot, request, compiled system, domain coordinates/topology, and per-frequency JSON descriptors and NPZ arrays. [Run provenance](BEAT%20Run%20Provenance.md) · [Phasor convention](Phasor%20Convention.md)
 
-```text
-speaker-check/
-  manifest.json
-  project.snapshot.blab.json
-  request.json
-  compiled-system.json
-  domains.json
-  domains.npz
-  frequencies/
-    000000.json
-    000000.npz
-    ...
-```
+### Task-specific references
 
-`manifest.json` records the backend, solver options, phasor convention,
-frequency axis, excitation ids, completion mask, and run status. Each frequency
-is committed independently, so a failed or interrupted run retains completed
-complex quantities and diagnostics. The frequency JSON maps semantic quantity
-ids to arrays in the corresponding NPZ file. The result phasor convention is
-`exp(+i omega t)`.
-
-The current headless interface evaluates arbitrary exterior probe points declared
-before the solve. Retained BEM traces and FEM nodal fields provide the data needed
-for a future post-solve point-sampling command without repeating the system solve.
-
-Completed interior FEM runs can also be evaluated directly on named tube exits:
-
-```bash
-blab project evaluate-fem runs/manifold-check
-```
-
-By default the command selects compiled plane-wave termination groups matching
-`exit_*` and writes `fem-validation.json` into the run. It reconstructs the
-tagged Gmsh triangles and their adjacent tetrahedra, then reports integrated P1
-or P2 surface-mean pressure, plane-mode fraction, within-exit phase RMS,
-inter-exit phase spread, normal particle velocity, impedance, and local
-forward/backward wave estimates. For P2 results, pressure is integrated with
-quadratic face quadrature and velocity uses the quadratic tetrahedron gradient
-at each face centroid. The default gates are configurable with
-`--max-within-phase-rms-deg`, `--max-inter-phase-rms-deg`,
-`--max-inter-phase-deg`, and `--min-plane-mode-fraction`; repeat
-`--surface-pattern` to select a different set of termination groups.
-Use `--split-surface-entities` when one physical exit group contains separate
-Gmsh faces, such as a 2x2 septated bundle. The report then evaluates each child
-face independently while preserving its parent exit name as a prefix. Four-face
-groups are named by geometric row and then column, avoiding mesh-dependent
-left/right swaps from microscopic centroid noise.
-
-Interior quadratic FEM accepts matching Gmsh `tetra10` volume cells and
-`triangle6` boundary faces. The result artifact preserves both the corner
-topology and full ten-node connectivity, and records `element_order` in the FEM
-domain metadata. Mixed P1/P2 bounded regions and mismatched volume/boundary
-orders are rejected. The current coupled FEM-BEM path remains P1-only; P2 is
-supported for pure interior FEM solves.
-
-The evaluator verifies the source mesh SHA-256 before reconstructing named
-surfaces. Keep the exact `.msh` used for the solve available at its recorded
-path; replacing it makes the run intentionally unevaluable. The report also
-records tetrahedron-edge statistics and applies a default minimum of eight
-points per wavelength at the 95th-percentile edge and four at the maximum edge.
-Override those screening gates with `--min-points-per-wavelength-p95` and
-`--min-points-per-wavelength-maximum-edge` only when documenting a deliberate
-mesh-convergence policy.
-
-Compare two reports with common frequencies, excitations, and surface names
-before accepting a mesh. Frequencies present in only one report are listed but
-do not prevent comparison of the shared subset:
-
-```bash
-blab project compare-fem runs/coarse/fem-validation-children.json runs/fine/fem-validation-children.json
-```
-
-The comparison removes common complex gain and phase, then gates the
-area-weighted surface-phase delta, normalized amplitude delta, and plane-mode
-fraction delta. This catches accumulated P1 dispersion that a local
-points-per-wavelength count can miss in long routed passages.
-
-Interior P1 FEM accepts an experimental `fem_consistent_mass_weight` solver
-option between zero (fully row-sum lumped) and one (standard consistent mass,
-the default). Any non-default value must be justified by a convergence report;
-mass blending changes numerical dispersion and is not itself evidence of
-accuracy.
-
-### Speaker package solve and export
-
-Create a complex-pattern level 1 package directly from a project:
-
-```bash
-blab project export-speaker speaker.blab.json --output speaker.blabsp --fidelity pattern
-```
-
-Create a level 2 package with fixed distributed BEM sources:
-
-```bash
-blab project export-speaker speaker.blab.json --output speaker.blabsp --fidelity fixed
-```
-
-Estimate Level 3 storage and per-frequency working sets before solving:
-
-```bash
-blab project speaker-preflight speaker.blab.json --json
-```
-
-Create a level 3 package with the rank-reduced interior model used for mutual
-coupling:
-
-```bash
-blab project export-speaker speaker.blab.json --output speaker.blabsp --fidelity coupled
-```
-
-Level 3 requires a coupled FEM-BEM physical system and exports a parity
-Petrov–Galerkin ROM. It temporarily expands X/XY symmetry to a full-domain
-system before compilation; the project file is not changed. The ROM preserves the source project's
-symmetry: full-domain projects use one general sector, X-symmetric projects use
-even-X and odd-X sectors, and XY-symmetric projects use four parity sectors.
-Exact-system models remain internal validation oracles and are not offered as
-user-facing speaker-package exports.
-
-The command accepts the same `--request`, `--backend`, `--julia-executable`,
-`--julia-threads`, and `--events` controls as the headless solve. It forces the
-spherical pressure and boundary traces required by the selected fidelity and
-publishes the archive atomically only after every requested frequency has
-completed.
-
-## Legacy Mesh Workflow
-
-The source-model `blab solve` command and legacy server protocol are retired. Use the
-headless project workflow above for new solves. Mesh cleaning and the
-`blab prepare` / `blab plot` commands remain available for historical result files.
-
-The physical-system server is available through `blab server` and
-`blab project solve --server-url http://127.0.0.1:8765`. The server chooses its BEAT
-backend; remote observation planes remain unsupported. Private-network mode
-permits LAN HTTP, while hosted mode requires an access key behind provider HTTPS,
-a VPN, or SSH. Localhost remains the default. See the
-[server setup guide](../Boundary%20Lab%20Server.md) for connection instructions and
-the [server developer reference](boundary-lab-server_advanced.md) for the remote job contract.
-
-## Clean A Mesh
-
-```bash
-blab clean input.msh output_clean.msh --merge-tol 1e-9
-```
-
-This merges coincident vertices, removes degenerate or duplicate triangles, and writes Gmsh 2.2 format.
-
-The desktop Solve workflow also checks BEM surface meshes for nearly coincident
-vertices before preparing the solver. The warning lists the affected meshes and
-closest separations, and offers **Continue Anyway**, **Auto-repair**, or
-**Cancel Solve**. The screening tolerance scales with the mesh coordinates and
-single-precision resolution; a warning does not mean the solve will necessarily
-fail.
-
-Auto-repair uses the same surface cleaner with that tolerance, then checks for
-remaining near-coincident vertices, lost physical groups, and additional invalid
-edges. It updates an imported mesh's existing cleanup cache while preserving the
-source file. Generated meshes are repaired in memory for the current solve;
-regenerating the geometry restores the generator's output. FEM volume meshes are
-excluded from surface cleanup. Repair or preparation failures stop the solve and
-report the reason. Non-finite solver outputs are rejected rather than published
-as completed frequencies.
-
-## Prepare Visualization Data
-
-```bash
-blab prepare pressure_data_raw.npz pressure_data_formatted.npz --min-db -30 --max-db 0
-```
-
-This applies clipping, interpolation, normalization, and smoothing for the static plot pipeline.
-
-## Generate Static Plots
-
-```bash
-blab plot pressure_data_formatted.npz --output-dir .
-```
-
-This writes:
-
-- `horizontal_isobar.png`
-- `vertical_isobar.png`
-- `acoustic_impedance.png`
-
-## Notes
-
-The CLI path is useful for scripted exterior-BEM workflows and regression
-checks. It does not load `.blab.json` physical systems, run coupled FEM-BEM
-models, or expose the GUI's live plot behavior.
+| If you need to… | Start here |
+| --- | --- |
+| Diagnose invalid mesh assignments or FEM–BEM interfaces | [Physical system model](../Physical%20System%20Model.md) · [Interface preparation](../Inputs%20and%20Outputs.md#conforming-fem-and-bem-interfaces) |
+| Set numerical options or interpret solver diagnostics | [CPU operator assembly and quadrature](beat-engine-CPU.md#cpu-operator-assembly) · [CUDA assembly](beat-engine-CUDA.md) · [Coupled solver](../Coupled%20Solver.md) |
+| Evaluate interior exits or compare meshes | `blab project evaluate-fem RUN` needs the original mesh at its recorded path. Use `project compare-fem COARSE_REPORT FINE_REPORT` and read its JSON `passed` field. [Interior FEM](Interior%20FEM%20Solver.md) |
+| Submit to a server | `project solve --server-url URL` delegates backend selection to the server and omits saved observation planes. [Server setup](../Boundary%20Lab%20Server.md) |
+| Export a speaker package | `project export-speaker PROJECT --output speaker.blabsp` includes a continuous Level 1 pattern over the saved project band at every fidelity. Use `--fidelity coupled` for a continuous Level 3 interior or `--fidelity fixed` for sampled Level 2 sources. [Speaker packages](../Inputs%20and%20Outputs.md#exporting-speaker-packages) |
+| Clean a mesh or plot historical NPZ files | See `blab clean --help`, `blab prepare --help` and `blab plot --help`. |

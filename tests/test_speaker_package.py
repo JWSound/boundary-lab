@@ -149,6 +149,7 @@ def _solved_system(*, include_bem: bool = True, symmetry: str = "off") -> Solved
         assumptions=(),
     )
     return SolvedSystem(
+        speaker_pattern=_trained_pattern_snapshot() if include_bem else None,
         run_id="test-run",
         provenance=SolveProvenance(
             backend_id="beat_cpu",
@@ -248,8 +249,31 @@ def test_sampled_macro_representation_is_no_longer_supported() -> None:
         SpeakerPackageCoupledRepresentation.parse("sampled-macro")
 
 
-def test_level_one_archive_is_versioned_and_preserves_complex_pattern(tmp_path: Path) -> None:
+def _trained_pattern_snapshot():
+    from blab.adaptive_pattern import interpolate_pressure, train_pattern
+
     solved = _solved_system(include_bem=False)
+    sphere = solved.quantity(SPHERE_PRESSURE_ID)
+    delay = np.linalg.norm(solved.domains[SPHERE_DOMAIN_ID].coordinates["points_m"], axis=1) / 343
+    lo, hi = solved.frequencies_hz
+
+    def sample(frequencies):
+        return np.stack([interpolate_pressure(f, lo, hi, *sphere.values, delay) for f in frequencies])
+
+    knots, values, metadata = train_pattern((lo, hi), delay, sample)
+    mask = np.ones(len(knots), dtype=bool)
+    quantity = replace(sphere, values=values, available_frequency_mask=mask, metadata={"adaptive_pattern": metadata})
+    return replace(
+        solved,
+        frequencies_hz=knots,
+        completion_mask=mask,
+        diagnostics_by_frequency=({},) * len(knots),
+        quantities={sphere.id: quantity},
+    )
+
+
+def test_level_one_archive_is_versioned_and_preserves_complex_pattern(tmp_path: Path) -> None:
+    solved = _trained_pattern_snapshot()
     output = tmp_path / "speaker.blabsp"
 
     result = export_speaker_package(
@@ -262,7 +286,7 @@ def test_level_one_archive_is_versioned_and_preserves_complex_pattern(tmp_path: 
     assert manifest["schema"] == "boundary-lab-speaker-package"
     assert manifest["schema_version"] == 1
     assert manifest["fidelity_level"] == 1
-    assert manifest["capabilities"] == ["complex_spherical_pattern"]
+    assert manifest["capabilities"] == ["complex_spherical_pattern", "continuous_complex_spherical_pattern"]
     assert manifest["excitation_port_ids"] == ["port:a", "port:b"]
     assert manifest["phasor_convention"] == "exp(+i omega t)"
     assert manifest["coordinate_system"]["forward_axis"] == "+Y"
@@ -284,7 +308,11 @@ def test_level_two_contains_progressive_pattern_and_fixed_source_data(tmp_path: 
     )
 
     manifest = validate_speaker_package(output)
-    assert manifest["capabilities"] == ["complex_spherical_pattern", "fixed_distributed_sources"]
+    assert manifest["capabilities"] == [
+        "complex_spherical_pattern",
+        "continuous_complex_spherical_pattern",
+        "fixed_distributed_sources",
+    ]
     assert manifest["files"]["fixed_sources"]["pressure_space"] == "P1"
     assert manifest["files"]["fixed_sources"]["normal_derivative_space"] == "DP0"
     with zipfile.ZipFile(output) as archive:
@@ -346,7 +374,9 @@ def test_level_three_omits_reference_and_validates_legacy_extra(tmp_path: Path) 
     output = tmp_path / "speaker-rom.blabsp"
     export_speaker_package(
         _coupled_rom_solved_system(),
-        SpeakerPackageConfig(output, "Reduced speaker", SpeakerPackageFidelity.COUPLED),
+        SpeakerPackageConfig(
+            output, "Reduced speaker", SpeakerPackageFidelity.COUPLED, SpeakerPackageCoupledRepresentation.PARITY_ROM
+        ),
     )
     manifest = validate_speaker_package(output)
     assert "isolated_acoustic_impedance" not in manifest["files"]
@@ -492,15 +522,18 @@ def test_export_preserves_engine_execution_provenance(tmp_path: Path) -> None:
     }
     solved = replace(solved, provenance=replace(solved.provenance, engine_runs=(engine_run,)))
     output = tmp_path / "provenance.blabsp"
-    export_speaker_package(solved, SpeakerPackageConfig(output, "Test", SpeakerPackageFidelity.PATTERN))
+    export_speaker_package(solved, SpeakerPackageConfig(output, "Test", SpeakerPackageFidelity.FIXED_SOURCES))
     manifest = validate_speaker_package(output)
     assert manifest["provenance"]["engine_runs"] == [engine_run]
 
 
 def test_readiness_is_progressive_and_level_two_accepts_reduced_symmetry() -> None:
     level_one = _solved_system(include_bem=False)
-    assert speaker_package_issues(level_one, SpeakerPackageFidelity.PATTERN) == ()
+    assert [issue.code for issue in speaker_package_issues(level_one, SpeakerPackageFidelity.PATTERN)] == [
+        "missing_continuous_pattern"
+    ]
     assert {issue.code for issue in speaker_package_issues(level_one, SpeakerPackageFidelity.FIXED_SOURCES)} == {
+        "missing_continuous_pattern",
         "missing_bem_domain",
         "missing_bem_pressure",
         "missing_bem_neumann",
@@ -623,7 +656,7 @@ def test_level_two_xy_symmetry_is_materialized_before_package_rotation(tmp_path:
 
 
 def test_archive_paths_are_portable_and_atomic_failure_preserves_destination(tmp_path: Path, monkeypatch) -> None:
-    solved = _solved_system(include_bem=False)
+    solved = _trained_pattern_snapshot()
     output = tmp_path / "speaker.blabsp"
     output.write_bytes(b"old package")
     before = set(tmp_path.iterdir())
@@ -642,7 +675,7 @@ def test_archive_paths_are_portable_and_atomic_failure_preserves_destination(tmp
 
 
 def test_package_validator_reports_missing_payload(tmp_path: Path) -> None:
-    solved = _solved_system(include_bem=False)
+    solved = _trained_pattern_snapshot()
     good = tmp_path / "good.blabsp"
     broken = tmp_path / "broken.blabsp"
     export_speaker_package(solved, SpeakerPackageConfig(good, "Test speaker"))
@@ -704,6 +737,7 @@ def test_export_solve_preparation_forces_sphere_and_level_two_traces() -> None:
         fidelity="fixed",
         sphere_point_count=32,
         sphere_radius_m=2.0,
+        training_band_hz=(20, 500),
     )
 
     output_ids = {output.id for output in updated.request.outputs}
@@ -759,7 +793,152 @@ def test_parity_rom_preparation_preserves_source_x_symmetry(monkeypatch) -> None
         coupled_representation="parity-rom",
         sphere_point_count=32,
         sphere_radius_m=2.0,
+        training_band_hz=(20, 500),
     )
 
     assert updated.request.solver_options["symmetry"] == "off"
     assert updated.request.solver_options["speaker_rom"]["symmetry"] == "x"
+
+
+def test_continuous_level_three_uses_project_band_independently_of_sample_grid(tmp_path, monkeypatch):
+    solved = _solved_system()
+    band = [35.0, 1200.0]
+    prepared = PreparedSystemSolve(
+        request=SystemSolveRequest(
+            compiled_system=solved.compiled_system,
+            frequencies_hz=(100.0, 1000.0),
+            excitation_port_ids=solved.excitation_ids,
+            outputs=(),
+            solver_options={"symmetry": "off"},
+        ),
+        backend_id="beat_cpu",
+        solve_kind=PhysicalSolveKind.COUPLED_BEM_FEM,
+        polar_angle_deg=np.empty(0),
+        excitation_channel_names=np.empty(0),
+        excitation_component_names=np.empty(0),
+        horizontal_count=0,
+        vertical_count=0,
+        result_domains=tuple(solved.domains.values()),
+    )
+    monkeypatch.setattr(speaker_package_module, "validate_solve_plan", lambda _request: None)
+    prepared = prepare_speaker_package_solve(
+        prepared,
+        fidelity=3,
+        sphere_point_count=32,
+        sphere_radius_m=2,
+        training_band_hz=tuple(band),
+    )
+    request = prepared.request
+    assert request.solver_options["continuous_speaker_rom"]["band_hz"] == band
+    assert "speaker_rom" not in request.solver_options
+    assert not any(output.quantity.startswith("speaker_rom_") for output in request.outputs)
+    domain = solved.domains[BEM_BOUNDARY_DOMAIN_ID]
+    model = {
+        "metadata": {
+            "format": "continuous-speaker-v1",
+            "rank": 2,
+            "training": band,
+            "validation": {},
+            "phasor": "exp(+i omega t)",
+        },
+        "ports": list(solved.excitation_ids),
+        "band": band,
+        "geometry": {
+            "points": rotate_source_points(domain.coordinates["points_m"]).tolist(),
+            "triangles": domain.topology["triangles"].tolist(),
+        },
+    }
+    solved = replace(
+        solved,
+        provenance=replace(solved.provenance, solver_options=request.solver_options),
+        diagnostics_by_frequency=({}, {"continuous_speaker_rom": json.dumps(model)}),
+    )
+    boundary_calls = []
+    sphere = solved.quantity(SPHERE_PRESSURE_ID)
+
+    def direct(batch, **options):
+        outputs = {item.id for item in batch.request.outputs}
+        if outputs == {"ui:exterior-pressure"}:
+            assert "continuous_speaker_rom" not in batch.request.solver_options
+            frequencies = np.asarray(batch.request.frequencies_hz)
+            mask = np.ones(len(frequencies), dtype=bool)
+            phase = np.exp(-2j * np.pi * frequencies * 2 / 343)
+            pressure = sphere.values[0] * phase[:, None, None]
+            return replace(
+                solved,
+                speaker_pattern=None,
+                frequencies_hz=frequencies,
+                completion_mask=mask,
+                diagnostics_by_frequency=({},) * len(mask),
+                quantities={sphere.id: replace(sphere, values=pressure, available_frequency_mask=mask)},
+            )
+        assert outputs == {BEM_BOUNDARY_PRESSURE_ID, BEM_BOUNDARY_NEUMANN_ID}
+        assert batch.request.solver_options["continuous_speaker_rom"]["band_hz"] == band
+        boundary_calls.append(batch.request.frequencies_hz)
+        return replace(solved, quantities={key: solved.quantity(key) for key in outputs}, speaker_pattern=None)
+
+    monkeypatch.setattr(speaker_package_module, "_solve_package_batch", direct)
+    solved = speaker_package_module.solve_speaker_package_system(prepared)
+    assert boundary_calls == [(100, 1000)]
+    config = SpeakerPackageConfig(tmp_path / "continuous.blabsp", "continuous", SpeakerPackageFidelity.COUPLED)
+    export_speaker_package(solved, config)
+    manifest = validate_speaker_package(config.output_path)
+    assert manifest["fidelity_level"] == 3
+    assert manifest["frequencies_hz"] == [100, 1000]
+    assert manifest["files"]["coupled_model"]["frequency_band_hz"] == band
+    assert manifest["files"]["patterns"]["frequency_band_hz"] == band
+    with zipfile.ZipFile(config.output_path) as archive:
+        pattern = _read_npz(archive, manifest["files"]["patterns"]["path"])
+        np.testing.assert_allclose(pattern["frequencies_hz"], np.geomspace(*band, 17))
+        assert pattern["pressure_pa"].shape == (17, 2, 4)
+        fixed = _read_npz(archive, manifest["files"]["fixed_sources"]["path"])
+        assert fixed["pressure_pa"].shape[0] == 2
+    assert "parity_petrov_galerkin_rom" not in manifest["capabilities"]
+    before = config.output_path.read_bytes()
+    with pytest.raises(ValueError, match="no continuous"):
+        export_speaker_package(replace(solved, diagnostics_by_frequency=({}, {})), config)
+    assert config.output_path.read_bytes() == before
+
+
+def test_adaptive_level_one_archive_uses_the_project_band_and_keeps_complex_ports(tmp_path, monkeypatch):
+    solved = _solved_system(include_bem=False)
+    request = SystemSolveRequest(solved.compiled_system, (45.0, 110.0), solved.excitation_ids)
+    prepared = PreparedSystemSolve(
+        request,
+        "beat_cpu",
+        PhysicalSolveKind.EXTERIOR_BEM,
+        np.empty(0),
+        np.asarray(["a", "b"]),
+        np.asarray(["a", "b"]),
+        0,
+        0,
+        result_domains=tuple(solved.domains.values()),
+    )
+    sphere = solved.quantity(SPHERE_PRESSURE_ID)
+
+    def direct(batch, **options):
+        f = np.asarray(batch.request.frequencies_hz)
+        mask = np.ones(f.size, dtype=bool)
+        values = sphere.values[0] * np.exp(-2j * np.pi * f[:, None, None] * 2 / 343)
+        return replace(
+            solved,
+            frequencies_hz=f,
+            completion_mask=mask,
+            diagnostics_by_frequency=({},) * len(f),
+            quantities={sphere.id: replace(sphere, values=values, available_frequency_mask=mask)},
+        )
+
+    monkeypatch.setattr(speaker_package_module, "_solve_package_batch", direct)
+    trained = speaker_package_module.solve_speaker_package_system(replace(prepared, pattern_band_hz=(20, 500)))
+    path = tmp_path / "adaptive.blabsp"
+    export_speaker_package(trained, SpeakerPackageConfig(path, "Example"))
+    manifest = validate_speaker_package(path)
+    desc = manifest["files"]["patterns"]
+    assert desc["frequency_band_hz"] == [20, 500]
+    assert desc["direct_frequency_count"] == 25
+    assert desc["evaluator"] == "delay_compensated_linear_v1"
+    assert manifest["excitation_port_ids"] == list(solved.excitation_ids)
+    with zipfile.ZipFile(path) as archive:
+        samples = _read_npz(archive, desc["path"])
+        np.testing.assert_array_equal(samples["pressure_pa"], trained.quantity(sphere.id).values)
+        np.testing.assert_array_equal(samples["frequencies_hz"], trained.frequencies_hz)

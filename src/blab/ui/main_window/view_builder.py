@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import QSignalBlocker, Qt
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QDockWidget,
@@ -34,10 +34,6 @@ from blab.ui.main_window_widgets import (
     DockTitleBar,
 )
 from blab.ui.plot_marker import PlotMarkerOverlay
-from blab.ui.plots import (
-    frequency_to_slider_value,
-    slider_value_to_frequency,
-)
 
 
 def _framed_dock_content(widget: QWidget) -> QFrame:
@@ -113,6 +109,7 @@ class ViewBuilderMixin:
             )
             PlotMarkerOverlay(entry.widget, self.plot_marker)
             if entry.plot_id in {"horizontal_isobar", "vertical_isobar"}:
+                entry.widget.trace_visibility_changed.connect(self.refresh_polar_channel_selection)
                 capture_action = QAction("Capture Contours", self)
                 capture_action.setToolTip(f"Capture contours for {entry.title}")
                 capture_action.setEnabled(False)
@@ -176,6 +173,13 @@ class ViewBuilderMixin:
         view_menu.addAction(reset_layout_action)
 
         edit_menu = self.menuBar().addMenu("Edit")
+        self.project_configuration_action = edit_menu.addAction("Project Configuration...")
+        self.project_configuration_action.triggered.connect(self.open_project_configuration)
+        preferences_action = QAction("Preferences...", self)
+        preferences_action.setMenuRole(QAction.MenuRole.NoRole)
+        preferences_action.triggered.connect(self.open_preferences)
+        edit_menu.addAction(preferences_action)
+        edit_menu.addSeparator()
         self.generator_plugins_action = QAction("Generator Plugins...", self)
         self.generator_plugins_action.triggered.connect(self.open_generator_plugins)
         edit_menu.addAction(self.generator_plugins_action)
@@ -183,10 +187,6 @@ class ViewBuilderMixin:
             ath_setup_action = QAction("Ath Setup…", self)
             ath_setup_action.triggered.connect(self.open_ath_setup)
             edit_menu.addAction(ath_setup_action)
-        edit_menu.addSeparator()
-        preferences_action = QAction("Preferences", self)
-        preferences_action.triggered.connect(self.open_preferences)
-        edit_menu.addAction(preferences_action)
 
         about_menu = self.menuBar().addMenu("About")
         diagnostics_action = QAction("Diagnostic Info", self)
@@ -223,7 +223,18 @@ class ViewBuilderMixin:
         self.editor_panel = QWidget()
         editor_layout = QVBoxLayout(self.editor_panel)
         editor_layout.setContentsMargins(0, 0, 0, 0)
-        editor_layout.addWidget(self.editor_tabs)
+        tab_row = QHBoxLayout()
+        tab_row.setSpacing(2)
+        tab_row.addWidget(self.editor_tabs)
+        tab_row.addWidget(self.add_design_button)
+        tab_row.addStretch()
+        editor_layout.setSpacing(0)
+        editor_layout.addLayout(tab_row)
+        editor_layout.addWidget(self.editor_pages)
+        for key, offset in (("Ctrl+Tab", 1), ("Ctrl+Shift+Tab", -1)):
+            shortcut = QShortcut(QKeySequence(key), self.editor_panel)
+            shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            shortcut.activated.connect(lambda step=offset: self._cycle_design_tab(step))
 
         self.editor_container = QWidget()
         editor_container_layout = QHBoxLayout(self.editor_container)
@@ -273,6 +284,8 @@ class ViewBuilderMixin:
             if entry.plot_id in {"electrical_impedance", "on_axis_frequency_response"}:
                 tool_actions.extend((entry.widget.trace_filter_action, entry.widget.show_phase_action))
             elif entry.plot_id in {
+                "horizontal_isobar",
+                "vertical_isobar",
                 "acoustic_impedance",
                 "group_delay",
                 "transducer_excursion",
@@ -334,14 +347,11 @@ class ViewBuilderMixin:
         controls_layout.addWidget(self.system_config_button)
         controls_layout.addWidget(self.channel_config_button)
         controls_layout.addSpacing(20)
-        controls_layout.addWidget(QLabel("Min Hz"))
-        controls_layout.addWidget(self.freq_min_slider)
-        controls_layout.addWidget(self.freq_min_spin)
-        controls_layout.addWidget(QLabel("Max Hz"))
-        controls_layout.addWidget(self.freq_max_slider)
-        controls_layout.addWidget(self.freq_max_spin)
+        controls_layout.addWidget(QLabel("Frequency range"))
+        controls_layout.addWidget(self.frequency_control, 3)
         controls_layout.addWidget(QLabel("Frequencies"))
-        controls_layout.addWidget(self.freq_count_slider)
+        self.freq_count_slider.setMinimumWidth(120)
+        controls_layout.addWidget(self.freq_count_slider, 1)
         controls_layout.addWidget(self.freq_count_spin)
 
         central = QWidget()
@@ -361,31 +371,10 @@ class ViewBuilderMixin:
         self.system_config_button.clicked.connect(self.open_system_config)
         self.channel_config_button.clicked.connect(self.open_channel_config)
 
-        self.freq_min_slider.valueChanged.connect(
-            lambda value: self._sync_frequency_spin_from_slider(self.freq_min_spin, value)
-        )
-        self.freq_min_spin.valueChanged.connect(
-            lambda value: self._sync_frequency_slider_from_spin(self.freq_min_slider, value)
-        )
-        self.freq_max_slider.valueChanged.connect(
-            lambda value: self._sync_frequency_spin_from_slider(self.freq_max_spin, value)
-        )
-        self.freq_max_spin.valueChanged.connect(
-            lambda value: self._sync_frequency_slider_from_spin(self.freq_max_slider, value)
-        )
+        self.frequency_control.edited.connect(self._update_project_frequency)
         self.freq_count_slider.valueChanged.connect(self.freq_count_spin.setValue)
         self.freq_count_spin.valueChanged.connect(self.freq_count_slider.setValue)
-        self.freq_min_spin.valueChanged.connect(self._save_frequency_settings)
-        self.freq_max_spin.valueChanged.connect(self._save_frequency_settings)
-        self.freq_count_spin.valueChanged.connect(self._save_frequency_settings)
-
-    def _sync_frequency_spin_from_slider(self, spin: QSpinBox, slider_value: int) -> None:
-        with QSignalBlocker(spin):
-            spin.setValue(slider_value_to_frequency(slider_value))
-
-    def _sync_frequency_slider_from_spin(self, slider: QSlider, freq_hz: int) -> None:
-        with QSignalBlocker(slider):
-            slider.setValue(frequency_to_slider_value(freq_hz))
+        self.freq_count_spin.valueChanged.connect(self._update_project_frequency)
 
     def _make_slider(self, minimum: int, maximum: int, value: int) -> QSlider:
         slider = QSlider(Qt.Horizontal)
@@ -493,6 +482,13 @@ class ViewBuilderMixin:
     def choose_open_file(self, title: str, file_filter: str) -> Path | None:
         return self.file_dialogs.open_file(self, title, file_filter)
 
+    def choose_project_save(self, name, has_results, include_results):
+        return self.file_dialogs.save_project(self, name, has_results, include_results)
+
+    def restored_project_results(self):
+        self._refresh_channel_responses()
+        self.set_max_spl_available(bool(self.max_spl_channel_names()))
+
     def choose_save_file(self, title: str, file_filter: str, suggested_name: str) -> Path | None:
         return self.file_dialogs.save_file(self, title, file_filter, suggested_name)
 
@@ -504,6 +500,7 @@ class ViewBuilderMixin:
 
     def apply_workflow_controls(self, controls: WorkflowControls) -> None:
         preparing = self.preparations.active
+        self.project_configuration_action.setEnabled(controls.generate and not preparing)
         self.generator_plugins_action.setEnabled(controls.generate and not self.generator_plugins_busy())
         self.generate_button.setEnabled(controls.generate and not preparing)
         if controls.generate and not preparing:
@@ -563,27 +560,16 @@ class ViewBuilderMixin:
 
     def frequency_range(self) -> FrequencyRange:
         return FrequencyRange(
-            min_hz=int(self.freq_min_spin.value()),
-            max_hz=int(self.freq_max_spin.value()),
+            min_hz=int(self.frequency_control.minimum_spin.value()),
+            max_hz=int(self.frequency_control.maximum_spin.value()),
             count=int(self.freq_count_spin.value()),
         )
 
     def set_frequency_range(self, value: FrequencyRange) -> None:
-        controls = (
-            self.freq_min_spin,
-            self.freq_max_spin,
-            self.freq_count_spin,
-            self.freq_min_slider,
-            self.freq_max_slider,
-            self.freq_count_slider,
-        )
-        # Blocked so restoring a project's range does not look like the user
-        # editing it, which would re-save settings and invalidate the solve.
-        blockers = [QSignalBlocker(control) for control in controls]
-        self.freq_min_spin.setValue(value.min_hz)
-        self.freq_max_spin.setValue(value.max_hz)
+        self.frequency_control.set_range(value.min_hz, value.max_hz)
+        blockers = [QSignalBlocker(control) for control in (self.freq_count_spin, self.freq_count_slider)]
+        for control in (self.freq_count_spin, self.freq_count_slider):
+            control.setRange(min(3, value.count), max(200, value.count))
         self.freq_count_spin.setValue(value.count)
-        self.freq_min_slider.setValue(frequency_to_slider_value(value.min_hz))
-        self.freq_max_slider.setValue(frequency_to_slider_value(value.max_hz))
         self.freq_count_slider.setValue(value.count)
         del blockers

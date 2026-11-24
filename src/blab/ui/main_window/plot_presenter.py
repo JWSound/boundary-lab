@@ -20,6 +20,7 @@ from blab.ui.plots import (
     IsobarCanvas,
 )
 from blab.ui.result_projection import (
+    IsobarProjection,
     ProjectionOptions,
     VisualizationProjection,
 )
@@ -159,22 +160,26 @@ class PlotPresenterMixin:
             self.horizontal_plot.clear_comparison_plot()
             self.vertical_plot.clear_comparison_plot()
         else:
-            self.horizontal_plot.set_comparison_plot(
-                isobar.freq_hz,
-                isobar.angle_deg,
-                isobar.horizontal_db,
-                isobar.clip_min_db,
-                isobar.clip_max_db,
-                **options,
-            )
-            self.vertical_plot.set_comparison_plot(
-                isobar.freq_hz,
-                isobar.angle_deg,
-                isobar.vertical_db,
-                isobar.clip_min_db,
-                isobar.clip_max_db,
-                **options,
-            )
+            for canvas, plane in ((self.horizontal_plot, "horizontal_db"), (self.vertical_plot, "vertical_db")):
+                basis = isobar.channel_basis
+                selected = (
+                    isobar
+                    if basis is None
+                    else isobar.select_channels(
+                        frozenset(name for name in basis.names if canvas.is_series_visible(name))
+                    )
+                )
+                if selected is None:
+                    canvas.clear_comparison_plot()
+                else:
+                    canvas.set_comparison_plot(
+                        selected.freq_hz,
+                        selected.angle_deg,
+                        getattr(selected, plane),
+                        selected.clip_min_db,
+                        selected.clip_max_db,
+                        **options,
+                    )
 
         impedance = dataset.impedance
         if impedance is None:
@@ -280,7 +285,7 @@ class PlotPresenterMixin:
         ):
             dock = self.plot_docks.get(plot_id)
             controls = contour_controls(
-                has_live_data=self.live_dataset is not None,
+                has_live_data=self.live_dataset is not None and plot.has_selected_traces(),
                 final_resolution_active=self.solve_session.use_final_isobar_resolution,
                 final_plots_rendered=self.solve_session.final_isobar_plots_rendered,
                 plot_visible=dock is not None and not dock.isHidden(),
@@ -397,11 +402,28 @@ class PlotPresenterMixin:
             entry.update(dataset)
         return dataset
 
+    def refresh_polar_channel_selection(self) -> None:
+        self.refresh_plots(active_only=True)
+        self.apply_last_completed_comparison()
+        self.refresh_contour_controls()
+
+    def _selected_isobar(
+        self,
+        canvas: IsobarCanvas,
+        dataset: VisualizationProjection,
+    ) -> IsobarProjection | None:
+        isobar = dataset.isobar
+        basis = None if isobar is None else isobar.channel_basis
+        canvas.set_channel_names(() if basis is None else basis.names)
+        if basis is None:
+            return isobar
+        return isobar.select_channels(frozenset(name for name in basis.names if canvas.is_series_visible(name)))
+
     def _update_horizontal_plot(self, dataset: VisualizationProjection) -> None:
-        if dataset.isobar is None:
+        isobar = self._selected_isobar(self.horizontal_plot, dataset)
+        if isobar is None:
             self.horizontal_plot._draw_empty()
             return
-        isobar = dataset.isobar
         self.horizontal_plot.update_plot(
             isobar.freq_hz,
             isobar.angle_deg,
@@ -413,10 +435,10 @@ class PlotPresenterMixin:
         )
 
     def _update_vertical_plot(self, dataset: VisualizationProjection) -> None:
-        if dataset.isobar is None:
+        isobar = self._selected_isobar(self.vertical_plot, dataset)
+        if isobar is None:
             self.vertical_plot._draw_empty()
             return
-        isobar = dataset.isobar
         self.vertical_plot.update_plot(
             isobar.freq_hz,
             isobar.angle_deg,

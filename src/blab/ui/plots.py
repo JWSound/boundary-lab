@@ -18,6 +18,27 @@ from PySide6.QtCore import Signal
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QMenu
 
+from blab.plot_style import (
+    AUDIO_AXIS_LABELS,
+    AUDIO_AXIS_TICKS,
+    AUDIO_FREQ_MAX_HZ,
+    AUDIO_FREQ_MIN_HZ,
+    GRID_LINE_ALPHA,
+    MINOR_GRID_LINE_ALPHA,
+    PLOT_TICK_SIZE,
+    PLOT_TITLE_PAD,
+    apply_audio_frequency_axis,
+    apply_compact_plot_text,
+)
+from blab.plot_style import (
+    PLOT_LABEL_SIZE as PLOT_LABEL_SIZE,
+)
+from blab.plot_style import (
+    PLOT_LEGEND_SIZE as PLOT_LEGEND_SIZE,
+)
+from blab.plot_style import (
+    PLOT_TITLE_SIZE as PLOT_TITLE_SIZE,
+)
 from blab.plotting import VisualizerConfig
 from blab.spinorama import SpinoramaCurves, SpinoramaSeriesId, compute_spinorama_from_planes, spinorama_curve_colors
 from blab.ui.iec_scale_canvas import IecScaleCanvasMixin
@@ -32,11 +53,6 @@ from blab.ui.plot_scale import SpinoramaLegendPlacement, spinorama_iec_layout
 from blab.ui.series_visibility import SeriesVisibilityMixin
 from blab.ui.theme import application_palette_is_dark
 
-AUDIO_FREQ_MIN_HZ = 20
-AUDIO_FREQ_MAX_HZ = 20000
-AUDIO_AXIS_TICKS = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000]
-AUDIO_AXIS_LABELS = ["20", "50", "100", "200", "500", "1k", "2k", "5k", "10k", "20k"]
-FREQ_SLIDER_STEPS = 1000
 ISOBAR_COLORBAR_MIN_TICK_STEP_DB = 3.0
 LIVE_ISOBAR_ANGLE_SAMPLES = 180
 LIVE_ISOBAR_FREQ_SAMPLES = 90
@@ -44,13 +60,6 @@ FINAL_ISOBAR_ANGLE_SAMPLES = 1000
 FINAL_ISOBAR_FREQ_SAMPLES = 500
 LIVE_ISOBAR_SHADING = "nearest"
 FINAL_ISOBAR_SHADING = "gouraud"
-PLOT_TITLE_SIZE = 11
-PLOT_LABEL_SIZE = 9
-PLOT_TICK_SIZE = 9
-PLOT_LEGEND_SIZE = 9
-PLOT_TITLE_PAD = 7
-GRID_LINE_ALPHA = 0.6
-MINOR_GRID_LINE_ALPHA = 0.3
 ISOBAR_COLORBAR_GAP_PT = 7.0
 ISOBAR_COLORBAR_WIDTH_PT = 10.0
 ON_AXIS_DB_SPAN = 50.0
@@ -191,30 +200,12 @@ def _layout_axis_edges(
     return leading / total, 1.0 - trailing / total
 
 
-def apply_audio_frequency_axis(axes) -> None:
-    axes.set_xscale("log")
-    axes.set_xlim(AUDIO_FREQ_MIN_HZ, AUDIO_FREQ_MAX_HZ)
-    axes.set_xticks(AUDIO_AXIS_TICKS)
-    axes.set_xticklabels(AUDIO_AXIS_LABELS)
-
-
 def apply_log_image_frequency_axis(axes) -> None:
     if axes.get_xscale() != "linear":
         axes.set_xscale("linear")
     axes.set_xlim(np.log10(AUDIO_FREQ_MIN_HZ), np.log10(AUDIO_FREQ_MAX_HZ))
     axes.set_xticks(np.log10(AUDIO_AXIS_TICKS))
     axes.set_xticklabels(AUDIO_AXIS_LABELS)
-
-
-def apply_compact_plot_text(axes) -> None:
-    axes.title.set_fontsize(PLOT_TITLE_SIZE)
-    axes.xaxis.label.set_size(PLOT_LABEL_SIZE)
-    axes.yaxis.label.set_size(PLOT_LABEL_SIZE)
-    axes.tick_params(axis="both", which="major", labelsize=PLOT_TICK_SIZE)
-    legend = axes.get_legend()
-    if legend is not None:
-        for text in legend.get_texts():
-            text.set_fontsize(PLOT_LEGEND_SIZE)
 
 
 def clear_plot_axes(axes) -> None:
@@ -233,20 +224,6 @@ def plot_background_is_dark(axes) -> bool:
         if alpha > 0.0:
             return 0.2126 * red + 0.7152 * green + 0.0722 * blue < 0.5
     return False
-
-
-def frequency_to_slider_value(freq_hz: int | float) -> int:
-    clamped = min(max(float(freq_hz), AUDIO_FREQ_MIN_HZ), AUDIO_FREQ_MAX_HZ)
-    fraction = (np.log10(clamped) - np.log10(AUDIO_FREQ_MIN_HZ)) / (
-        np.log10(AUDIO_FREQ_MAX_HZ) - np.log10(AUDIO_FREQ_MIN_HZ)
-    )
-    return int(round(fraction * FREQ_SLIDER_STEPS))
-
-
-def slider_value_to_frequency(value: int) -> int:
-    fraction = float(value) / FREQ_SLIDER_STEPS
-    log_freq = np.log10(AUDIO_FREQ_MIN_HZ) + fraction * (np.log10(AUDIO_FREQ_MAX_HZ) - np.log10(AUDIO_FREQ_MIN_HZ))
-    return int(round(10.0**log_freq))
 
 
 def format_plot_frequency(freq_hz: float) -> str:
@@ -649,6 +626,14 @@ class IsobarCanvas(InteractivePlotCanvas):
         self.figure = Figure(figsize=(5.5, 2.8), dpi=100)
         self.axes = self.figure.add_subplot(111)
         super().__init__(self.figure, title)
+        self._series_labels: tuple[str, ...] = ()
+        self._series_visibility: dict[str, bool] = {}
+        self._series_actions: dict[str, QAction] = {}
+        self.trace_filter_menu = QMenu("Traces", self)
+        self.trace_filter_action = QAction("Traces", self)
+        self.trace_filter_action.setToolTip("Choose channels contributing to this polar plot")
+        self.trace_filter_action.setMenu(self.trace_filter_menu)
+        self.trace_filter_action.setEnabled(False)
         self.show_colorbar = bool(show_colorbar)
         profile = ISOBAR_LAYOUT if self.show_colorbar else SINGLE_AXIS_LAYOUT
         if left_margin is not None or right_margin is not None:
@@ -686,6 +671,31 @@ class IsobarCanvas(InteractivePlotCanvas):
         self._crosshair_db_label = None
         self.set_layout_profile(profile)
         self._draw_empty()
+
+    def set_channel_names(self, labels: tuple[str, ...]) -> None:
+        if labels == self._series_labels:
+            return
+        self._series_labels = labels
+        self.trace_filter_menu.clear()
+        self._series_actions = {}
+        for label in labels:
+            action = self.trace_filter_menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(self.is_series_visible(label))
+            action.toggled.connect(lambda checked, name=label: self.set_series_visible(name, checked))
+            self._series_actions[label] = action
+        self.trace_filter_action.setEnabled(bool(labels))
+
+    def set_series_visible(self, label: str, visible: bool) -> None:
+        if label not in self._series_labels or self.is_series_visible(label) == bool(visible):
+            return
+        self._series_visibility[label] = bool(visible)
+        self._series_actions[label].setChecked(bool(visible))
+        self.trace_visibility_changed.emit()
+
+    def clear_for_solve(self) -> None:
+        self.set_channel_names(())
+        super().clear_for_solve()
 
     def _configure_axes(self) -> None:
         self._apply_layout_profile()

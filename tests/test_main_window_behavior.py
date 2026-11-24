@@ -13,13 +13,13 @@ from types import SimpleNamespace
 import pytest
 from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtGui import QCloseEvent  # noqa: E402
-from PySide6.QtWidgets import QDockWidget, QFrame, QMessageBox, QTabBar, QToolButton  # noqa: E402
+from PySide6.QtWidgets import QDockWidget, QFrame, QMessageBox, QToolButton  # noqa: E402
 
 import blab.ui.main_window.state_sync as state_sync_module  # noqa: E402
 import blab.ui.main_window.view_builder as view_builder_module  # noqa: E402
 from blab.config import ChannelConfig  # noqa: E402
 from blab.physical_model import ComponentKind, ExcitationPortKind  # noqa: E402
-from blab.ui.main_window import ADD_DESIGN_TAB_LABEL, LIVE_PLOT_REFRESH_INTERVAL_MS  # noqa: E402
+from blab.ui.main_window import LIVE_PLOT_REFRESH_INTERVAL_MS  # noqa: E402
 from blab.ui.main_window_widgets import DockTitleBar  # noqa: E402
 from repo_paths import BLAB_SRC, MAIN_WINDOW_PKG  # noqa: E402
 
@@ -472,10 +472,16 @@ def test_channel_apply_resynthesizes_without_refreshing_mesh_or_closed_balloon(m
     monkeypatch.setattr(main_window, "set_balloon_plot_available", balloon_availability.append)
 
     channels = (ChannelConfig(name="main", level_db=-3.0),)
-    main_window._apply_channel_config(channels)
+    main_window._apply_channel_config(channels, main_window.preferences.normalized_channel_correction)
 
     assert dataset.synthesis_calls == [
-        (channels, {"flat_target_reference_angle_deg": main_window.preferences.horizontal_normalization_angle})
+        (
+            channels,
+            {
+                "flat_target_reference_angle_deg": main_window.preferences.horizontal_normalization_angle,
+                "flat_target_enabled": main_window.preferences.normalized_channel_correction,
+            },
+        )
     ]
     assert plot_refreshes == [True]
     assert preview_refreshes == []
@@ -491,9 +497,51 @@ def test_channel_apply_refreshes_an_open_balloon_window(main_window, monkeypatch
     monkeypatch.setattr(main_window, "refresh_plots", lambda: None)
     monkeypatch.setattr(main_window, "set_balloon_plot_available", lambda _available: None)
 
-    main_window._apply_channel_config((ChannelConfig(name="main", delay_ms=0.5),))
+    main_window._apply_channel_config((ChannelConfig(name="main", delay_ms=0.5),), True)
 
     assert balloon_window.refresh_count == 1
+
+
+def test_channel_dialog_toggles_normalization_on_the_existing_solve(main_window, monkeypatch) -> None:
+    import numpy as np
+
+    from blab.live import LiveSolveDataset
+    from blab.solvers.base import FrequencyResult
+
+    angles = np.array([-10.0, 0.0, 10.0])
+    pressure = np.full((1, 3), 2j, dtype=np.complex64)
+    result = FrequencyResult(
+        freq_hz=1000,
+        horizontal_spl_norm_db=np.zeros(3),
+        vertical_spl_norm_db=np.zeros(3),
+        impedance=np.zeros((1, 2)),
+        channel_names=np.array(["main"]),
+        horizontal_pressure=pressure,
+        vertical_pressure=pressure.copy(),
+    )
+    dataset = LiveSolveDataset(
+        angles,
+        channel_configs=main_window.channel_configs(),
+        flat_target_normalization_enabled=main_window.preferences.normalized_channel_correction,
+    )
+    dataset.add(result)
+    main_window.live_dataset = dataset
+    monkeypatch.setattr(main_window, "_confirm_clear_solved_data", lambda: pytest.fail("Unexpected solve invalidation"))
+    main_window.open_channel_config()
+    dialog = main_window.channel_config_dialog
+    assert dialog.normalization_check.text() == "Impose Channel Normalization"
+    responses = []
+    for enabled in (False, True, False):
+        dialog.normalization_check.setChecked(enabled)
+        assert dialog.apply()
+        assert (
+            main_window.project_workflow.project_payload()["project_preferences"]["normalized_channel_correction"]
+            is enabled
+        )
+        assert main_window.live_dataset.results[1000] is result
+        responses.append(dataset.as_raw_polar_arrays()[2].copy())
+    np.testing.assert_allclose(responses[0] - responses[1], 20 * np.log10(2), atol=1e-5)
+    np.testing.assert_array_equal(responses[0], responses[2])
 
 
 # ------------------------------------------------------------------------ DPI refresh
@@ -648,7 +696,6 @@ def test_close_is_vetoed_when_the_user_cancels(main_window, monkeypatch) -> None
 def test_close_proceeds_and_persists_state_when_confirmed(main_window, monkeypatch) -> None:
     monkeypatch.setattr(main_window, "_confirm_unsaved_project_changes", lambda _action: True)
     saved: list[str] = []
-    monkeypatch.setattr(main_window, "_save_frequency_settings", lambda: saved.append("freq"))
     monkeypatch.setattr(main_window, "_save_preferences", lambda: saved.append("prefs"))
     monkeypatch.setattr(main_window, "_save_window_state", lambda: saved.append("window"))
 
@@ -657,7 +704,7 @@ def test_close_proceeds_and_persists_state_when_confirmed(main_window, monkeypat
     main_window.closeEvent(event)
 
     assert event.isAccepted()
-    assert saved == ["freq", "prefs", "window"]
+    assert saved == ["prefs", "window"]
 
 
 # ---------------------------------------------------------------------------- contours
@@ -712,13 +759,46 @@ def test_capture_and_clear_are_routed_to_the_requested_plot_only(main_window, mo
 # ------------------------------------------------------------------- generator tabs
 
 
-def test_add_design_tab_is_a_button_not_a_closable_document(main_window) -> None:
-    tabs = main_window.editor_tabs
-    add_index = next(i for i in range(tabs.count()) if tabs.tabText(i) == ADD_DESIGN_TAB_LABEL)
+def test_add_design_button_follows_tabs_and_stays_reachable_on_overflow(main_window, qapp) -> None:
+    from PySide6.QtTest import QTest
 
-    bar = tabs.tabBar()
-    assert bar.tabButton(add_index, QTabBar.ButtonPosition.RightSide) is None
-    assert bar.tabButton(add_index, QTabBar.ButtonPosition.LeftSide) is None
+    tabs = main_window.editor_tabs
+    button = main_window.add_design_button
+    main_window.show()
+    main_window.editor_dock.show()
+    main_window.editor_dock.raise_()
+    main_window.editor_panel.setFixedWidth(500)
+
+    def check_adjacent():
+        qapp.processEvents()
+        end = tabs.x() + tabs.tabRect(tabs.count() - 1).right()
+        assert 0 < button.x() - end <= 5
+        assert tabs.count() == max(1, len(main_window.generator_documents))
+        return button.x()
+
+    first = check_adjacent()
+    main_window.add_generator_document("ath")
+    assert check_adjacent() > first
+    main_window._remove_generator_document_at(1)
+    assert check_adjacent() == first
+    tabs.setTabText(0, "A")
+    assert check_adjacent() < first
+    main_window._remove_generator_document_at(0)
+    check_adjacent()  # The empty pane has a short placeholder tab.
+    main_window.editor_panel.setFixedWidth(230)
+    for _ in range(4):
+        main_window.add_generator_document("ath")
+    qapp.processEvents()
+    assert tabs.width() < tabs.sizeHint().width()
+    assert any(arrow.isVisible() for arrow in tabs.findChildren(QToolButton) if arrow.arrowType() == Qt.RightArrow)
+    assert tabs.geometry().right() < button.x()
+    assert button.isVisible() and main_window.editor_panel.rect().contains(button.geometry())
+    tabs.setCurrentIndex(0)
+    assert main_window.editor_pages.currentIndex() == 0
+    editor = main_window.editor_pages.currentWidget()
+    editor.setFocus()
+    QTest.keyClick(editor, Qt.Key_Tab, Qt.ControlModifier)
+    assert tabs.currentIndex() == main_window.editor_pages.currentIndex() == 1
 
 
 # --------------------------------------------------------------------- preview tree

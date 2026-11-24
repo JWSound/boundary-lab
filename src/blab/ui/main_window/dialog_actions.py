@@ -62,7 +62,7 @@ class DialogActionsMixin:
             QMessageBox.warning(
                 self,
                 "No balloon data",
-                "Enable spherical sampling in Preferences before running a solve.",
+                "Enable 3D balloon samples in Edit > Project Configuration > Observation Sampling before running a solve.",
             )
             return
 
@@ -292,7 +292,14 @@ class DialogActionsMixin:
             QMessageBox.warning(self, "System", "Enable at least one mesh before configuring the system.")
             return
         dialog.systemApplied.connect(self._apply_system_config)
-        dialog.exec()
+        if self.preview.isVisible():
+            dialog.boundarySelectionChanged.connect(self.preview.highlight_boundary)
+            try:
+                dialog.exec()
+            finally:
+                self.preview.highlight_boundary(None)
+        else:
+            dialog.exec()
 
     def _prepare_system_config_dialog(self, activity, inventory) -> SystemConfigDialog | None:
         meshes, symmetry_analysis_meshes = inventory
@@ -323,22 +330,28 @@ class DialogActionsMixin:
             self.imported_meshes,
             mesh_file_overrides,
         )
-        if (
-            configuration.system == self.project.physical_system
-            and configuration.component_channel_by_id == self.project.component_channel_by_id
-            and configuration.stitch_exterior_meshes == self.stitch_imported_meshes
-            and updated_imported_meshes == self.imported_meshes
-        ):
+        system_changed = (
+            configuration.system != self.project.physical_system
+            or configuration.component_channel_by_id != self.project.component_channel_by_id
+            or configuration.stitch_exterior_meshes != self.stitch_imported_meshes
+            or updated_imported_meshes != self.imported_meshes
+        )
+        tolerance_changed = configuration.stitch_tolerance_mm != self.preferences.stitch_tolerance_mm
+        if not (system_changed or tolerance_changed):
             self.status_label.setText("System unchanged")
             return
-        self.imported_meshes = updated_imported_meshes
-        metadata = dict(configuration.system.metadata)
-        metadata.pop(AUTO_SEEDED_EXTERIOR_KEY, None)
-        self.project.physical_system = replace(configuration.system, metadata=metadata)
-        self.project.component_channel_by_id = dict(configuration.component_channel_by_id)
-        self.project.source_config_by_name = {}
-        self.stitch_imported_meshes = bool(configuration.stitch_exterior_meshes)
+        if tolerance_changed:
+            self._update_project_preferences(stitch_tolerance_mm=configuration.stitch_tolerance_mm)
+        if system_changed:
+            self.imported_meshes = updated_imported_meshes
+            metadata = dict(configuration.system.metadata)
+            metadata.pop(AUTO_SEEDED_EXTERIOR_KEY, None)
+            self.project.physical_system = replace(configuration.system, metadata=metadata)
+            self.project.component_channel_by_id = dict(configuration.component_channel_by_id)
+            self.project.source_config_by_name = {}
+            self.stitch_imported_meshes = bool(configuration.stitch_exterior_meshes)
         reason = "system_interface_mesh_built" if mesh_file_overrides else "system_config_changed"
         self.project_state_changed.emit(reason)
-        self.solve_results_invalidated.emit("system_config_changed")
+        if system_changed or configuration.stitch_exterior_meshes:
+            self.solve_results_invalidated.emit("system_config_changed")
         self.status_label.setText("System updated")

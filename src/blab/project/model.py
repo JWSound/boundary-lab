@@ -32,8 +32,8 @@ class ProjectPreferencesState:
     freq_count: int = 41
     polar_angle_step_deg: float = 10.0
     polar_observation_distance_m: float = 2.0
-    normalized_channel_correction: bool = True
-    polar_smoothing: int | None = 48
+    normalized_channel_correction: bool = False
+    polar_smoothing: int | None = None
     horizontal_normalization_angle: float = 10.0
     vertical_normalization_angle: float = 10.0
     spin_horizontal_reference_angle: float = 0.0
@@ -49,13 +49,15 @@ class ProjectPreferencesState:
         return asdict(self)
 
     @classmethod
-    def from_payload(cls, payload: object) -> ProjectPreferencesState | None:
+    def from_payload(
+        cls, payload: object, *, defaults: ProjectPreferencesState | None = None
+    ) -> ProjectPreferencesState | None:
         if payload is None:
             return None
         if not isinstance(payload, dict):
             raise ValueError("project_preferences must be an object when provided.")
 
-        defaults = cls()
+        defaults = defaults or cls()
         freq_min_hz = _bounded_int(payload.get("freq_min_hz"), defaults.freq_min_hz, minimum=1)
         freq_max_hz = _bounded_int(payload.get("freq_max_hz"), defaults.freq_max_hz, minimum=1)
         if freq_min_hz > freq_max_hz:
@@ -75,7 +77,9 @@ class ProjectPreferencesState:
             normalized_channel_correction=_boolean(
                 payload.get("normalized_channel_correction"), defaults.normalized_channel_correction
             ),
-            polar_smoothing=_optional_int(payload.get("polar_smoothing"), defaults.polar_smoothing),
+            polar_smoothing=_optional_int(
+                payload.get("polar_smoothing", defaults.polar_smoothing), defaults.polar_smoothing
+            ),
             horizontal_normalization_angle=_finite_float(
                 payload.get("horizontal_normalization_angle"), defaults.horizontal_normalization_angle
             ),
@@ -124,7 +128,7 @@ class ProjectDocument:
     generator_documents: tuple[GeneratorDocument, ...]
     active_generator_document_id: str | None
     imported_meshes: tuple[ImportedMeshState, ...] = ()
-    stitch_imported_meshes: bool = False
+    stitch_imported_meshes: bool = True
     symmetry: str = "off"
     source_config_by_name: dict[str, dict] = field(default_factory=dict)
     channel_config_by_name: dict[str, dict] = field(default_factory=dict)

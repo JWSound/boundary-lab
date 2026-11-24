@@ -150,6 +150,7 @@ class PhysicalSystemCompiler:
                         component.parameters,
                         symmetry=symmetry_mode,
                         exterior=not any(region.kind == AcousticRegionKind.BOUNDED_AIR for region in system.regions),
+                        coupled=bool(unbounded_region_ids),
                     )
                 except ValueError as exc:
                     raise PhysicalModelCompileError(f"Component '{component.name}': {exc}") from exc
@@ -210,6 +211,9 @@ class PhysicalSystemCompiler:
             parameters = {
                 key: value for key, value in component.parameters.items() if key not in SYMMETRY_PARAMETER_KEYS
             }
+            # Imported driver identity and reference Sd belong to the authoring
+            # model; the engine uses the moving mesh for diaphragm geometry.
+            parameters.pop("driver_reference", None)
             parameters.update(inference.parameters())
             try:
                 area = infer_projected_diaphragm_area(
@@ -639,7 +643,10 @@ class PhysicalSystemCompiler:
         )
 
     def _resolve_group(self, mesh_resource: MeshResource, group: PhysicalGroupRef) -> ResolvedPhysicalGroup:
-        mesh = self._read_mesh(mesh_resource)
+        return self.resolve_mesh_group(self._read_mesh(mesh_resource), group)
+
+    @classmethod
+    def resolve_mesh_group(cls, mesh: meshio.Mesh, group: PhysicalGroupRef) -> ResolvedPhysicalGroup:
         tag = group.tag
         name = group.name
         if name is not None:
@@ -653,35 +660,35 @@ class PhysicalSystemCompiler:
                     )
                 )
                 raise PhysicalModelCompileError(
-                    f"Mesh '{mesh_resource.id}' does not contain physical group '{name}' "
+                    f"Mesh '{group.mesh_id}' does not contain physical group '{name}' "
                     f"in dimension {group.dimension}. Available: {available or '(none)'}."
                 )
             resolved_tag, dimension = map(int, np.asarray(field).tolist())
             if dimension != group.dimension:
                 raise PhysicalModelCompileError(
-                    f"Physical group '{name}' on mesh '{mesh_resource.id}' has dimension {dimension}; "
+                    f"Physical group '{name}' on mesh '{group.mesh_id}' has dimension {dimension}; "
                     f"expected {group.dimension}."
                 )
             if tag is not None and tag != resolved_tag:
                 raise PhysicalModelCompileError(
-                    f"Physical group '{name}' on mesh '{mesh_resource.id}' resolves to tag {resolved_tag}, "
+                    f"Physical group '{name}' on mesh '{group.mesh_id}' resolves to tag {resolved_tag}, "
                     f"not requested tag {tag}."
                 )
             tag = resolved_tag
         if tag is None:
-            raise PhysicalModelCompileError(f"Physical group on mesh '{mesh_resource.id}' must specify a name or tag.")
+            raise PhysicalModelCompileError(f"Physical group on mesh '{group.mesh_id}' must specify a name or tag.")
         if name is None:
-            name = self._name_for_tag(mesh, tag, group.dimension, required=False)
+            name = cls._name_for_tag(mesh, tag, group.dimension, required=False)
 
-        count = len(self._group_element_indices(mesh, dimension=group.dimension, tag=tag))
+        count = len(cls._group_element_indices(mesh, dimension=group.dimension, tag=tag))
         if count == 0:
             label = name or str(tag)
             raise PhysicalModelCompileError(
-                f"Physical group '{label}' on mesh '{mesh_resource.id}' contains no "
+                f"Physical group '{label}' on mesh '{group.mesh_id}' contains no "
                 f"{'surface' if group.dimension == 2 else 'volume'} elements."
             )
         return ResolvedPhysicalGroup(
-            mesh_id=mesh_resource.id,
+            mesh_id=group.mesh_id,
             dimension=group.dimension,
             tag=int(tag),
             name=name,

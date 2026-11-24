@@ -46,8 +46,7 @@ class GuiPreferences:
             "beat_cpu" if backend in {"local", "server"} or not packaged_backend_available(backend) else backend
         )
 
-    theme: str = "system"
-    default_geometry_provider: str = "ath"
+    theme: str = "light"
     enabled_geometry_providers: tuple[str, ...] = ()
     solve_backend: str = "beat_cpu"
     solve_server_url: str = "http://127.0.0.1:8765"
@@ -58,9 +57,9 @@ class GuiPreferences:
     gmres_tolerance: float = 1e-3
     polar_angle_step_deg: float = 10.0
     polar_observation_distance_m: float = 2.0
-    normalized_channel_correction: bool = True
+    normalized_channel_correction: bool = False
     use_burton_miller: bool = True
-    polar_smoothing: int | None = 48
+    polar_smoothing: int | None = None
     horizontal_normalization_angle: float = 10.0
     vertical_normalization_angle: float = 10.0
     spin_horizontal_reference_angle: float = 0.0
@@ -82,7 +81,6 @@ SOLVE_AFFECTING_PREFERENCE_FIELDS = (
     "gmres_tolerance",
     "polar_angle_step_deg",
     "polar_observation_distance_m",
-    "normalized_channel_correction",
     "use_burton_miller",
     "stitch_tolerance_mm",
     "spherical_sampling_enabled",
@@ -105,6 +103,8 @@ def preferences_require_solve_invalidation(previous: GuiPreferences, current: Gu
     fields = SOLVE_AFFECTING_PREFERENCE_FIELDS
     if previous.solve_backend != "beat_remote" and current.solve_backend != "beat_remote":
         fields = tuple(name for name in fields if not name.startswith("solve_server_"))
+    if not (previous.spherical_sampling_enabled or current.spherical_sampling_enabled):
+        fields = tuple(name for name in fields if name != "balloon_angle_precision_deg")
     return _preferences_changed(previous, current, fields)
 
 
@@ -180,7 +180,6 @@ def load_gui_preferences(settings: QSettings) -> GuiPreferences:
         settings.setValue("providers/enabled", enabled)
         settings.setValue("providers/vented_enclosure_introduced", True)
     return GuiPreferences(
-        default_geometry_provider=settings_str(settings, "providers/default", "ath"),
         enabled_geometry_providers=tuple(item for item in enabled if isinstance(item, str) and item),
         theme=normalize_theme(settings_str(settings, "preferences/theme", defaults.theme)),
         solve_backend=normalize_backend_id(settings_str(settings, "preferences/solve_backend", defaults.solve_backend)),
@@ -273,7 +272,12 @@ def load_gui_preferences(settings: QSettings) -> GuiPreferences:
 
 
 def save_gui_preferences(settings: QSettings, preferences: GuiPreferences) -> None:
-    settings.setValue("providers/default", preferences.default_geometry_provider)
+    """Persist an application profile including its initial project options."""
+    save_application_preferences(settings, preferences)
+    _save_project_options(settings, preferences)
+
+
+def save_application_preferences(settings: QSettings, preferences: GuiPreferences) -> None:
     settings.setValue("providers/enabled", list(preferences.enabled_geometry_providers))
     settings.setValue("providers/vented_enclosure_introduced", True)
     settings.setValue("preferences/theme", preferences.theme)
@@ -287,6 +291,24 @@ def save_gui_preferences(settings: QSettings, preferences: GuiPreferences) -> No
             settings.remove("preferences/" + obsolete)
     settings.setValue("preferences/live_plot_streaming", preferences.live_plot_streaming)
     settings.setValue("preferences/live_plot_quality", preferences.live_plot_quality)
+    settings.setValue(
+        "preferences/field_cache_size_mb",
+        normalize_field_cache_size_mb(preferences.field_cache_size_mb),
+    )
+    settings.setValue(
+        "preferences/field_translation_target_fps",
+        normalize_field_translation_target_fps(preferences.field_translation_target_fps),
+    )
+
+
+def save_project_defaults(settings: QSettings, project: ProjectPreferencesState) -> None:
+    _save_project_options(settings, project)
+    settings.setValue("solve/freq_min_hz", project.freq_min_hz)
+    settings.setValue("solve/freq_max_hz", project.freq_max_hz)
+    settings.setValue("solve/freq_count", project.freq_count)
+
+
+def _save_project_options(settings: QSettings, preferences: ProjectPreferencesState | GuiPreferences) -> None:
     settings.setValue("preferences/polar_angle_step_deg", preferences.polar_angle_step_deg)
     settings.setValue(
         "preferences/polar_observation_distance_m",
@@ -321,14 +343,6 @@ def save_gui_preferences(settings: QSettings, preferences: GuiPreferences) -> No
     settings.setValue(
         "preferences/balloon_angle_precision_deg",
         preferences.balloon_angle_precision_deg,
-    )
-    settings.setValue(
-        "preferences/field_cache_size_mb",
-        normalize_field_cache_size_mb(preferences.field_cache_size_mb),
-    )
-    settings.setValue(
-        "preferences/field_translation_target_fps",
-        normalize_field_translation_target_fps(preferences.field_translation_target_fps),
     )
 
 

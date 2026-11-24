@@ -783,3 +783,25 @@ def test_provider_cancel_cannot_stop_unrelated_job(controller):
     assert controller.solve.cancelled == 0
     controller.cancel_provider_solve("owned")
     assert controller.solve.cancelled == 1
+
+
+@pytest.mark.parametrize("phase", [OperationPhase.COMPLETED, OperationPhase.CANCELLED, OperationPhase.FAILED])
+@pytest.mark.parametrize("fidelity", list(solve_workflow_module.SpeakerPackageFidelity))
+def test_pattern_export_finishes_with_trained_result_only(controller, monkeypatch, tmp_path, phase, fidelity):
+    config = solve_workflow_module.SpeakerPackageConfig(tmp_path / "speaker.blabsp", "Cabinet", fidelity)
+    controller._pending_speaker_package = config
+    pattern = object()
+    controller.solve.trained_pattern = pattern
+    writes = []
+
+    def write(solved, settings):
+        writes.append((solved, settings))
+        return SimpleNamespace(path=settings.output_path)
+
+    monkeypatch.setattr(solve_workflow_module, "export_speaker_package", write)
+    controller._on_solve_finished(SolveCompletion(phase, solved_count=9, expected_count=9, elapsed_s=1))
+    assert writes == ([(pattern, config)] if phase == OperationPhase.COMPLETED else [])
+    assert controller._pending_speaker_package is None
+    assert controller.solve.trained_pattern is None
+    assert controller.view.phases[-1][0] == OperationPhase.IDLE
+    assert controller.plots.calls == []

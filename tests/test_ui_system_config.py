@@ -1240,6 +1240,33 @@ def test_interface_settings_changes_mark_existing_pair_stale() -> None:
     assert "check again" in dialog.interface_details.toPlainText()
 
 
+def test_regions_stitch_tolerance_visibility_and_apply(main_window, monkeypatch) -> None:
+    dialog = SystemConfigDialog(inspect_system_meshes(_fixture_mesh_entries()), None, ("main",), stitch_tolerance_mm=3)
+    tolerance = dialog.stitch_tolerance_spin
+    assert tolerance.isHidden()
+    dialog.stitch_exterior_meshes_check.setChecked(True)
+    assert not tolerance.isHidden() and tolerance.value() == 3
+    tolerance.setValue(0.125)
+    dialog.stitch_exterior_meshes_check.setChecked(False)
+    assert tolerance.isHidden()
+    dialog.stitch_exterior_meshes_check.setChecked(True)
+    configuration = dialog.configuration()
+    assert configuration.stitch_tolerance_mm == 0.125
+    main_window.project.physical_system = configuration.system
+    main_window.project.component_channel_by_id = configuration.component_channel_by_id
+    main_window.stitch_imported_meshes = True
+    main_window.project.source_config_by_name = {"woofer": {"driven": True}}
+    monkeypatch.setattr(main_window, "_refresh_mesh_preview", lambda: None)
+    invalidated = QSignalSpy(main_window.solve_results_invalidated)
+    main_window._apply_system_config(configuration)
+    assert invalidated.count() == 1
+    assert main_window.preferences.stitch_tolerance_mm == 0.125
+    assert main_window.project_workflow.project_payload()["project_preferences"]["stitch_tolerance_mm"] == 0.125
+    assert main_window.project.source_config_by_name == {"woofer": {"driven": True}}
+    main_window._apply_system_config(configuration)
+    assert invalidated.count() == 1
+
+
 def test_removing_exterior_assignment_keeps_unpaired_interior_visible() -> None:
     dialog = _configured_fixture_dialog()
     for row in range(dialog.boundaries_table.rowCount()):
@@ -1796,6 +1823,11 @@ def test_coupled_worker_logs_and_emits_backend_status(monkeypatch, caplog) -> No
         def stop(self) -> None:
             pass
 
+        def warm_up_key(self):
+            from blab.warm_up_history import WarmUpKey
+
+            return WarmUpKey("cpu", "test", "1", True)
+
     class Backend:
         def __init__(self, **_kwargs):
             pass
@@ -1989,3 +2021,30 @@ def test_coupled_cuda_matches_cpu_exterior_pressure() -> None:
     assert cpu_pressure.dtype == np.complex64
     assert cuda_pressure.dtype == np.complex64
     assert relative_l2 < 5e-3
+
+
+def test_boundary_selection_identifies_surface_by_mesh_and_clears_on_tab_change(qapp):
+    dialog = _configured_fixture_dialog()
+    selected = []
+    dialog.boundarySelectionChanged.connect(selected.append)
+    dialog.tabs.setCurrentWidget(dialog.boundaries_tab)
+    table = dialog.boundaries_table
+    for row in range(table.rowCount()):
+        if table.item(row, 2).text() == "Interface":
+            table.selectRow(row)
+            assert selected[-1] == (table.item(row, 1).text(), "Interface")
+    assert ("Interior", "Interface") in selected
+    assert ("Exterior", "Interface") in selected
+    dialog.show()
+    qapp.processEvents()
+    table.selectRow(0)
+    editor = table.cellWidget(1, 3)
+    QTest.mouseClick(editor, Qt.LeftButton)
+    assert selected[-1] == (table.item(1, 1).text(), table.item(1, 2).text())
+    editor.hidePopup()
+    table.clearSelection()
+    assert selected[-1] is None
+    table.selectRow(0)
+    dialog.tabs.setCurrentWidget(dialog.regions_tab)
+    assert selected[-1] is None
+    dialog.close()

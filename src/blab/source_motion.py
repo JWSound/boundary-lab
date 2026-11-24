@@ -3,7 +3,9 @@
 import math
 
 
-def prescribed_source_parameters(parameters: dict, *, symmetry: str = "off", exterior: bool = True) -> dict:
+def prescribed_source_parameters(
+    parameters: dict, *, symmetry: str = "off", exterior: bool = True, coupled: bool = False
+) -> dict:
     """Return canonical parameters; absent motion means legacy surface-normal motion."""
     unsupported = set(parameters) - {"motion_profile", "motion_axis", "boundary_motion_weights"}
     if unsupported:
@@ -19,8 +21,8 @@ def prescribed_source_parameters(parameters: dict, *, symmetry: str = "off", ext
         return result
     if profile != "rigid_translation":
         raise ValueError("Prescribed-source motion_profile must be uniform_normal or rigid_translation.")
-    if not exterior:
-        raise ValueError("Axial prescribed-velocity sources require an exterior-only BEM system.")
+    if not (exterior or coupled):
+        raise ValueError("Axial prescribed-velocity sources require an exterior BEM or coupled FEM/BEM system.")
     axis = result.get("motion_axis")
     if (
         not isinstance(axis, (list, tuple))

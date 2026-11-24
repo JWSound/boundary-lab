@@ -30,7 +30,6 @@ from blab.project.io import (
     PROJECT_DEFAULT_NAME,
     PROJECT_FILE_FILTER,
     build_project_payload,
-    normalize_project_path,
     read_project_file,
     write_project_file,
 )
@@ -91,13 +90,12 @@ class ProjectWorkflowController(QObject):
         geometry_store: GeometryStore,
         preferences: Callable[[], GuiPreferences],
         set_preferences: Callable[[GuiPreferences], None],
-        save_preferences: Callable[[], None],
-        save_frequency_settings: Callable[[], None],
+        new_project_defaults: Callable[[], ProjectPreferencesState],
         remember_recent: Callable[[Path], None],
         forget_recent: Callable[[Path], None],
         activities: ActivityController | None = None,
         preparations=None,
-        default_document_factory=None,
+        solve_session=None,
     ) -> None:
         super().__init__(parent)
         self._view = view
@@ -106,13 +104,14 @@ class ProjectWorkflowController(QObject):
         self._geometry_store = geometry_store
         self._read_preferences = preferences
         self._write_preferences = set_preferences
-        self._save_preferences = save_preferences
-        self._save_frequency_settings = save_frequency_settings
+        self._new_project_defaults = new_project_defaults
         self._remember_recent = remember_recent
         self._forget_recent = forget_recent
         self._activities = activities if activities is not None else ActivityController(self)
         self._preparations = preparations
-        self._default_document_factory = default_document_factory
+        self._saved_run_id = None
+        self._solve_session = solve_session
+        self._include_results = True
 
     @property
     def _project(self) -> ProjectDocument:
@@ -221,7 +220,13 @@ class ProjectWorkflowController(QObject):
         self._session.mark_clean(self.project_payload())
 
     def has_unsaved_project_changes(self) -> bool:
-        return self._session.has_unsaved_changes(self.project_payload())
+        current = self._solve_session.solved_system if self._solve_session else None
+        results_changed = (
+            self._include_results
+            and (self._session.path is None or self._session.path.suffix.lower() == ".blab")
+            and (current.run_id if current else None) != self._saved_run_id
+        )
+        return results_changed or self._session.has_unsaved_changes(self.project_payload())
 
     def confirm_unsaved_project_changes(self, action: str) -> bool:
         """Whether ``action`` may proceed, saving first if the user asks for it.
@@ -242,16 +247,8 @@ class ProjectWorkflowController(QObject):
     def new_project(self) -> None:
         if not self.confirm_unsaved_project_changes("new_project"):
             return
-        project = new_project_document(project_preferences=self.current_project_preferences())
-        if self._default_document_factory is not None:
-            name = project.generator_documents[0].name
-            try:
-                document = self._default_document_factory(name)
-            except ValueError:
-                # Keep the requested provider visible even if its package was removed.
-                document = new_generator_document(name, provider_id=self._read_preferences().default_geometry_provider)
-            project.generator_documents = (document,)
-            project.active_generator_document_id = document.id
+        defaults = self._new_project_defaults()
+        project = new_project_document(project_preferences=defaults)
         if self._preparations is not None:
             self._preparations.cancel("project")
         self._inputs.discard_channel_config_dialog()
@@ -259,6 +256,9 @@ class ProjectWorkflowController(QObject):
             project,
             path=None,
         )
+        self._include_results = True
+        self._saved_run_id = None
+        self._apply_project_preferences(defaults)
         self._geometry_store.generated_by_document_id = {}
         self._inputs.rebuild_generator_document_tabs()
         self._geometry_store.clear_imported_radiators()
@@ -276,14 +276,38 @@ class ProjectWorkflowController(QObject):
     @Slot()
     def save_project_as(self) -> bool:
         suggested_filename = PROJECT_DEFAULT_NAME if self._session.path is None else self._session.path.name
-        path = self._view.choose_save_file("Save Project", PROJECT_FILE_FILTER, suggested_filename)
-        if path is None:
+        if not suggested_filename.lower().endswith(".blab"):
+            suggested_filename = Path(suggested_filename).stem.removesuffix(".blab") + ".blab"
+        selected = self._view.choose_project_save(suggested_filename, self._has_results(), self._include_results)
+        if selected is None:
             return False
-        return self._save_project_to_path(normalize_project_path(path))
+        path, include_results = selected
+        if path.suffix.lower() != ".blab":
+            self._view.show_error("Save project failed", "Use the .blab extension for project packages.")
+            return False
+        return self._save_project_to_path(path, include_results)
 
-    def _save_project_to_path(self, path: Path) -> bool:
+    def _has_results(self):
+        return (
+            self._solve_session is not None
+            and self._solve_session.result_builder is None
+            and self._solve_session.has_solved_data()
+        )
+
+    def _save_project_to_path(self, path: Path, include_results=None) -> bool:
         try:
-            project_path = write_project_file(path, self.project_payload())
+            if path.suffix.lower() == ".blab":
+                from blab.project.package import write_package
+
+                include_results = self._include_results if include_results is None else include_results
+                project_path = write_package(
+                    path, self.project_payload(), include_results, self._solve_session if self._has_results() else None
+                )
+                self._include_results = include_results
+                current = self._solve_session.solved_system if self._solve_session else None
+                self._saved_run_id = current.run_id if current else None
+            else:
+                project_path = write_project_file(path, self.project_payload())
             self._session.path = project_path
             self._remember_recent(project_path)
             self.mark_project_clean()
@@ -314,6 +338,13 @@ class ProjectWorkflowController(QObject):
         self._load_project_from_path(path)
 
     def _load_project_from_path(self, path: Path) -> None:
+        def read_document():
+            if path.suffix.lower() == ".blab":
+                from blab.project.package import read_package
+
+                return read_package(path, with_results=True)
+            return read_project_file(path), True, None
+
         if self._preparations is not None:
             self._preparations.cancel("preview")
             self._preparations.cancel("system")
@@ -321,14 +352,14 @@ class ProjectWorkflowController(QObject):
             snapshot = deepcopy(document)
 
             def read():
-                payload = read_project_file(path)
+                payload, include_results, results = read_document()
                 generated = {}
                 for item in generator_documents_from_payload(payload.get("generator_documents")):
                     try:
                         generated[item.id] = restore_generator_document(item)
                     except Exception:
                         generated[item.id] = None
-                return payload, generated
+                return payload, generated, include_results, results
 
             def complete(result):
                 if self._project is not document:
@@ -346,20 +377,22 @@ class ProjectWorkflowController(QObject):
             return
         try:
             with self._activities.start("Reading project..."):
-                payload = read_project_file(path)
-            self._finish_project_load(path, payload)
+                payload, include_results, results = read_document()
+            self._finish_project_load(path, payload, None, include_results, results)
         except Exception as exc:
             self._view.show_error("Open project failed", str(exc))
 
-    def _finish_project_load(self, path, payload, generated_results=None):
+    def _finish_project_load(self, path, payload, generated_results=None, include_results=True, results=None):
         try:
-            project_preferences = ProjectPreferencesState.from_payload(payload.get("project_preferences"))
-            if self._confirm_apply_project_preferences(project_preferences):
-                self._apply_project_preferences(project_preferences)
             with self._activities.start("Opening project..."):
-                self._apply_project_payload(
-                    payload, project_preferences=project_preferences, generated_results=generated_results
-                )
+                self._apply_project_payload(payload, generated_results=generated_results)
+                self._include_results = include_results
+                current = results.get("solved_system") if results else None
+                self._saved_run_id = current.run_id if current else None
+                if results is not None:
+                    for key, value in results.items():
+                        setattr(self._solve_session, key, value)
+                    self._view.restored_project_results()
                 self._session.path = path
                 self._remember_recent(path)
                 self.mark_project_clean()
@@ -368,14 +401,6 @@ class ProjectWorkflowController(QObject):
             self._view.show_error("Open project failed", str(exc))
 
     # -- project preferences ------------------------------------------------
-
-    def _confirm_apply_project_preferences(self, project_preferences: ProjectPreferencesState | None) -> bool:
-        if project_preferences is None or project_preferences == self.current_project_preferences():
-            return False
-        return self._view.confirm(
-            "Project Preferences",
-            "This project file contains unique application preferences. Would you like to apply them?",
-        )
 
     def _apply_project_preferences(self, project_preferences: ProjectPreferencesState) -> None:
         self._write_preferences(gui_preferences_with_project_preferences(self._read_preferences(), project_preferences))
@@ -386,8 +411,6 @@ class ProjectWorkflowController(QObject):
                 count=project_preferences.freq_count,
             )
         )
-        self._save_preferences()
-        self._save_frequency_settings()
 
     # -- applying a loaded payload -----------------------------------------
 
@@ -395,7 +418,6 @@ class ProjectWorkflowController(QObject):
         self,
         payload: dict,
         *,
-        project_preferences: ProjectPreferencesState | None = None,
         generated_results: dict | None = None,
     ) -> None:
         self._inputs.discard_channel_config_dialog()
@@ -429,6 +451,10 @@ class ProjectWorkflowController(QObject):
         component_channels = payload.get("component_channel_by_id", {})
         if not isinstance(component_channels, dict):
             component_channels = {}
+        defaults = self._new_project_defaults()
+        project_preferences = ProjectPreferencesState.from_payload(
+            payload.get("project_preferences"), defaults=defaults
+        )
         loaded_document = ProjectDocument(
             generator_documents=documents,
             active_generator_document_id=active_id,
@@ -450,7 +476,7 @@ class ProjectWorkflowController(QObject):
             source_config_by_name=source_config,
             channel_config_by_name=channel_config,
             max_spl_limits_by_channel=max_spl_limits,
-            project_preferences=project_preferences or self.current_project_preferences(),
+            project_preferences=project_preferences or defaults,
             physical_system=physical_system,
             component_channel_by_id={
                 str(component_id): str(channel_name) for component_id, channel_name in component_channels.items()
@@ -458,6 +484,7 @@ class ProjectWorkflowController(QObject):
             observation_planes=observation_planes_from_payload(payload.get("observation_planes")),
         )
         self._session.replace(loaded_document, path=self._session.path)
+        self._apply_project_preferences(loaded_document.project_preferences)
         self._geometry_store.generated_by_document_id = {}
         for document in self._project.generator_documents:
             result = (

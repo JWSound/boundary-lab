@@ -87,10 +87,10 @@ class SpeakerPackageDialog(QDialog):
         form.addRow(self.viewport_status)
 
         note = QLabel(
-            "Boundary Lab will run a new solve with the complex spherical field and any boundary traces "
-            "required by the selected fidelity. Level 3 stores a rank-32 parity Petrov–Galerkin ROM "
-            "with one, two, or four sectors according to the project's symmetry. Exported packages use "
-            "+Y as forward."
+            "Every level includes continuous spherical pressure over the project frequency range. "
+            "Level 2 exports boundary traces at the configured frequency samples. "
+            "Level 3 adds a continuous interior model over the project frequency range. "
+            "Exported packages use +Y as forward."
         )
         note.setWordWrap(True)
 
@@ -109,7 +109,7 @@ class SpeakerPackageDialog(QDialog):
             output_path=Path(self.output_edit.text().strip()),
             name=self.name_edit.text().strip(),
             fidelity=SpeakerPackageFidelity(int(self.fidelity_combo.currentData())),
-            coupled_representation=SpeakerPackageCoupledRepresentation.PARITY_ROM,
+            coupled_representation=SpeakerPackageCoupledRepresentation.CONTINUOUS_ROM,
             viewport_model_path=Path(self.viewport_edit.text().strip()) if self.viewport_edit.text().strip() else None,
             viewport_model_scale_to_m=float(self.viewport_units.currentData()),
         ).normalized()

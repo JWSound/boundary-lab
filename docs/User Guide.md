@@ -22,13 +22,15 @@ exchange Ath designs with other tools. Importing while a different plugin's
 design is selected creates a separate Ath design; export is available for Ath
 designs only.
 
-Open **Edit > Generator Plugins...** to manage plugins and choose the **Default
-Generator Plugin** for new designs. Ath appears as **Built-in** and is always
-enabled. Use **Open install folder**, copy a plugin folder there, then **Rescan**
-and enable it. Only enable plugins you trust: they execute Python inside Boundary
-Lab. Click **OK** to save or **Cancel** to discard selection changes. Existing
-designs retain their plugin and saved source. If you disable the default, choose
-an enabled, available replacement before saving.
+Click **+** in the Generator pane to add a design. Choose a generator by name
+from the menu. When Ath is the only available generator, **+** adds an Ath
+design immediately. New projects start with an Ath design.
+
+Open **Edit > Generator Plugins...** to manage plugins. Ath is built in and
+always enabled. Use **Open install folder**, copy a plugin folder there, then
+**Rescan** and enable it. Only enable plugins you trust because they execute
+Python inside Boundary Lab. Click **OK** to save or **Cancel** to discard
+selection changes. Existing designs retain their plugin and saved source.
 
 Plugin management is unavailable during preparation, generation, or solving.
 Changes to loaded plugin code require a restart, shown in the plugin's status.
@@ -45,7 +47,11 @@ The preview displays every enabled generated and imported mesh. Rigid surfaces
 are gray, moving surfaces are blue, and FEM-BEM interface surfaces are green.
 Mirrored images are shaded darker when X or XY symmetry is active. Hover over a
 surface to see its mesh name, physical-group name and tag, and element count.
-The lower-right readout reports the active element count and model dimensions.
+The viewport footer shows model dimensions. The right side of the main status bar
+shows BEM and FEM pressure unknowns per frequency for active meshes assigned to
+physical-system regions. BEM counts exterior pressure nodes after mesh preparation.
+FEM counts nodes in the selected volumes before condensation. A zero means there
+are no active unknowns of that type. A dash means the count is unavailable.
 
 <img src="../assets/3dviewport.png" alt="3D mesh preview" width="500">
 
@@ -63,6 +69,21 @@ Plots are enabled from the **View** menu and update as frequencies complete
 when live plot streaming is enabled. Use the save button in a plot's title bar
 to export that plot as a PNG. Horizontal and vertical isobars also provide
 buttons to capture and clear contour overlays.
+
+Each isobar's **Traces** menu selects the channels contributing to that plot.
+All channels are selected initially. Select one channel to isolate its directivity,
+or several to view their combined response, including phase interference and
+the configured channel gain, delay, polarity, and crossover. The selected response
+is normalized at that plane's configured reference angle. Horizontal and vertical
+selections are independent and do not change other plots or the channel settings.
+Clearing every channel leaves an empty plot; select a channel to restore it.
+
+Plot image and plot data exports follow that plot's selection. The **File > Export
+Polar Data** command continues to export the full system. Previous-solve comparisons
+use the current selection with the previous solve's channel data; captured contours
+remain frozen for comparison. Results without retained complex channel data show
+the combined response with **Traces** disabled. Selection is kept during the session
+and live updates, but is not saved in the project.
 
 <img src="../assets/plotviewer.png" alt="Boundary Lab plot panel" width="400">
 
@@ -85,9 +106,9 @@ rather than snapping to one curve.
 
 - **New Project** clears the current design, mesh, physical-system, channel,
   and solved-result state after prompting for unsaved changes.
-- **Save Project** writes to the active `.blab.json` path.
-- **Save Project As** selects a new project path.
-- **Open Project** loads a `.blab.json` project.
+- **Save Project** writes to the current project using its existing format.
+- **Save Project As** creates a compressed `.blab` package. Select **Include solved results** to reopen plots and adjust channel settings after loading. Ordinary saves remember this choice.
+- **Open Project** loads packaged `.blab` projects and legacy `.blab.json` projects.
 - **Open Recent** lists recently opened projects and can clear that history.
 - **Import/Export Ath Design** reads or writes the active Ath design's
   editable design source.
@@ -132,14 +153,14 @@ restrictive component. Mixed prescribed-velocity/electrodynamic channels are
 omitted.
 
 Maximum SPL is a physical capacity projection from the raw equal-voltage solve
-basis. Channel Voltage, Trim, crossover, polarity, delay, and Normalized
-Channel Correction do not alter it. Pmax is converted to an RMS voltage limit
+basis. Channel Voltage, Trim, crossover, polarity, delay, and channel
+normalization do not alter it. Pmax is converted to an RMS voltage limit
 using each component's Re (or Re' when semi-inductance is enabled), while Xmax
 is treated as peak and compared with the peak displacement derived from the
 RMS solve basis. The linear model does not include thermal compression,
 amplifier voltage/current limits, or excursion-dependent motor parameters.
 
-New **Prescribed Velocity** components in exterior-only BEM projects default to
+New **Prescribed Velocity** components in exterior BEM and coupled FEM-BEM projects default to
 a shared motion axis with **Automatic from surface normals** selected. Choose
 **Manual** to enter an X/Y/Z direction, and use **Flip** to reverse it. The direction is normalized;
 its length does not change the source speed. Automatic inference reports its
@@ -150,10 +171,18 @@ Saved surface-normal sources retain their existing behavior: each face receives 
 normal velocity, multiplied by its boundary's relative velocity weight. With a
 single direction, that velocity is additionally multiplied by the signed dot
 product of the face normal and the unit axis. Existing projects keep their
-surface-normal motion, indicated by a note in the component editor. The editor
-has no velocity-motion selector. Interior FEM and coupled FEM?BEM projects support only
-surface-normal prescribed sources. Under X or XY symmetry, a prescribed axis
-must lie in all active symmetry planes.
+surface-normal motion until explicitly changed. Use the component editor's
+**Surface-normal velocity / Axial velocity** selector to switch modes. For a
+coupled source, the same axis drives every assigned FEM and BEM surface; FEM
+normals point out of the acoustic volume, independently of input triangle winding.
+Opposing sides therefore receive the appropriate opposite normal components.
+Interior-only FEM projects still support only surface-normal prescribed sources.
+Under X or XY symmetry, a prescribed axis must lie in all active symmetry planes.
+
+Coupled axial sources assigned to FEM surfaces require an engine worker advertising
+`coupled_source_profiles: ["uniform_normal", "rigid_translation"]`. Older workers
+reject the request and require an engine update and restart; they do not silently
+substitute normal motion.
 
 Use **View > Show Motion Directions** to inspect saved axial assignments in the
 Mesh Preview. One yellow arrow per component shows its positive mechanical
@@ -217,69 +246,58 @@ current solve contains spherical samples.
 
 ### Edit and About Menus
 
-**Edit > Preferences** opens application and solve preferences. **About**
-contains diagnostic information, donation information, and the bundled help
-guide.
+**Edit > Project Configuration…** opens settings saved with the current project.
+**Edit > Preferences…** opens settings for this installation. **About** contains
+diagnostics, donation information, and the bundled help guide.
+
+## Project Configuration
+
+### Observation Sampling
+
+**Observation distance** sets the radius from the origin. **Polar angle step**
+sets horizontal and vertical sample spacing. Spinorama processing requires
+10-degree spacing or finer. Enable **Include 3D balloon samples** to sample the
+full sphere during a solve. **Balloon angular spacing** controls how densely
+the sphere is sampled. At 2.5 degrees, the solve requests about 6,600 points.
+
+Changes to sampling can require a new solve. Boundary Lab asks before clearing
+existing results. Frequency limits and count are in the command strip beside
+**Solve**.
+
+### Plot Presentation
+
+<img src="../assets/project-configuration.png" alt="Plot Presentation tab with horizontal and vertical reference angles" width="550">
+
+- **Directivity normalization** sets the horizontal and vertical reference angles.
+  The horizontal angle also supplies the reference for **Impose Channel Normalization**.
+- **Spinorama reference** sets the reference axes for the on-axis and listening-window curves.
+- **Fractional-octave smoothing** starts off. Enabling it smooths directivity, Spinorama, and balloon plots.
+- **Display range minimum** and **maximum** set the displayed and exported directivity range in dB.
+- **Isobar contour interval** sets the color steps. Choose 0 dB for smoothly interpolated colors.
+
+Presentation changes refresh existing results. Project files restore their saved
+settings automatically. To use the current configuration for future projects,
+select **Use as defaults for new projects** and click **OK**. This includes the
+frequency sweep, channel normalization, and stitch tolerance. Older projects
+use those defaults for any missing settings.
+
+With balloon samples available, the globe button in the **Spinorama** dock
+enables full-sphere Sound Power, PIR, and Spherical DI. Listening Window,
+Early Reflections, and ERDI then use every native horizontal and vertical
+sample inside their standard angular sectors. Turning it off restores the
+CEA-2034-style 10-degree horizontal and vertical calculation.
 
 ## Preferences
 
-<img src="../assets/preferences.png" alt="Preferences window" width="700">
+<img src="../assets/preferences.png" alt="Application preferences" width="550">
 
-### Solver Config
-
-- **BEM Solver** selects BEAT Engine CPU, Nvidia CUDA, or AMD ROCm. All solves
-  use the physical system. CPU is the default; saved Bempp and Server selections
-  migrate to CPU. Julia is required.
-
-- **Reuse CUDA Worker Memory** is an opt-in setting in Application Config for
-  faster consecutive local CUDA solves. Cached memory is reclaimed after five
-  seconds idle, every eight requests, or under memory pressure. If a new solve
-  arrives during reclamation, it waits while the UI remains responsive. This
-  requires a compatible BEAT Engine; see [CUDA memory reuse](advanced/beat-engine-CUDA.md#reusing-cuda-worker-memory-between-solves).
-
-- **Balloon Sampling** requests Fibonacci-sphere observation points during the
-  solve. Without these samples, the Balloon Plot action remains unavailable.
-- **Balloon Angle Precision** controls the approximate angular spacing and,
-  consequently, the number of solved balloon vertices. The default 2.5-degree
-  spacing produces approximately 6,600 points.
-
-### Observation Config
-
-- **Polar Angle Step** controls the solved horizontal and vertical observation
-  spacing. Spinorama processing requires 10-degree spacing or finer.
-- **Polar Observation Distance** sets the observation radius from the origin.
-- **Normalized Channel Correction** applies a per-channel reference-axis
-  magnitude correction before channel gain, delay, polarity, and crossover
-  filtering.
-- **Horizontal/Vertical Normalization Angle** chooses the reference angle used
-  for directivity normalization in each plane.
-- **Spin Horizontal/Vertical Ref Angle** chooses the reference axes for the
-  spinorama on-axis and listening-window curves without changing the early
-  reflections or sound-power data.
-- The globe button in the **Spinorama** dock enables full-sphere Sound Power,
-  PIR, and Spherical DI calculations. Listening Window, Early Reflections, and
-  ERDI then use every native horizontal/vertical sample inside their standard
-  angular sectors. The button is available only when **Balloon Sampling** data
-  exists for the solve. When disabled, the plot retains its CEA-2034-style
-  10-degree horizontal/vertical calculation.
-- **Polar Smoothing** applies fractional-octave smoothing to directivity,
-  spinorama, and balloon presentation data.
-- **SPL Min/Max** set the displayed and exported directivity clipping range.
-- **Isobar Contour Step** selects stepped isobar colors. Set it to 0 dB for a
-  smoothly interpolated color map.
-
-### Mesh Config
-
-**Stitch Tolerance** is the maximum distance used when joining adjacent mesh
-parts for an exterior region whose stitching option is enabled in **System >
-Regions**.
-
-### Application
-
-- **Theme** selects the system, light, or dark appearance.
-- **Live Plot Streaming** enables plot refreshes while a solve is running.
-- **Live Plot Quality** selects the interpolation density used for those live
-  updates. Completed solves are rendered at final quality.
+- **Compute and connections** selects the solver backend. Remote solves show
+  the server connection settings. Local CUDA solves offer **Reuse CUDA Worker
+  Memory** for faster consecutive solves. [CUDA memory reuse](advanced/beat-engine-CUDA.md#reusing-cuda-worker-memory-between-solves)
+- **Interactive performance** controls the field cache, field updates while moving
+  observation planes, and the streaming and interpolation quality of live plots.
+  Completed solves use final plot quality.
+- **Appearance** defaults to Light. System and Dark are also available.
 
 ## Command Strip
 
@@ -346,6 +364,9 @@ They are useful for multiway interference and crossover studies.
 - **Voltage** sets the nominal voltage shared by electrodynamic transducers on
   the channel. It is unavailable when the channel contains a
   prescribed-velocity source.
+- **Impose Channel Normalization** starts off. Enabling it flattens each channel's magnitude at the horizontal
+  reference angle before gain, delay, and filtering. Click **Apply** to update the
+  response using the existing channel basis.
 - **Trim dB**, **Polarity**, and **Delay ms** apply complex channel weights.
 - **HPF/LPF Type** and **Frequency** define idealized analog crossover transfer
   functions.
@@ -369,8 +390,9 @@ and assign its BEM surface mesh or meshes. Add a **Bounded Interior** for each
 FEM chamber, choose its tetrahedral mesh and physical volume group, and
 optionally select a homogeneous FEM bulk-loss factor. A project containing
 bounded regions but no unbounded region is a valid interior-only FEM project.
-If the exterior uses adjoining parts of one continuous surface, enable
-**Stitch exterior region meshes**; leave it off for disconnected closed bodies.
+New projects enable **Stitch exterior region meshes** for adjoining parts of one
+continuous surface. The adjacent **Stitch tolerance** sets the maximum joining
+distance in millimeters. Turn stitching off for disconnected closed bodies.
 
 An exterior-only system supports prescribed-velocity components. Interior and
 coupled systems also support linear electrodynamic components. The Interfaces
@@ -379,6 +401,8 @@ tab is enabled only when both bounded and unbounded regions exist.
 ### Boundaries
 
 <img src="../assets/boundarieswindow.png" alt="System Boundaries tab" width="700">
+
+Select a boundary row to outline its surface in light green in the visible 3D viewport.
 
 Classify each region surface as **Rigid**, **Moving**, or—where applicable—
 **Interface** or **Plane-wave tube termination**. A bounded rigid surface may
@@ -473,17 +497,39 @@ animated instantaneous pressure use a diverging color map centered on zero.
 The properties dialog shows only controls relevant to the selected display.
 SPL supports automatic scaling or manual minimum/maximum values; Normalized SPL
 lets you set the displayed range below 0 dB. **Animate Cycle** is available for
-Real Pressure, Imaginary Pressure, Particle Velocity Magnitude, and Flow Arrows.
+Pressure, Particle Velocity Magnitude, and Flow Arrows.
 SPL, Normalized SPL, and Phase can sweep frequency but do not animate a cycle.
 
-Interior planes can also display **Particle Velocity Magnitude**. Boundary Lab
-derives the complex particle-velocity vector from the P1 FEM pressure gradient
-using the bounded region density, then colors the plane by its magnitude in
+**Pressure** uses a **Real | Imaginary** component toggle in place of separate
+dropdown entries. The same toggle appears for static **Acoustic Flow Arrows**:
+Real shows active intensity and Imaginary shows reactive intensity, with the
+legend and intensity-scale label identifying the selected quantity. Reactive
+intensity describes the quadrature component of complex intensity, not net
+time-averaged energy transport. **Animate Cycle** hides the toggle and shows
+physical instantaneous pressure or particle velocity; stopping animation restores
+the chosen component. Existing saved Real/Imaginary Pressure selections are preserved.
+
+Interior, Exterior, and Combined planes can display **Particle Velocity Magnitude**
+and **Acoustic Flow Arrows** with BEAT CPU or CUDA. Combined planes automatically
+use FEM fields inside bounded acoustic regions and BEM fields in exterior air.
+Boundary Lab derives complex particle velocity from the pressure gradient and
+the region density, then colors the magnitude display in
 metres per second with an automatic color maximum or a user-specified limit.
 **Animate Cycle** shows physical instantaneous particle speed from the retained
-RMS phasors, using a color range that stays fixed throughout the cycle. The
-option is unavailable for Exterior and Combined planes because their exterior
-BEM field evaluator currently returns pressure only.
+RMS phasors, using a color range that stays fixed throughout the cycle.
+Flow arrows show active or reactive intensity while static and in-plane particle
+velocity while animated. Solid interiors and exterior samples too close to the
+BEM boundary are omitted. The existing density and scale controls apply across
+both acoustic regions; changing the display does not require another solve when
+the boundary traces were retained.
+
+For Interior planes, selecting **Element Field** with **Acoustic Flow Arrows**
+shows full 3D vectors throughout the visible, clipped FEM volume, with translucent
+tetrahedra as context. Static arrows show 3D active or reactive intensity; **Animate Cycle**
+shows instantaneous 3D particle velocity. **Arrow density** controls equal spacing
+throughout the volume, with an internal sample limit for responsiveness. The
+existing scale controls apply, and **Invert clip side** selects the visible side.
+**Smooth Field** retains the planar arrows.
 
 The **Pressure color range** is automatic by default and uses a symmetric range
 based on the current pressure field. To keep the scale fixed while changing or
@@ -498,12 +544,13 @@ With a plane selected in the viewport, use **W** for Move, **E** for Rotate,
 and **R** for Scale. Drag the axis arrows to translate the plane or the square
 corner grips to resize it. Controls keep a consistent screen size when zooming.
 
-In Rotate mode, drag a red, green, or blue ring to rotate about the plane's
-local X, Y, or Z axis. A radar appears with 45-degree ticks on its inner band,
-10-degree ticks on its middle band, and 5-degree ticks on its outer band.
-Moving within 10 screen pixels of a tick snaps to that relative angle; away
-from the ticks, rotation is continuous. Alt is no longer needed for free
-rotation. The current angle and the top-right hotkey help remain visible.
+In Rotate mode, each colored spoke ends in a two-arrow knob. Hover over the
+red, green, or blue knob to see the dial for the plane's local X, Y, or Z axis.
+Drag the knob or either arrow to rotate. The spoke's starting direction marks
+0° for that drag. The knob follows the applied angle around the ring.
+The inner band has 45° ticks with heavier marks at each quarter-turn.
+The middle and outer bands have 10° and 5° ticks. Drag near a tick to snap
+to its angle, or between the bands for continuous rotation.
 Nearly edge-on axes use a face-on radar to keep the ticks accessible.
 Release to finish a change, or press **Escape** during a drag to restore the
 plane's starting geometry.
@@ -512,8 +559,10 @@ The manual pressure color limit accepts whole pascal values and starts at 10 Pa.
 
 ## Frequency Controls
 
-Set **Min Hz**, **Max Hz**, and **Frequencies** before solving. Boundary Lab
-uses logarithmic spacing between the normalized minimum and maximum values.
+Drag the two **Frequency range** handles or type an exact frequency in either box.
+The left box sets the minimum and the right box sets the maximum. Each endpoint
+stops 1 Hz from the other. **Frequencies** sets the number of logarithmically
+spaced samples in the sweep.
 
 ## Balloon Plot
 

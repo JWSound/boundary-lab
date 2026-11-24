@@ -30,10 +30,49 @@ def box_catalog(monkeypatch):
     return catalog
 
 
-def test_custom_editor_updates_source_and_default_does_not_change_existing_design(main_window, box_catalog):
+def test_add_design_menu_cancel_and_choose_enabled_plugin(main_window, box_catalog, qapp):
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+
+    window = main_window
+    original = window.active_generator_document()
+    button, menu = window.add_design_button, window.add_design_menu
+    window.show()
+    window.editor_dock.show()
+    window.editor_dock.raise_()
+    qapp.processEvents()
+    button.setFocus()
+    QTest.keyClick(button, Qt.Key_Space)
+    assert menu.isVisible()
+    assert [action.data() for action in menu.actions()] == ["ath", "example.box"]
+    QTest.keyClick(menu, Qt.Key_Escape)
+    assert not menu.isVisible()
+    assert window.generator_documents == (original,)
+    assert window.active_generator_document() == original
+
+    QTest.mouseClick(button, Qt.LeftButton)
+    action = menu.actions()[1]
+    QTest.mouseClick(menu, Qt.LeftButton, pos=menu.actionGeometry(action).center())
+    assert len(window.generator_documents) == 2
+    assert window.active_generator_document().provider_id == "example.box"
+    assert window.generator_documents[0] == original
+
+
+@pytest.mark.parametrize("unavailable", ["disabled", "error"])
+def test_add_design_button_directly_adds_ath_when_only_choice(main_window, box_catalog, unavailable):
+    if unavailable == "disabled":
+        box_catalog.enabled.clear()
+    else:
+        box_catalog.packages[0].error = "Restart required"
+    main_window.add_design_button.click()
+    assert not main_window.add_design_menu.isVisible()
+    assert len(main_window.generator_documents) == 2
+    assert main_window.active_generator_document().provider_id == "ath"
+
+
+def test_custom_editor_updates_source_and_preserves_existing_design(main_window, box_catalog):
     old = main_window.active_generator_document()
-    main_window.preferences.default_geometry_provider = "example.box"
-    main_window.add_generator_document()
+    main_window.add_generator_document("example.box")
     document = main_window.active_generator_document()
     assert document.provider_id == "example.box"
     assert document.mesh_scale_factor == 1.0
@@ -63,8 +102,7 @@ def test_dispose_suppresses_pending_subscription_and_invalidates_source_handle(m
 
 
 def test_rebuild_disposes_custom_editor_and_missing_provider_preserves_source(main_window, box_catalog, qapp):
-    main_window.preferences.default_geometry_provider = "example.box"
-    main_window.add_generator_document()
+    main_window.add_generator_document("example.box")
     document = main_window.active_generator_document()
     _editor, host = main_window._provider_editors[document.id]
     box_catalog.enabled.clear()
@@ -72,19 +110,18 @@ def test_rebuild_disposes_custom_editor_and_missing_provider_preserves_source(ma
     qapp.processEvents()
     qapp.processEvents()
     assert main_window.active_generator_document() == document
-    assert "disabled" in main_window.editor_tabs.currentWidget().toPlainText()
+    assert "disabled" in main_window.editor_pages.currentWidget().toPlainText()
     assert not main_window.generate_button.isEnabled()
     assert host.services.context().exception().code == "closed"
     assert not main_window.provider_host.service._subscriptions
 
 
 def test_source_schema_mismatch_does_not_create_editor(main_window, box_catalog):
-    main_window.preferences.default_geometry_provider = "example.box"
-    main_window.add_generator_document()
+    main_window.add_generator_document("example.box")
     document = replace(main_window.active_generator_document(), provider_schema_version=2)
     main_window.generator_documents = (document,)
     main_window.rebuild_generator_document_tabs()
-    assert "Incompatible" in main_window.editor_tabs.currentWidget().toPlainText()
+    assert "Incompatible" in main_window.editor_pages.currentWidget().toPlainText()
     assert not main_window.generate_button.isEnabled()
     assert main_window.active_generator_document().source == document.source
 
@@ -92,7 +129,7 @@ def test_source_schema_mismatch_does_not_create_editor(main_window, box_catalog)
 def test_document_generate_selects_its_own_document_and_correlates_request(main_window, monkeypatch):
     first = main_window.active_generator_document()
     host = DocumentHost(main_window, first)
-    main_window.add_generator_document()
+    main_window.add_generator_document("ath")
     calls = []
 
     def generate():
@@ -108,22 +145,39 @@ def test_provider_preferences_roundtrip_and_new_project_default(main_window, box
     from PySide6.QtCore import QSettings
 
     settings = QSettings(str(tmp_path / "preferences.ini"), QSettings.Format.IniFormat)
-    preferences = GuiPreferences(default_geometry_provider="example.box", enabled_geometry_providers=("example.box",))
+    preferences = GuiPreferences(enabled_geometry_providers=("example.box",))
+    settings.setValue("providers/default", "example.box")
     save_gui_preferences(settings, preferences)
     restored = load_gui_preferences(settings)
-    assert restored.default_geometry_provider == "example.box"
     assert restored.enabled_geometry_providers == ("example.box",)
     main_window.preferences = restored
     main_window.project_workflow.confirm_unsaved_project_changes = lambda _action: True
     main_window.new_project()
-    assert main_window.active_generator_document().provider_id == "example.box"
+    assert main_window.active_generator_document().provider_id == "ath"
+
+
+def test_reopening_mixed_designs_restores_plugins_and_active_editor(main_window, box_catalog, tmp_path, qapp):
+    workflow = main_window.project_workflow
+    main_window.add_generator_document("example.box")
+    documents = main_window.generator_documents
+    path = tmp_path / "mixed.blab.json"
+    assert workflow._save_project_to_path(path)
+    main_window.new_project()
+    workflow.open_recent_project(path)
+    deadline = monotonic() + 5
+    while main_window.preparations.active and monotonic() < deadline:
+        qapp.processEvents()
+        sleep(0.001)
+    qapp.processEvents()
+    assert main_window.generator_documents == documents
+    assert main_window.active_generator_document() == documents[1]
+    assert documents[1].id in main_window._provider_editors
 
 
 def test_custom_editor_generates_through_worker_and_accepts_memory_mesh(main_window, box_catalog, qapp, monkeypatch):
     errors = []
     monkeypatch.setattr(main_window, "show_error", lambda *args: errors.append(args))
-    main_window.preferences.default_geometry_provider = "example.box"
-    main_window.add_generator_document()
+    main_window.add_generator_document("example.box")
     document = main_window.active_generator_document()
     _editor, host = main_window._provider_editors[document.id]
     events = []
@@ -150,29 +204,23 @@ def test_failed_editor_factory_preserves_document_and_releases_subscription(
         raise RuntimeError("Broken editor")
 
     monkeypatch.setattr(box_catalog, "factory", lambda *_args: factory)
-    main_window.preferences.default_geometry_provider = "example.box"
-    main_window.add_generator_document()
-    assert "Broken editor" in main_window.editor_tabs.currentWidget().toPlainText()
+    main_window.add_generator_document("example.box")
+    assert "Broken editor" in main_window.editor_pages.currentWidget().toPlainText()
     assert main_window.active_generator_document().source == box_catalog.source_defaults("example.box")
     qapp.processEvents()
     qapp.processEvents()
     assert not main_window.provider_host.service._subscriptions
 
 
-def test_plugin_manager_requires_available_default_and_cancel_preserves_catalog(qapp, box_catalog):
-    from PySide6.QtWidgets import QDialog, QDialogButtonBox
+def test_plugin_manager_can_disable_last_external_plugin_and_cancel_preserves_catalog(qapp, box_catalog):
+    from PySide6.QtWidgets import QDialogButtonBox
 
     from blab.ui.provider_preferences import ProviderPackagesDialog
 
-    dialog = ProviderPackagesDialog(("example.box",), default_provider="example.box")
+    dialog = ProviderPackagesDialog(("example.box",))
     assert dialog.table.item(0, 3).text() == "Built-in"
     assert not dialog.table.cellWidget(0, 0).isEnabled()
     dialog.table.cellWidget(1, 0).setChecked(False)
-    assert not dialog.buttons.button(QDialogButtonBox.StandardButton.Ok).isEnabled()
-    dialog.accept()
-    assert dialog.result() != QDialog.Accepted
-    dialog.default_provider_combo.setCurrentIndex(0)
-    assert dialog.default_provider == "ath"
     assert dialog.buttons.button(QDialogButtonBox.StandardButton.Ok).isEnabled()
     dialog.reject()
     assert box_catalog.enabled == {"example.box"}
@@ -182,16 +230,14 @@ def test_plugin_manager_requires_available_default_and_cancel_preserves_catalog(
 def test_plugin_manager_rescan_retains_staged_choices(qapp, box_catalog):
     from blab.ui.provider_preferences import ProviderPackagesDialog
 
-    dialog = ProviderPackagesDialog((), default_provider="ath")
+    dialog = ProviderPackagesDialog(())
     dialog.table.cellWidget(1, 0).setChecked(True)
-    dialog.default_provider_combo.setCurrentIndex(1)
     dialog.rescan()
-    assert dialog.default_provider == "example.box"
     assert dialog.table.cellWidget(1, 0).isChecked()
     dialog.deleteLater()
 
 
-def test_plugin_manager_missing_default_and_restart_status(qapp, box_catalog, monkeypatch):
+def test_plugin_manager_shows_restart_status(qapp, box_catalog, monkeypatch):
     from PySide6.QtWidgets import QDialogButtonBox
 
     from blab.ui.provider_preferences import ProviderPackagesDialog
@@ -199,25 +245,20 @@ def test_plugin_manager_missing_default_and_restart_status(qapp, box_catalog, mo
     package = box_catalog.packages[0]
     package.error = "Package changed after loading; restart Boundary Lab."
     monkeypatch.setattr(box_catalog, "scan", lambda: box_catalog.packages)
-    dialog = ProviderPackagesDialog(("example.box",), default_provider="example.box")
+    dialog = ProviderPackagesDialog(("example.box",))
     assert "restart" in dialog.table.item(1, 3).text()
-    assert not dialog.buttons.button(QDialogButtonBox.StandardButton.Ok).isEnabled()
+    assert dialog.buttons.button(QDialogButtonBox.StandardButton.Ok).isEnabled()
     dialog.deleteLater()
-    missing = ProviderPackagesDialog((), default_provider="missing.plugin")
-    assert "unavailable" in missing.default_provider_combo.currentText()
-    assert not missing.buttons.button(QDialogButtonBox.StandardButton.Ok).isEnabled()
-    missing.deleteLater()
 
 
 def test_preferences_preserve_plugin_settings_without_manager_controls(qapp):
     from blab.ui.dialogs import PreferencesDialog
 
-    preferences = GuiPreferences(default_geometry_provider="example.box", enabled_geometry_providers=("example.box",))
+    preferences = GuiPreferences(enabled_geometry_providers=("example.box",))
     dialog = PreferencesDialog(preferences)
     assert not hasattr(dialog, "default_provider_combo")
     assert not hasattr(dialog, "provider_packages_button")
     saved = dialog.preferences()
-    assert saved.default_geometry_provider == "example.box"
     assert saved.enabled_geometry_providers == ("example.box",)
     dialog.deleteLater()
 
@@ -228,9 +269,8 @@ def test_plugin_manager_commit_preserves_design_artifacts_and_results(main_windo
 
     from blab.ui.provider_preferences import ProviderPackagesDialog
 
-    main_window.preferences.default_geometry_provider = "example.box"
     main_window.preferences.enabled_geometry_providers = ("example.box",)
-    main_window.add_generator_document()
+    main_window.add_generator_document("example.box")
     editor, _host = main_window._provider_editors[main_window.active_generator_document_id]
     editor.spins["width_m"].setValue(0.25)
     documents = main_window.generator_documents
@@ -241,7 +281,6 @@ def test_plugin_manager_commit_preserves_design_artifacts_and_results(main_windo
 
     def execute(dialog):
         dialog.table.cellWidget(1, 0).setChecked(False)
-        dialog.default_provider_combo.setCurrentIndex(0)
         return QDialog.Accepted if accepted else QDialog.Rejected
 
     monkeypatch.setattr(ProviderPackagesDialog, "exec", execute)
@@ -250,12 +289,10 @@ def test_plugin_manager_commit_preserves_design_artifacts_and_results(main_windo
     assert main_window.active_generator_document_id == selected
     assert main_window.generated_geometry_by_document_id == artifacts
     assert not invalidations
-    assert main_window.preferences.default_geometry_provider == ("ath" if accepted else "example.box")
     assert box_catalog.enabled == (set() if accepted else {"example.box"})
     if accepted:
-        assert "Edit > Generator Plugins" in main_window.editor_tabs.currentWidget().toPlainText()
+        assert "Edit > Generator Plugins" in main_window.editor_pages.currentWidget().toPlainText()
         restored = load_gui_preferences(main_window.settings)
-        assert restored.default_geometry_provider == "ath"
         assert restored.enabled_geometry_providers == ()
         box_catalog.enabled.add("example.box")
         main_window.rebuild_generator_document_tabs()
@@ -284,6 +321,11 @@ def test_generator_menu_and_layout_compatibility(main_window, monkeypatch):
     monkeypatch.setattr(ProviderPackagesDialog, "exec", lambda _dialog: calls.append(True))
     menu_actions = main_window.menuBar().actions()
     edit = next(action for action in menu_actions if action.text() == "Edit").menu()
+    assert [action.text() for action in edit.actions() if not action.isSeparator()][:3] == [
+        "Project Configuration...",
+        "Preferences...",
+        "Generator Plugins...",
+    ]
     action = next(action for action in edit.actions() if action.text() == "Generator Plugins...")
     action.trigger()
     assert calls == [True]
@@ -303,8 +345,7 @@ def test_generator_menu_and_layout_compatibility(main_window, monkeypatch):
 
 
 def test_ath_import_keeps_custom_design_and_export_follows_active_plugin(main_window, box_catalog, tmp_path):
-    main_window.preferences.default_geometry_provider = "example.box"
-    main_window.add_generator_document()
+    main_window.add_generator_document("example.box")
     custom = main_window.active_generator_document()
     assert custom.name.startswith("design")
     assert not main_window.export_ath_design_action.isEnabled()

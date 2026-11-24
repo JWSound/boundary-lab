@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QUrl, Signal
@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QDoubleSpinBox,
     QFormLayout,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -23,6 +24,7 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -30,6 +32,7 @@ from PySide6.QtWidgets import (
 from blab.config import ChannelConfig, CrossoverConfig
 from blab.mesh_data import MeshData
 from blab.paths import APP_ROOT
+from blab.project.model import ProjectPreferencesState
 from blab.solvers.registry import backend_label_to_id, normalize_backend_id
 from blab.ui.drag_drop import local_drop_paths
 from blab.ui.file_dialogs import FileDialogService
@@ -150,10 +153,37 @@ def _build_crossover_frequency_spin(frequency_hz: float | None) -> QDoubleSpinBo
     return spin
 
 
+def _settings_section(title: str, rows: tuple[tuple[str, QWidget] | tuple[str, QWidget, str], ...]) -> QGroupBox:
+    group = QGroupBox(title)
+    form = QFormLayout(group)
+    info_icon = QIcon(str(INFO_ICON_PATH))
+    for row in rows:
+        label_text, widget = row[:2]
+        tooltip = row[2] if len(row) > 2 else ""
+        label = QLabel(label_text)
+        if tooltip:
+            label.setToolTip(tooltip)
+            widget.setToolTip(tooltip)
+            label_row = QWidget()
+            label_layout = QHBoxLayout(label_row)
+            label_layout.setContentsMargins(0, 0, 0, 0)
+            label_layout.setSpacing(4)
+            icon_label = QLabel()
+            icon_label.setPixmap(info_icon.pixmap(16, 16))
+            icon_label.setToolTip(tooltip)
+            label_layout.addWidget(icon_label)
+            label_layout.addWidget(label)
+            label_layout.addStretch(1)
+            form.addRow(label_row, widget)
+            continue
+        form.addRow(label, widget)
+    return group
+
+
 class PreferencesDialog(QDialog):
     def __init__(self, preferences: GuiPreferences, parent: QWidget | None = None):
         super().__init__(parent)
-        self._plugin_preferences = preferences
+        self._preferences = preferences
         self.setWindowTitle("Preferences")
 
         self.theme_combo = QComboBox()
@@ -200,11 +230,93 @@ class PreferencesDialog(QDialog):
         )
         self.solve_backend_combo.setCurrentText(backend_label)
         self.server_preferences = ServerPreferences(preferences)
-        self.server_preferences.setEnabled(current_backend == "beat_remote")
-        self.solve_backend_combo.currentTextChanged.connect(
-            lambda label: self.server_preferences.setEnabled(self.solve_backend_options[label] == "beat_remote")
+        self.field_cache_size_spin = QSpinBox()
+        self.field_cache_size_spin.setRange(FIELD_CACHE_SIZE_MIN_MB, FIELD_CACHE_SIZE_MAX_MB)
+        self.field_cache_size_spin.setSingleStep(16)
+        self.field_cache_size_spin.setSuffix(" MB")
+        self.field_cache_size_spin.setValue(normalize_field_cache_size_mb(preferences.field_cache_size_mb))
+
+        self.field_translation_target_fps_spin = QDoubleSpinBox()
+        self.field_translation_target_fps_spin.setRange(
+            FIELD_TRANSLATION_TARGET_FPS_MIN,
+            FIELD_TRANSLATION_TARGET_FPS_MAX,
+        )
+        self.field_translation_target_fps_spin.setDecimals(1)
+        self.field_translation_target_fps_spin.setSingleStep(0.5)
+        self.field_translation_target_fps_spin.setSuffix(" FPS")
+        self.field_translation_target_fps_spin.setValue(
+            normalize_field_translation_target_fps(preferences.field_translation_target_fps)
         )
 
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+
+        layout = QVBoxLayout(self)
+        compute = _settings_section(
+            "Compute and connections",
+            (
+                ("Solver", self.solve_backend_combo),
+                ("Server", self.server_preferences, "Use your server address and optional access key."),
+                (
+                    "Reuse CUDA Worker Memory",
+                    self.cuda_worker_reuse_check,
+                    "Reuse cached GPU memory between local CUDA solves.",
+                ),
+            ),
+        )
+        layout.addWidget(compute)
+
+        def show_backend_options():
+            backend = self.solve_backend_options[self.solve_backend_combo.currentText()]
+            self.server_preferences.setEnabled(backend == "beat_remote")
+            compute.layout().setRowVisible(self.server_preferences, backend == "beat_remote")
+            compute.layout().setRowVisible(self.cuda_worker_reuse_check, backend == "beat_cuda")
+
+        self.solve_backend_combo.currentTextChanged.connect(show_backend_options)
+        show_backend_options()
+        layout.addWidget(
+            _settings_section(
+                "Interactive performance",
+                (
+                    (
+                        "Field Cache Size",
+                        self.field_cache_size_spin,
+                        "Memory available for evaluated observation-plane fields.",
+                    ),
+                    (
+                        "Field Translation Target Framerate",
+                        self.field_translation_target_fps_spin,
+                        "Update rate for fields while moving an observation plane.",
+                    ),
+                    ("Live Plot Streaming", self.live_plot_streaming_check, ""),
+                    ("Live Plot Quality", self.live_plot_quality_combo, ""),
+                ),
+            )
+        )
+        layout.addWidget(_settings_section("Appearance", (("Theme", self.theme_combo),)))
+        layout.addWidget(buttons)
+
+    def preferences(self) -> GuiPreferences:
+        return replace(
+            self._preferences,
+            theme=self.theme_options[self.theme_combo.currentText()],
+            solve_backend=self.solve_backend_options[self.solve_backend_combo.currentText()],
+            solve_server_url=self.server_preferences.url.text().strip(),
+            solve_server_access_key=self.server_preferences.access_key.text().strip(),
+            cuda_worker_reuse=bool(self.cuda_worker_reuse_check.isChecked()),
+            live_plot_streaming=bool(self.live_plot_streaming_check.isChecked()),
+            live_plot_quality=self.live_plot_quality_options[self.live_plot_quality_combo.currentText()],
+            field_cache_size_mb=int(self.field_cache_size_spin.value()),
+            field_translation_target_fps=float(self.field_translation_target_fps_spin.value()),
+        )
+
+
+class ProjectConfigurationDialog(QDialog):
+    def __init__(self, preferences: ProjectPreferencesState, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Project Configuration")
+        self._preferences = preferences
         self.polar_step_spin = QDoubleSpinBox()
         self.polar_step_spin.setRange(0.5, 90.0)
         self.polar_step_spin.setDecimals(1)
@@ -218,9 +330,6 @@ class PreferencesDialog(QDialog):
         self.polar_distance_spin.setSingleStep(0.25)
         self.polar_distance_spin.setSuffix(" m")
         self.polar_distance_spin.setValue(preferences.polar_observation_distance_m)
-
-        self.normalized_channel_correction_check = QCheckBox("Enabled")
-        self.normalized_channel_correction_check.setChecked(preferences.normalized_channel_correction)
 
         self.smoothing_combo = QComboBox()
         self.smoothing_options = {
@@ -283,13 +392,6 @@ class PreferencesDialog(QDialog):
         self.isobar_contour_step_spin.setSuffix(" dB")
         self.isobar_contour_step_spin.setValue(preferences.isobar_contour_step_db)
 
-        self.stitch_tolerance_spin = QDoubleSpinBox()
-        self.stitch_tolerance_spin.setRange(0.001, 1000.0)
-        self.stitch_tolerance_spin.setDecimals(3)
-        self.stitch_tolerance_spin.setSingleStep(0.5)
-        self.stitch_tolerance_spin.setSuffix(" mm")
-        self.stitch_tolerance_spin.setValue(preferences.stitch_tolerance_mm)
-
         self.spherical_sampling_check = QCheckBox("Enabled")
         self.spherical_sampling_check.setChecked(preferences.spherical_sampling_enabled)
 
@@ -299,175 +401,89 @@ class PreferencesDialog(QDialog):
         self.balloon_angle_precision_spin.setSingleStep(0.5)
         self.balloon_angle_precision_spin.setSuffix(" deg")
         self.balloon_angle_precision_spin.setValue(preferences.balloon_angle_precision_deg)
-        self.balloon_angle_precision_spin.setEnabled(preferences.spherical_sampling_enabled)
-        self.spherical_sampling_check.toggled.connect(self.balloon_angle_precision_spin.setEnabled)
 
-        self.field_cache_size_spin = QSpinBox()
-        self.field_cache_size_spin.setRange(FIELD_CACHE_SIZE_MIN_MB, FIELD_CACHE_SIZE_MAX_MB)
-        self.field_cache_size_spin.setSingleStep(16)
-        self.field_cache_size_spin.setSuffix(" MB")
-        self.field_cache_size_spin.setValue(normalize_field_cache_size_mb(preferences.field_cache_size_mb))
-
-        self.field_translation_target_fps_spin = QDoubleSpinBox()
-        self.field_translation_target_fps_spin.setRange(
-            FIELD_TRANSLATION_TARGET_FPS_MIN,
-            FIELD_TRANSLATION_TARGET_FPS_MAX,
+        tabs = QTabWidget()
+        sampling = QWidget()
+        form = QFormLayout(sampling)
+        form.addRow("Observation distance", self.polar_distance_spin)
+        form.addRow("Polar angle step", self.polar_step_spin)
+        self.polar_step_spin.setToolTip(
+            "Horizontal and vertical sample spacing. Spinorama requires 10 degrees or finer."
         )
-        self.field_translation_target_fps_spin.setDecimals(1)
-        self.field_translation_target_fps_spin.setSingleStep(0.5)
-        self.field_translation_target_fps_spin.setSuffix(" FPS")
-        self.field_translation_target_fps_spin.setValue(
-            normalize_field_translation_target_fps(preferences.field_translation_target_fps)
+        self.spherical_sampling_check.setText("Include 3D balloon samples")
+        form.addRow(self.spherical_sampling_check)
+        form.addRow("Balloon angular spacing", self.balloon_angle_precision_spin)
+        form.setRowVisible(self.balloon_angle_precision_spin, preferences.spherical_sampling_enabled)
+        self.spherical_sampling_check.toggled.connect(
+            lambda enabled: form.setRowVisible(self.balloon_angle_precision_spin, enabled)
         )
+        tabs.addTab(sampling, "Observation Sampling")
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-
-        layout = QVBoxLayout(self)
-        columns = QHBoxLayout()
-        columns.setSpacing(12)
-        left_column = QVBoxLayout()
-        right_column = QVBoxLayout()
-        left_column.setSpacing(8)
-        right_column.setSpacing(8)
-
-        left_column.addWidget(
-            self._section(
-                "Observation Config",
+        presentation = QWidget()
+        layout = QVBoxLayout(presentation)
+        references = QGroupBox("Reference angles")
+        grid = QGridLayout(references)
+        grid.addWidget(QLabel("Horizontal"), 0, 1)
+        grid.addWidget(QLabel("Vertical"), 0, 2)
+        grid.addWidget(QLabel("Directivity normalization"), 1, 0)
+        horizontal = QHBoxLayout()
+        horizontal.addWidget(self.horizontal_norm_angle_spin)
+        info = QLabel()
+        info.setPixmap(QIcon(str(INFO_ICON_PATH)).pixmap(16, 16))
+        note = "When Impose Channel Normalization is enabled, this horizontal angle also sets the reference axis for the per-channel magnitude correction."
+        info.setToolTip(note)
+        self.horizontal_norm_angle_spin.setToolTip(note)
+        horizontal.addWidget(info)
+        grid.addLayout(horizontal, 1, 1)
+        grid.addWidget(self.vertical_norm_angle_spin, 1, 2)
+        grid.addWidget(QLabel("Spinorama reference"), 2, 0)
+        grid.addWidget(self.spin_horizontal_ref_angle_spin, 2, 1)
+        grid.addWidget(self.spin_vertical_ref_angle_spin, 2, 2)
+        layout.addWidget(references)
+        layout.addWidget(
+            _settings_section(
+                "Directivity plots",
                 (
+                    ("Fractional-octave smoothing", self.smoothing_combo),
+                    ("Display range minimum", self.spl_min_spin),
+                    ("Display range maximum", self.spl_max_spin),
                     (
-                        "Balloon Sampling",
-                        self.spherical_sampling_check,
-                        "Gather spherical observation data for 3d ballon viewer",
-                    ),
-                    (
-                        "Balloon Angle Precision",
-                        self.balloon_angle_precision_spin,
-                        "Resolution of spherical sampling. 2.5 degrees = ~6,000 points.",
-                    ),
-                    (
-                        "Polar Angle Step",
-                        self.polar_step_spin,
-                        "Angular resolution for horizontal/vertical polars - spin plot requires a minimum of 10 degrees",
-                    ),
-                    ("Polar Observation Distance", self.polar_distance_spin, ""),
-                    (
-                        "Normalized Channel Correction",
-                        self.normalized_channel_correction_check,
-                        "Applies a per-channel reference-axis magnitude correction before channel gain, delay, and crossover filters.",
-                    ),
-                    ("Horizontal Normalization Angle", self.horizontal_norm_angle_spin, ""),
-                    ("Vertical Normalization Angle", self.vertical_norm_angle_spin, ""),
-                    ("Spin Horizontal Ref Angle", self.spin_horizontal_ref_angle_spin, ""),
-                    ("Spin Vertical Ref Angle", self.spin_vertical_ref_angle_spin, ""),
-                    ("Polar Smoothing", self.smoothing_combo, ""),
-                    ("SPL Min", self.spl_min_spin, ""),
-                    ("SPL Max", self.spl_max_spin, ""),
-                    (
-                        "Isobar Contour Step",
+                        "Isobar contour interval",
                         self.isobar_contour_step_spin,
                         "Set to 0 dB for smoothly interpolated isobar colors.",
                     ),
                 ),
             )
         )
-        left_column.addStretch(1)
-
-        right_column.addWidget(
-            self._section(
-                "Mesh Config",
-                (("Stitch Tolerance", self.stitch_tolerance_spin, ""),),
-            )
+        layout.addStretch()
+        tabs.addTab(presentation, "Plot Presentation")
+        self.use_as_defaults = QCheckBox("Use as defaults for new projects")
+        self.use_as_defaults.setToolTip(
+            "Use this project's sampling, presentation, frequency sweep, channel normalization and stitch tolerance when creating projects."
         )
-        right_column.addWidget(
-            self._section(
-                "Fields",
-                (
-                    (
-                        "Field Cache Size",
-                        self.field_cache_size_spin,
-                        "Limits how much evaluated observation-plane field data is kept for quick reuse. Larger values use more memory.",
-                    ),
-                    (
-                        "Field Translation Target Framerate",
-                        self.field_translation_target_fps_spin,
-                        "Sets how often an observation-plane field catches up while its plane is moving. Higher values feel more responsive but require more processing.",
-                    ),
-                ),
-            )
-        )
-        right_column.addWidget(
-            self._section(
-                "Application",
-                (
-                    ("Solver", self.solve_backend_combo, ""),
-                    ("Server", self.server_preferences, "Use your server address and optional access key."),
-                    ("Theme", self.theme_combo, ""),
-                    (
-                        "Reuse CUDA Worker Memory",
-                        self.cuda_worker_reuse_check,
-                        "Speeds up consecutive local CUDA solves. Releases cached memory after 5 seconds idle, every 8 solves, or when device memory is low. Requires a compatible BEAT worker.",
-                    ),
-                    ("Live Plot Streaming", self.live_plot_streaming_check, ""),
-                    ("Live Plot Quality", self.live_plot_quality_combo, ""),
-                ),
-            )
-        )
-        right_column.addStretch(1)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        outer = QVBoxLayout(self)
+        outer.addWidget(tabs)
+        outer.addWidget(self.use_as_defaults)
+        outer.addWidget(buttons)
+        self._initial_values = self._control_values()
 
-        columns.addLayout(left_column, 1)
-        columns.addLayout(right_column, 1)
-        layout.addLayout(columns)
-        layout.addWidget(buttons)
-        self.resize(900, 500)
+    def configuration(self) -> ProjectPreferencesState:
+        # Files can carry more precision than a spin box displays.
+        changes = {key: value for key, value in self._control_values().items() if value != self._initial_values[key]}
+        return replace(self._preferences, **changes)
 
-    @staticmethod
-    def _section(title: str, rows: tuple[tuple[str, QWidget] | tuple[str, QWidget, str], ...]) -> QGroupBox:
-        group = QGroupBox(title)
-        form = QFormLayout(group)
-        info_icon = QIcon(str(INFO_ICON_PATH))
-        for row in rows:
-            label_text, widget = row[:2]
-            tooltip = row[2] if len(row) > 2 else ""
-            label = QLabel(label_text)
-            if tooltip:
-                label.setToolTip(tooltip)
-                widget.setToolTip(tooltip)
-                label_row = QWidget()
-                label_layout = QHBoxLayout(label_row)
-                label_layout.setContentsMargins(0, 0, 0, 0)
-                label_layout.setSpacing(4)
-                icon_label = QLabel()
-                icon_label.setPixmap(info_icon.pixmap(16, 16))
-                icon_label.setToolTip(tooltip)
-                label_layout.addWidget(icon_label)
-                label_layout.addWidget(label)
-                label_layout.addStretch(1)
-                form.addRow(label_row, widget)
-                continue
-            form.addRow(label, widget)
-        return group
-
-    def preferences(self) -> GuiPreferences:
+    def _control_values(self):
         spl_min = float(self.spl_min_spin.value())
         spl_max = float(self.spl_max_spin.value())
         if spl_max <= spl_min:
             spl_max = spl_min + 1.0
 
-        return GuiPreferences(
-            default_geometry_provider=self._plugin_preferences.default_geometry_provider,
-            enabled_geometry_providers=self._plugin_preferences.enabled_geometry_providers,
-            theme=self.theme_options[self.theme_combo.currentText()],
-            solve_backend=self.solve_backend_options[self.solve_backend_combo.currentText()],
-            solve_server_url=self.server_preferences.url.text().strip(),
-            solve_server_access_key=self.server_preferences.access_key.text().strip(),
-            cuda_worker_reuse=bool(self.cuda_worker_reuse_check.isChecked()),
-            live_plot_streaming=bool(self.live_plot_streaming_check.isChecked()),
-            live_plot_quality=self.live_plot_quality_options[self.live_plot_quality_combo.currentText()],
+        return dict(
             polar_angle_step_deg=float(self.polar_step_spin.value()),
             polar_observation_distance_m=float(self.polar_distance_spin.value()),
-            normalized_channel_correction=bool(self.normalized_channel_correction_check.isChecked()),
             polar_smoothing=self.smoothing_options[self.smoothing_combo.currentText()],
             horizontal_normalization_angle=float(self.horizontal_norm_angle_spin.value()),
             vertical_normalization_angle=float(self.vertical_norm_angle_spin.value()),
@@ -476,11 +492,8 @@ class PreferencesDialog(QDialog):
             spl_max_db=spl_max,
             spl_min_db=spl_min,
             isobar_contour_step_db=float(self.isobar_contour_step_spin.value()),
-            stitch_tolerance_mm=float(self.stitch_tolerance_spin.value()),
             spherical_sampling_enabled=bool(self.spherical_sampling_check.isChecked()),
             balloon_angle_precision_deg=float(self.balloon_angle_precision_spin.value()),
-            field_cache_size_mb=int(self.field_cache_size_spin.value()),
-            field_translation_target_fps=float(self.field_translation_target_fps_spin.value()),
         )
 
 
@@ -809,7 +822,7 @@ class MeshConfigDialog(QDialog):
 
 
 class ChannelConfigDialog(QDialog):
-    channelsApplied = Signal(object)
+    channelsApplied = Signal(object, bool)
     closeRequested = Signal()
 
     def __init__(
@@ -818,6 +831,7 @@ class ChannelConfigDialog(QDialog):
         parent: QWidget | None = None,
         *,
         embedded: bool = False,
+        normalized_channel_correction: bool = False,
         prescribed_velocity_channel_names: frozenset[str] = frozenset(),
     ):
         super().__init__(parent)
@@ -868,6 +882,12 @@ class ChannelConfigDialog(QDialog):
         button_row = QHBoxLayout()
         button_row.addWidget(add_button)
         button_row.addWidget(remove_button)
+        self.normalization_check = QCheckBox("Impose Channel Normalization")
+        self.normalization_check.setToolTip(
+            "Force a flat reference-axis magnitude for all channels before applying gain, delay, and crossover filters."
+        )
+        self.normalization_check.setChecked(normalized_channel_correction)
+        button_row.addWidget(self.normalization_check)
         button_row.addStretch(1)
 
         button_flags = QDialogButtonBox.Apply if self._embedded else QDialogButtonBox.Apply | QDialogButtonBox.Close
@@ -888,7 +908,7 @@ class ChannelConfigDialog(QDialog):
         except ValueError as exc:
             QMessageBox.warning(self, "Channel config", str(exc))
             return False
-        self.channelsApplied.emit(channels)
+        self.channelsApplied.emit(channels, self.normalization_check.isChecked())
         return True
 
     def _append_row(self, channel: ChannelConfig) -> None:

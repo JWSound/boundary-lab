@@ -13,6 +13,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Callable, Iterator
 
+import beat_engine
 import numpy as np
 
 from blab.acoustic_materials import (
@@ -41,6 +42,7 @@ from blab.solvers.beat_engine_runtime import (
     get_beat_engine_worker,
     julia_process_env,
     normalize_beat_engine_backend,
+    resolve_julia_threads,
 )
 from blab.source_motion import prescribed_source_parameters
 from blab.system_contract import (
@@ -51,6 +53,7 @@ from blab.system_contract import (
     system_solve_request_to_dict,
     validate_system_solve_request,
 )
+from blab.warm_up_history import WarmUpKey
 
 DEFAULT_COUPLED_SOLVER_SCRIPT = DEFAULT_BEAT_ENGINE_SYSTEM_SOLVER_SCRIPT
 DEFAULT_COUPLED_CPU_PROJECT = DEFAULT_BEAT_ENGINE_CPU_PROJECT
@@ -131,6 +134,24 @@ class CoupledSession:
     @property
     def metadata(self) -> SystemSolveMetadata:
         return self._metadata
+
+    def _pooled_worker(self) -> BeatEngineWorkerProcess:
+        return get_beat_engine_worker(
+            julia_executable=self.julia_executable,
+            solver_script=self.solver_script,
+            julia_threads=self.julia_threads,
+            julia_project=self.julia_project,
+        )
+
+    def warm_up_key(self) -> WarmUpKey:
+        # A pooled worker without a ready announcement has no live process yet.
+        cold = not self.persistent_worker or self._pooled_worker().worker_info is None
+        return WarmUpKey(
+            backend=str(self.request.solver_options.get("bem_backend", "cpu")),
+            engine_version=beat_engine.__version__,
+            julia_threads=resolve_julia_threads(self.julia_threads),
+            cold_worker=cold,
+        )
 
     def solve_stream(
         self,
@@ -226,14 +247,13 @@ class CoupledSession:
         *,
         stop_requested: Callable[[], bool] | None,
     ) -> Iterator[SystemFrequencyResult]:
-        self._worker = get_beat_engine_worker(
-            julia_executable=self.julia_executable,
-            solver_script=self.solver_script,
-            julia_threads=self.julia_threads,
-            julia_project=self.julia_project,
-        )
+        self._worker = self._pooled_worker()
         callback = self.request.status_callback
         request = self.request
+        if "continuous_speaker_rom" in request.solver_options:
+            self._worker.ensure_started(status_callback=callback)
+            if 1 not in (self._worker.worker_info or {}).get("continuous_speaker_rom_versions", ()):
+                raise RuntimeError("Level 3 export requires a BEAT worker with continuous speaker ROM v1 support.")
         if self.cuda_worker_reuse and request.solver_options.get("bem_backend") == "cuda":
             configure_idle = getattr(self._worker, "configure_idle_cleanup", None)
             if configure_idle is not None:
@@ -527,21 +547,9 @@ def validate_coupled_capabilities(request: SystemSolveRequest) -> None:
                 ),
             )
             continue
-        unsupported_parameters = set(component.parameters) - {
-            "motion_profile",
-            "boundary_motion_weights",
-        }
-        if unsupported_parameters:
-            raise ValueError(
-                f"Coupled solver does not support component parameters on '{component.id}': "
-                + ", ".join(sorted(unsupported_parameters))
-            )
-        motion_profile = component.parameters.get("motion_profile", "uniform")
-        if motion_profile != "uniform":
-            raise ValueError(
-                f"Coupled solver supports only uniform prescribed motion; component "
-                f"'{component.id}' requests {motion_profile!r}."
-            )
+        prescribed_source_parameters(
+            component.parameters, symmetry="off" if symmetry_mode == "ground" else symmetry_mode, coupled=True
+        )
     components_by_id = {component.id: component for component in system.components}
     unsupported_ports = []
     for port in system.excitation_ports:
@@ -1029,7 +1037,7 @@ class CoupledReferenceBackend(_CoupledBackend):
 
 
 class PhysicalSystemProductionBackend(_CoupledBackend):
-    """FP32 physical-system backend for exterior, interior, and coupled BEAT solves."""
+    """Physical-system backend with FP32 defaults and configurable solve precision."""
 
     backend_id = "coupled_production"
     label = "Coupled FEM-BEM (FP32)"
@@ -1039,6 +1047,7 @@ class PhysicalSystemProductionBackend(_CoupledBackend):
         self,
         *,
         bem_backend: str,
+        precision: str = "float32",
         julia_executable: str = "julia",
         solver_script: str | Path = DEFAULT_COUPLED_SOLVER_SCRIPT,
         julia_threads: str | int | None = None,
@@ -1054,7 +1063,7 @@ class PhysicalSystemProductionBackend(_CoupledBackend):
             julia_project=julia_project,
             julia_threads=resolved_threads,
             persistent_worker=persistent_worker,
-            precision="float32",
+            precision=precision,
             bem_backend=normalized_bem_backend,
         )
 

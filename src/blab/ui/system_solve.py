@@ -11,6 +11,7 @@ from PySide6.QtCore import QObject, Signal, Slot
 
 from blab.solvers.beat_engine_runtime import hold_beat_engine_idle_cleanup
 from blab.solvers.coupled_backend import PhysicalSystemProductionBackend
+from blab.speaker_package import solve_speaker_package_system
 from blab.system_solve import (
     PreparedSystemSolve,
     canonicalize_observation_result,
@@ -27,7 +28,9 @@ class SystemSolveWorker(QObject):
 
     initialized = Signal(object, object, object)
     result_ready = Signal(object)
+    pattern_ready = Signal(object)
     status = Signal(str)
+    warm_up_key = Signal(object)
     failed = Signal(str, str)
     finished = Signal()
 
@@ -69,10 +72,37 @@ class SystemSolveWorker(QObject):
             )
         if self._stop:
             return
-        session = backend.create_system_session(request)
-        if self.prepared.backend_id != "beat_remote":
-            session.cuda_worker_reuse = self.prepared.cuda_worker_reuse
-        self._session = session
+
+        def create_session(batch):
+            session = backend.create_system_session(batch)
+            if self.prepared.backend_id != "beat_remote":
+                session.cuda_worker_reuse = self.prepared.cuda_worker_reuse
+            self._session = session
+            return session
+
+        if getattr(self.prepared, "pattern_band_hz", None) is not None:
+            completed = 0
+
+            def progress(event):
+                nonlocal completed
+                if event["event"] == "frequency_completed":
+                    completed += 1
+                    self.status.emit(
+                        f"Solving speaker package ({completed} frequencies solved, {event['freq_hz']:g} Hz)"
+                    )
+
+            solved = solve_speaker_package_system(
+                replace(self.prepared, request=request),
+                session_factory=create_session,
+                stop_requested=lambda: self._stop,
+                event_callback=progress,
+            )
+            if not self._stop:
+                self.pattern_ready.emit(solved)
+            return
+
+        session = create_session(request)
+        self.warm_up_key.emit(session.warm_up_key())
         self.initialized.emit(
             self.prepared.polar_angle_deg,
             self.prepared.excitation_component_names,

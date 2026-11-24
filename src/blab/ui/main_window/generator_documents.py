@@ -8,7 +8,7 @@ from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
 
-from PySide6.QtCore import Slot
+from PySide6.QtCore import QPoint, Slot
 from PySide6.QtWidgets import (
     QDockWidget,
     QInputDialog,
@@ -31,9 +31,6 @@ from blab.project.model import (
     unique_generator_name,
 )
 from blab.ui.ath_editor import AthScriptEditor
-from blab.ui.main_window.constants import (
-    ADD_DESIGN_TAB_LABEL,
-)
 from blab.ui.main_window_widgets import TabCloseButton
 from blab.ui.provider_editor import AthProviderEditor, DocumentHost
 from blab.ui.settings import save_syntax_highlighting_enabled
@@ -106,7 +103,8 @@ class GeneratorDocumentsMixin:
         self.dispose_provider_editors()
         self.editor_tabs.blockSignals(True)
         while self.editor_tabs.count():
-            widget = self.editor_tabs.widget(0)
+            widget = self.editor_pages.widget(0)
+            self.editor_pages.removeWidget(widget)
             self.editor_tabs.removeTab(0)
             widget.deleteLater()
         for document in self.generator_documents:
@@ -119,7 +117,7 @@ class GeneratorDocumentsMixin:
                     raise ValueError("Incompatible Generator Plugin source schema; source has been preserved.")
                 if document.provider_id == ATH_PROVIDER_ID:
                     adapter = AthProviderEditor(
-                        self.editor_tabs, host, highlight_syntax=self.syntax_highlighting_enabled
+                        self.editor_pages, host, highlight_syntax=self.syntax_highlighting_enabled
                     )
                     adapter.widget.configDropped.connect(
                         lambda path, document_id=document.id: self.import_config_path(
@@ -131,7 +129,7 @@ class GeneratorDocumentsMixin:
                     if factory is None:
                         raise ValueError("This Generator Plugin does not supply a custom editor.")
                     # Own even partially constructed child widgets if a factory raises.
-                    container = QWidget(self.editor_tabs)
+                    container = QWidget(self.editor_pages)
                     container.hide()
                     layout = QVBoxLayout(container)
                     layout.setContentsMargins(0, 0, 0, 0)
@@ -139,7 +137,7 @@ class GeneratorDocumentsMixin:
                 if (
                     not isinstance(adapter.widget, QWidget)
                     or isinstance(adapter.widget, QDockWidget)
-                    or adapter.widget is self.editor_tabs
+                    or adapter.widget is self.editor_pages
                     or adapter.widget is container
                 ):
                     raise TypeError("Generator Plugin must supply its own widget.")
@@ -171,16 +169,19 @@ class GeneratorDocumentsMixin:
                     "Saved design source has been preserved.\n\n"
                     + json.dumps(document.source, indent=2, sort_keys=True)
                 )
-            self._install_tab_close_button(self.editor_tabs.addTab(editor, document.name), document.name)
-        add_tab = AthScriptEditor(highlight_syntax=False)
-        add_tab.setReadOnly(True)
-        add_tab.configDropped.connect(lambda path: self.import_config_path(Path(path)))
-        add_index = self.editor_tabs.addTab(add_tab, ADD_DESIGN_TAB_LABEL)
-        self.editor_tabs.tabBar().setTabButton(add_index, QTabBar.ButtonPosition.RightSide, None)
-        self.editor_tabs.tabBar().setTabToolTip(add_index, "Add design")
+            self.editor_pages.addWidget(editor)
+            self._install_tab_close_button(self.editor_tabs.addTab(document.name), document.name)
+        if not self.generator_documents:
+            empty_editor = AthScriptEditor(highlight_syntax=False)
+            empty_editor.setReadOnly(True)
+            empty_editor.configDropped.connect(lambda path: self.import_config_path(Path(path)))
+            self.editor_pages.addWidget(empty_editor)
+            index = self.editor_tabs.addTab("Designs")
+            self.editor_tabs.setTabButton(index, QTabBar.ButtonPosition.RightSide, None)
         active_index = self.active_generator_document_index()
         if active_index >= 0:
             self.editor_tabs.setCurrentIndex(active_index)
+            self.editor_pages.setCurrentIndex(active_index)
         self.editor_tabs.blockSignals(False)
         self.update_provider_editor_states()
         self._refresh_generate_availability()
@@ -189,10 +190,10 @@ class GeneratorDocumentsMixin:
         button = TabCloseButton(f"Close {name}")
         # Resolved on click: removing a tab renumbers the rest.
         button.clicked.connect(lambda: self._remove_generator_document_at(self._tab_index_of_close_button(button)))
-        self.editor_tabs.tabBar().setTabButton(index, QTabBar.ButtonPosition.RightSide, button)
+        self.editor_tabs.setTabButton(index, QTabBar.ButtonPosition.RightSide, button)
 
     def _tab_index_of_close_button(self, button: TabCloseButton) -> int:
-        tab_bar = self.editor_tabs.tabBar()
+        tab_bar = self.editor_tabs
         for index in range(tab_bar.count()):
             if tab_bar.tabButton(index, QTabBar.ButtonPosition.RightSide) is button:
                 return index
@@ -203,7 +204,7 @@ class GeneratorDocumentsMixin:
         self.syntax_highlighting_enabled = bool(enabled)
         save_syntax_highlighting_enabled(self.settings, self.syntax_highlighting_enabled)
         for index, document in enumerate(self.generator_documents):
-            editor = self.editor_tabs.widget(index)
+            editor = self.editor_pages.widget(index)
             if document.provider_id == ATH_PROVIDER_ID and isinstance(editor, AthScriptEditor):
                 editor.set_syntax_highlighting_enabled(self.syntax_highlighting_enabled)
 
@@ -234,10 +235,12 @@ class GeneratorDocumentsMixin:
             for document in self.generator_documents
         )
 
+    def _cycle_design_tab(self, step: int) -> None:
+        tabs = self.editor_tabs
+        if tabs.count() > 1:
+            tabs.setCurrentIndex((tabs.currentIndex() + step) % tabs.count())
+
     def _on_active_generator_tab_changed(self, index: int) -> None:
-        if index == len(self.generator_documents):
-            self.add_generator_document()
-            return
         if 0 <= index < len(self.generator_documents):
             self.active_generator_document_id = self.generator_documents[index].id
             self._refresh_generate_availability()
@@ -260,12 +263,27 @@ class GeneratorDocumentsMixin:
             and not self.preparations.active
         )
 
-    def new_default_generator_document(self, name):
-        provider_id = self.preferences.default_geometry_provider
+    @Slot()
+    def choose_generator_plugin(self) -> None:
+        catalog = provider_catalog()
+        choices = [("Ath", ATH_PROVIDER_ID)]
+        choices.extend(
+            (package.manifest.name, package.manifest.id)
+            for package in catalog.packages
+            if package.manifest and not package.error and package.manifest.id in catalog.enabled
+        )
+        if len(choices) == 1:
+            self.add_generator_document(ATH_PROVIDER_ID)
+            return
+        self.add_design_menu.clear()
+        for label, provider_id in choices:
+            self.add_design_menu.addAction(label).setData(provider_id)
+        button = self.add_design_button
+        self.add_design_menu.popup(button.mapToGlobal(QPoint(0, button.height())))
+
+    def _new_generator_document(self, name, provider_id):
         if provider_id == ATH_PROVIDER_ID:
             return new_generator_document(name, "")
-        if name == "waveguide":
-            name = "design"
         # Defaults are declarative: creating a design never instantiates a backend.
         manifest = provider_catalog().package(provider_id).manifest
         return replace(
@@ -278,11 +296,10 @@ class GeneratorDocumentsMixin:
             mesh_scale_factor=manifest.mesh_scale_factor,
         )
 
-    @Slot()
-    def add_generator_document(self) -> None:
+    def add_generator_document(self, provider_id: str) -> None:
         name = unique_generator_name("design", self.generator_documents)
         try:
-            document = self.new_default_generator_document(name)
+            document = self._new_generator_document(name, provider_id)
         except ValueError as exc:
             self.show_error("Generator Plugin unavailable", str(exc))
             self.editor_tabs.setCurrentIndex(self.active_generator_document_index())

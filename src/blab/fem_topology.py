@@ -69,4 +69,27 @@ def selected_volume_surface_tags(
     return frozenset(surface_tags)
 
 
-__all__ = ["selected_volume_surface_tags"]
+def select_tetrahedra(mesh: meshio.Mesh, selected_tags: set[int]) -> np.ndarray:
+    physical_blocks = mesh.cell_data.get("gmsh:physical")
+    if physical_blocks is None or len(physical_blocks) != len(mesh.cells):
+        raise ValueError("FEM mesh tetrahedra do not contain gmsh:physical volume tags.")
+    selected: list[np.ndarray] = []
+    for block, raw_tags in zip(mesh.cells, physical_blocks, strict=True):
+        if block.type not in _TETRAHEDRON_TYPES:
+            continue
+        cells = np.asarray(block.data, dtype=np.int64)
+        tags = np.asarray(raw_tags, dtype=np.int64)
+        if tags.shape != (cells.shape[0],):
+            raise ValueError("FEM mesh physical-volume tags do not align with its tetrahedra.")
+        mask = np.isin(tags, tuple(selected_tags))
+        if np.any(mask):
+            selected.append(cells[mask])
+    if not selected:
+        return np.empty((0, 4), dtype=np.int64)
+    widths = {cells.shape[1] for cells in selected}
+    if len(widths) != 1:
+        raise ValueError("FEM mesh mixes first- and second-order tetrahedra.")
+    return np.vstack(selected)
+
+
+__all__ = ["select_tetrahedra", "selected_volume_surface_tags"]

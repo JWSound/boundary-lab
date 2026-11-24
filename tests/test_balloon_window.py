@@ -160,6 +160,16 @@ def test_identical_results_do_not_trigger_a_re_render(balloon_window, monkeypatc
     assert rendered == []
 
 
+def test_presentation_changes_refresh_an_open_balloon_with_the_same_data(balloon_window):
+    window = balloon_window
+    window._raw_balloon_data_provider = lambda: window._raw_balloon_data
+    window.set_presentation(-48, 0, 12)
+    window.refresh_from_latest_results()
+    assert window._prepared["min_db"] == -48
+    assert window.radar_plot._min_db == -48
+    assert window._polar_smoothing == 12
+
+
 def test_new_results_re_render_and_keep_the_chosen_frequency(balloon_window, monkeypatch) -> None:
     newer = balloon_raw_bundle(freqs=(100.0, 400.0, 1000.0, 2000.0))
     balloon_window._raw_balloon_data_provider = lambda: newer

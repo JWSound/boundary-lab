@@ -183,10 +183,23 @@ class ActivityStatusBar(QFrame):
         layout.setSpacing(6)
         layout.addWidget(self.indicator)
         layout.addWidget(self._messages, 1)
+        self.unknown_counts = QLabel()
+        self.unknown_counts.setAccessibleName("Pressure unknowns per frequency")
+        self.unknown_counts.setToolTip(
+            "Pressure unknowns per frequency on active physical-system meshes.\n"
+            "BEM counts exterior pressure nodes. FEM counts selected volume nodes before condensation.\n"
+            "A dash means the count is unavailable."
+        )
+        layout.addWidget(self.unknown_counts)
+        self.set_unknown_counts(None, None)
         activities.changed.connect(self._activity_changed)
         activities.indicator_changed.connect(self.indicator.set_running)
         self._activity_changed(activities.active, activities.message)
         self.indicator.set_running(activities.indicator_visible)
+
+    def set_unknown_counts(self, bem: int | None, fem: int | None) -> None:
+        bem_text, fem_text = ("—" if count is None else f"{count:,}" for count in (bem, fem))
+        self.unknown_counts.setText(f"BEM {bem_text}   |   FEM {fem_text}")
 
     @Slot(bool, str)
     def _activity_changed(self, active: bool, message: str) -> None:

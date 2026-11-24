@@ -4,12 +4,12 @@ build-backend = "hatchling.build"
 
 [project]
 name = "boundary-lab"
-version = "0.5.0"
+version = "0.5.1"
 description = "Boundary element loudspeaker radiation solver"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-  "beat-engine @ https://github.com/JWSound/BEAT_Engine/releases/download/v0.6.0/beat_engine-0.6.0-py3-none-any.whl#sha256=10db2ee28eb9a8675fa0131127a04eeaad61097328c3aac453721a5924187dd3",
+  "beat-engine @ https://github.com/JWSound/BEAT_Engine/releases/download/v0.10.0/beat_engine-0.10.0-py3-none-any.whl#sha256=4d0ee9276b9aa37eb01273cb3f7288f13f78814cf3ef494900fa8cf841b59d94",
   "gmsh",
   "matplotlib",
   "meshio",
@@ -18,12 +18,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+fields = ["pyvista>=0.47"]
 dev = [
   "pytest",
   "ruff>=0.15,<0.16",
 ]
 gui = [
   "PySide6",
+  "superqt>=0.9.2,<1",
   "pyvista>=0.47",
   "pyvistaqt",
 ]

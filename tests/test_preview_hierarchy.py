@@ -46,6 +46,7 @@ def test_physical_system_builds_region_mesh_boundary_hierarchy_with_solver_actor
         },
     )
 
+    assert hierarchy.rendered_groups["Cabinet", "Woofer Surface"] == ("stitched", 7)
     assert [region.name for region in hierarchy.regions] == ["Exterior"]
     mesh = hierarchy.regions[0].meshes[0]
     assert mesh.name == "Cabinet"

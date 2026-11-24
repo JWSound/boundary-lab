@@ -72,6 +72,7 @@ class ObservationPlane:
     spl_min_db: float | None = None
     spl_max_db: float | None = None
     normalized_spl_range_db: float = 40.0
+    complex_component: str = "real"
 
     def validated(self) -> ObservationPlane:
         center = _finite_tuple(self.center_m, 3, label="center_m")
@@ -100,11 +101,12 @@ class ObservationPlane:
             )
         plane_type = ObservationPlaneType(self.plane_type)
         display = ObservationPlaneDisplay(self.display)
-        if (
-            display in {ObservationPlaneDisplay.PARTICLE_VELOCITY, ObservationPlaneDisplay.FLOW_ARROWS}
-            and plane_type != ObservationPlaneType.INTERIOR
-        ):
-            display = ObservationPlaneDisplay.SPL
+        component = str(self.complex_component)
+        if component not in {"real", "imaginary"}:
+            raise ValueError("Complex component must be real or imaginary.")
+        # Keep the existing pressure display values on disk for compatibility.
+        if display in {ObservationPlaneDisplay.REAL_PRESSURE, ObservationPlaneDisplay.IMAGINARY_PRESSURE}:
+            component = "imaginary" if display == ObservationPlaneDisplay.IMAGINARY_PRESSURE else "real"
         flow_scales = {}
         for key in ("velocity_scale_m_per_s", "intensity_scale_w_per_m2", "particle_velocity_limit_m_per_s"):
             value = getattr(self, key)
@@ -135,6 +137,7 @@ class ObservationPlane:
             resolution_m=resolution,
             plane_type=plane_type,
             display=display,
+            complex_component=component,
             interior_rendering=InteriorRenderingMode(self.interior_rendering),
             invert_clip_side=bool(self.invert_clip_side),
             response_id=str(self.response_id).strip() or "system",
@@ -205,6 +208,7 @@ class ObservationPlane:
             "normalized_spl_range_db": plane.normalized_spl_range_db,
             "type": plane.plane_type.value,
             "display": plane.display.value,
+            "complex_component": plane.complex_component,
             "interior_rendering": plane.interior_rendering.value,
             "invert_clip_side": plane.invert_clip_side,
             "response_id": plane.response_id,
@@ -235,6 +239,7 @@ class ObservationPlane:
                 resolution_m=float(payload.get("resolution_m", DEFAULT_PLANE_RESOLUTION_M)),
                 plane_type=ObservationPlaneType(payload.get("type", ObservationPlaneType.INTERIOR.value)),
                 display=ObservationPlaneDisplay(payload.get("display", ObservationPlaneDisplay.SPL.value)),
+                complex_component=payload.get("complex_component", "real"),
                 interior_rendering=InteriorRenderingMode(
                     payload.get("interior_rendering", InteriorRenderingMode.SMOOTH_FIELD.value)
                 ),
@@ -388,3 +393,13 @@ def _positive_finite(value: float, *, label: str, minimum: float) -> float:
     if not math.isfinite(number) or number < minimum:
         raise ValueError(f"Observation plane {label} must be finite and at least {minimum:g}.")
     return number
+
+
+def sample_plane_points(plane: ObservationPlane, shape: tuple[int, int]) -> np.ndarray:
+    x_count, y_count = shape
+    axis_u, axis_v, _normal = plane.local_axes
+    u_values = np.linspace(-plane.width_m * 0.5, plane.width_m * 0.5, x_count)
+    v_values = np.linspace(-plane.height_m * 0.5, plane.height_m * 0.5, y_count)
+    center = np.asarray(plane.center_m, dtype=float)
+    u_grid, v_grid = np.meshgrid(u_values, v_values)
+    return center + u_grid.reshape(-1, 1) * axis_u + v_grid.reshape(-1, 1) * axis_v

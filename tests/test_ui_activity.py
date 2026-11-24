@@ -84,6 +84,8 @@ def test_status_row_preserves_completion_text_and_space(qapp):
     bar.resize(500, 30)
     bar.show()
     qapp.processEvents()
+    assert bar.unknown_counts.text() == "BEM —   |   FEM —"
+    bar.set_unknown_counts(1234, 0)
     idle_position = status.pos()
     idle_size = bar.sizeHint()
     try:
@@ -93,6 +95,8 @@ def test_status_row_preserves_completion_text_and_space(qapp):
         assert bar.indicator.isVisible()
         assert bar.indicator._animation.isActive()
         assert bar.activity_label.isVisible()
+        assert bar.unknown_counts.isVisible()
+        assert bar.unknown_counts.text() == "BEM 1,234   |   FEM 0"
         status.setText("Complete")
         activity.finish()
         qapp.processEvents()
